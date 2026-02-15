@@ -107,6 +107,21 @@ module Crystal
 
       CrystalPath.expand_paths(paths)
 
+      # Add WASI SDK sysroot library path for wasm32 targets
+      if wasi_sdk = ENV["WASI_SDK_PATH"]?
+        sysroot_lib = File.join(wasi_sdk, "share", "wasi-sysroot", "lib", "wasm32-wasi")
+        if Dir.exists?(sysroot_lib) && !paths.includes?(sysroot_lib)
+          paths << sysroot_lib
+        end
+      end
+
+      # Add CRYSTAL_WASM_LIBS path for additional WASM libraries
+      if wasm_libs = ENV["CRYSTAL_WASM_LIBS"]?
+        if Dir.exists?(wasm_libs) && !paths.includes?(wasm_libs)
+          paths << wasm_libs
+        end
+      end
+
       paths
     end
 
@@ -121,7 +136,13 @@ module Crystal
 
   class Program
     def lib_flags(cross_compiling : Bool = false)
-      has_flag?("msvc") ? lib_flags_windows(cross_compiling) : lib_flags_posix(cross_compiling)
+      if has_flag?("wasm32")
+        lib_flags_wasm(cross_compiling)
+      elsif has_flag?("msvc")
+        lib_flags_windows(cross_compiling)
+      else
+        lib_flags_posix(cross_compiling)
+      end
     end
 
     private def lib_flags_windows(cross_compiling)
@@ -178,6 +199,40 @@ module Crystal
 
         if framework = ann.framework
           flags << "-framework" << quote_flag(framework, cross_compiling)
+        end
+      end
+
+      flags.join(" ")
+    end
+
+    private def lib_flags_wasm(cross_compiling)
+      flags = [] of String
+
+      # Add CRYSTAL_LIBRARY_PATH locations
+      CrystalLibraryPath.paths.each do |path|
+        flags << quote_flag("-L#{path}", cross_compiling)
+      end
+
+      # Add WASI sysroot library path if available
+      if wasi_sdk = ENV["WASI_SDK_PATH"]?
+        sysroot_lib = File.join(wasi_sdk, "share", "wasi-sysroot", "lib", "wasm32-wasi")
+        if Dir.exists?(sysroot_lib)
+          flags << quote_flag("-L#{sysroot_lib}", cross_compiling)
+        end
+      end
+
+      # Add CRYSTAL_WASM_LIBS path if available
+      if wasm_libs = ENV["CRYSTAL_WASM_LIBS"]?
+        flags << quote_flag("-L#{wasm_libs}", cross_compiling)
+      end
+
+      link_annotations.reverse_each do |ann|
+        if ldflags = ann.ldflags
+          flags << ldflags
+        end
+
+        if lib_name = ann.lib
+          flags << quote_flag("-l#{lib_name}", cross_compiling)
         end
       end
 
