@@ -627,9 +627,9 @@ module Crystal
         end
       end
 
-      if program.has_flag?("wasm32")
+      if program.has_flag?("wasm32") && release?
         @progress_tracker.stage("Codegen (wasm-opt)") do
-          run_wasm_opt(output_filename, release?)
+          run_wasm_opt(output_filename)
         end
       end
 
@@ -953,23 +953,13 @@ module Crystal
       end
     end
 
-    private def run_wasm_opt(output_filename, release)
-      # Run asyncify pass to enable fiber/coroutine support
-      asyncify_cmd = "wasm-opt #{Process.quote_posix(output_filename)} -o #{Process.quote_posix(output_filename)} --asyncify --all-features"
-      print_command(asyncify_cmd, nil) if verbose?
-      status = Process.run(asyncify_cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+    private def run_wasm_opt(output_filename)
+      # Run size optimization pass in release mode
+      opt_cmd = "wasm-opt #{Process.quote_posix(output_filename)} -o #{Process.quote_posix(output_filename)} -Oz --all-features"
+      print_command(opt_cmd, nil) if verbose?
+      status = Process.run(opt_cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
       unless status.success?
-        error "wasm-opt asyncify pass failed with exit status #{status}: #{asyncify_cmd}"
-      end
-
-      if release
-        # Run size optimization pass in release mode
-        opt_cmd = "wasm-opt #{Process.quote_posix(output_filename)} -o #{Process.quote_posix(output_filename)} -Oz --all-features"
-        print_command(opt_cmd, nil) if verbose?
-        status = Process.run(opt_cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
-        unless status.success?
-          error "wasm-opt optimization pass failed with exit status #{status}: #{opt_cmd}"
-        end
+        error "wasm-opt optimization pass failed with exit status #{status}: #{opt_cmd}"
       end
     end
 

@@ -108,6 +108,12 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
     raise NotImplementedError.new("Crystal::Wasi::EventLoop#open")
   end
 
+  # NOTE: The evented_read/evented_write helpers below call Fiber.suspend
+  # via IO::Evented#evented_wait_readable/evented_wait_writable. This requires
+  # working fiber context switching (Asyncify), which is not yet implemented
+  # for wasm32. These methods compile but will not work correctly at runtime
+  # for non-blocking file descriptors until fiber support is added.
+
   def read(file_descriptor : Crystal::System::FileDescriptor, slice : Bytes) : Int32
     evented_read(file_descriptor, "Error reading file_descriptor") do
       LibC.read(file_descriptor.fd, slice, slice.size).tap do |return_code|
@@ -160,6 +166,9 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
     raise NotImplementedError.new("Crystal::EventLoop::Wasi#socketpair")
   end
 
+  # NOTE: Socket evented I/O methods below also depend on Fiber.suspend
+  # via IO::Evented. See the note above read(file_descriptor, ...) for details.
+
   def read(socket : ::Socket, slice : Bytes) : Int32
     evented_read(socket, "Error reading socket") do
       LibC.recv(socket.fd, slice, slice.size, 0).to_i32
@@ -207,6 +216,12 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   def close(socket : ::Socket) : Nil
     socket.socket_close
   end
+
+  # NOTE: evented_read and evented_write loop on EAGAIN and call
+  # evented_wait_readable/evented_wait_writable, which suspend the current
+  # fiber. This requires Asyncify-based fiber support that is not yet
+  # implemented. For blocking file descriptors (the common case in WASI),
+  # the yield will never be called because reads/writes complete immediately.
 
   def evented_read(target, errno_msg : String, &) : Int32
     loop do
