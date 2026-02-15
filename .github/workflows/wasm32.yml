@@ -42,6 +42,16 @@ jobs:
           apt-get install -y llvm-18-dev lld-18
           ln -s "$(which wasm-ld-18)" /usr/bin/wasm-ld
 
+      - name: Install Binaryen
+        run: |
+          BINARYEN_VERSION=126
+          curl -LO https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz
+          tar -xzf binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz
+          cp binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt /usr/local/bin/
+          cp binaryen-version_${BINARYEN_VERSION}/bin/wasm-merge /usr/local/bin/
+          rm -rf binaryen-version_${BINARYEN_VERSION} binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz
+          wasm-opt --version
+
       - name: Download wasm32 libs
         run: |
           mkdir wasm32-wasi-libs
@@ -76,6 +86,15 @@ jobs:
 
       - name: Run wasm32_gc_spec.wasm
         run: wasmtime run -W exceptions=y wasm32_gc_spec.wasm
+
+      # ── Fiber/concurrency specs (Phase 3) ──────────────────────────
+      - name: Build spec/wasm32/fiber_spec.cr
+        run: bin/crystal build spec/wasm32/fiber_spec.cr -o wasm32_fiber_spec.wasm --target wasm32-wasi -Dwithout_iconv -Dwithout_openssl
+        env:
+          CRYSTAL_LIBRARY_PATH: ${{ github.workspace }}/wasm32-wasi-libs
+
+      - name: Run wasm32_fiber_spec.wasm
+        run: wasmtime run -W exceptions=y wasm32_fiber_spec.wasm
 
       # ── Linking specs ───────────────────────────────────────────────
       - name: Build spec/wasm32/linking_spec.cr
