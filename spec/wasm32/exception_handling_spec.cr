@@ -5,7 +5,7 @@
 # the WASM roadmap's exception handling support.
 #
 # Build: bin/crystal build spec/wasm32/exception_handling_spec.cr -o wasm32_eh_spec.wasm --target wasm32-wasi -Dwithout_iconv -Dwithout_openssl
-# Run:   wasmtime run wasm32_eh_spec.wasm
+# Run:   wasmtime run -W exceptions=y wasm32_eh_spec.wasm
 
 require "spec"
 

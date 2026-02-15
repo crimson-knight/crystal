@@ -12,6 +12,7 @@ env:
   SPEC_SPLIT_DOTS: 160
   WASI_SDK_PATH: /opt/wasi-sdk
   CRYSTAL_WASM_LIBS: ${{ github.workspace }}/wasm32-wasi-libs
+  WASMTIME_BACKTRACE_DETAILS: 1
 
 jobs:
   wasm32-test:
@@ -25,8 +26,11 @@ jobs:
 
       - name: Install wasmtime
         run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash
+          curl -sSf https://wasmtime.dev/install.sh | bash -s -- --version v29.0.1
           echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
+
+      - name: Verify wasmtime version
+        run: wasmtime --version
 
       - name: Install LLVM
         run: |
@@ -46,26 +50,38 @@ jobs:
           tar -f wasm32-wasi-libs.tar.gz -C wasm32-wasi-libs -xz
           rm wasm32-wasi-libs.tar.gz
 
+      # ── Standard library specs ──────────────────────────────────────
       - name: Build spec/wasm32_std_spec.cr
         run: bin/crystal build spec/wasm32_std_spec.cr -o wasm32_std_spec.wasm --target wasm32-wasi -Dwithout_iconv -Dwithout_openssl
         env:
           CRYSTAL_LIBRARY_PATH: ${{ github.workspace }}/wasm32-wasi-libs
 
       - name: Run wasm32_std_spec.wasm
-        run: wasmtime run --wasm exceptions wasm32_std_spec.wasm
+        run: wasmtime run -W exceptions=y wasm32_std_spec.wasm
 
+      # ── Exception handling specs (Phase 1) ──────────────────────────
       - name: Build spec/wasm32/exception_handling_spec.cr
         run: bin/crystal build spec/wasm32/exception_handling_spec.cr -o wasm32_eh_spec.wasm --target wasm32-wasi -Dwithout_iconv -Dwithout_openssl
         env:
           CRYSTAL_LIBRARY_PATH: ${{ github.workspace }}/wasm32-wasi-libs
 
       - name: Run wasm32_eh_spec.wasm
-        run: wasmtime run --wasm exceptions wasm32_eh_spec.wasm
+        run: wasmtime run -W exceptions=y wasm32_eh_spec.wasm
 
+      # ── Garbage collection specs (Phase 2) ──────────────────────────
+      - name: Build spec/wasm32/gc_spec.cr
+        run: bin/crystal build spec/wasm32/gc_spec.cr -o wasm32_gc_spec.wasm --target wasm32-wasi -Dwithout_iconv -Dwithout_openssl
+        env:
+          CRYSTAL_LIBRARY_PATH: ${{ github.workspace }}/wasm32-wasi-libs
+
+      - name: Run wasm32_gc_spec.wasm
+        run: wasmtime run -W exceptions=y wasm32_gc_spec.wasm
+
+      # ── Linking specs ───────────────────────────────────────────────
       - name: Build spec/wasm32/linking_spec.cr
         run: bin/crystal build spec/wasm32/linking_spec.cr -o wasm32_linking_spec.wasm --target wasm32-wasi -Dwithout_iconv -Dwithout_openssl
         env:
           CRYSTAL_LIBRARY_PATH: ${{ github.workspace }}/wasm32-wasi-libs
 
       - name: Run wasm32_linking_spec.wasm
-        run: wasmtime run --wasm exceptions wasm32_linking_spec.wasm
+        run: wasmtime run -W exceptions=y wasm32_linking_spec.wasm
