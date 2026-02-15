@@ -103,6 +103,7 @@ lib LibLLVM
   fun get_vector_size = LLVMGetVectorSize(vector_ty : TypeRef) : UInt
 
   fun void_type_in_context = LLVMVoidTypeInContext(c : ContextRef) : TypeRef
+  fun token_type_in_context = LLVMTokenTypeInContext(c : ContextRef) : TypeRef
 
   fun type_of = LLVMTypeOf(val : ValueRef) : TypeRef
   fun get_value_kind = LLVMGetValueKind(val : ValueRef) : LLVM::Value::Kind

@@ -298,6 +298,9 @@ module Crystal
       if @program.has_flag?("msvc")
         @personality_name = "__CxxFrameHandler3"
         @main.personality_function = windows_personality_fun.func
+      elsif @program.has_flag?("wasm32")
+        @personality_name = "__crystal_personality"
+        @main.personality_function = main_fun(@personality_name).func
       else
         @personality_name = "__crystal_personality"
       end

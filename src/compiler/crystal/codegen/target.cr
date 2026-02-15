@@ -221,6 +221,7 @@ class Crystal::Codegen::Target
       end
     when "wasm32"
       LLVM.init_webassembly
+      features += "+exception-handling,+bulk-memory,+mutable-globals,+sign-ext,+nontrapping-fptoint"
     else
       raise Target::Error.new("Unsupported architecture for target triple: #{self}")
     end

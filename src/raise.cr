@@ -162,24 +162,37 @@ end
     __crystal_continue_unwind
   end
 {% elsif flag?(:wasm32) %}
+  require "exception/lib_unwind"
+
   # :nodoc:
-  fun __crystal_personality
-    Crystal::System.print_error "EXITING: __crystal_personality called"
-    LibC.exit(1)
+  fun __crystal_personality(
+    version : Int32, actions : LibUnwind::Action, exception_class : UInt64, exception_object : LibUnwind::Exception*, context : Void*,
+  ) : LibUnwind::ReasonCode
+    start = LibUnwind.get_region_start(context)
+    ip = LibUnwind.get_ip(context)
+    lsd = LibUnwind.get_language_specific_data(context)
+
+    leb = LEBReader.new(lsd)
+    reason = traverse_eh_table(leb, start, ip, actions) do |unwind_ip|
+      LibUnwind.set_gr(context, LibUnwind::EH_REGISTER_0, exception_object.address)
+      LibUnwind.set_gr(context, LibUnwind::EH_REGISTER_1, exception_object.value.exception_type_id)
+      LibUnwind.set_ip(context, unwind_ip)
+    end
+    return reason if reason
+
+    return LibUnwind::ReasonCode::CONTINUE_UNWIND
   end
 
   # :nodoc:
   @[Raises]
-  fun __crystal_raise(ex : Void*) : NoReturn
-    Crystal::System.print_error "EXITING: __crystal_raise called"
-    LibC.exit(1)
+  fun __crystal_raise(unwind_ex : LibUnwind::Exception*) : NoReturn
+    # Use WASM throw instruction via LLVM intrinsic
+    LibIntrinsics.wasm_throw(0, unwind_ex.as(Void*))
   end
 
   # :nodoc:
-  fun __crystal_get_exception(ex : Void*) : UInt64
-    Crystal::System.print_error "EXITING: __crystal_get_exception called"
-    LibC.exit(1)
-    0u64
+  fun __crystal_get_exception(unwind_ex : LibUnwind::Exception*) : UInt64
+    unwind_ex.value.exception_object.address
   end
 {% else %}
   {% mingw = flag?(:win32) && flag?(:gnu) %}
@@ -241,9 +254,8 @@ end
 
 {% if flag?(:wasm32) %}
   def raise(exception : Exception) : NoReturn
-    Crystal::System.print_error "EXITING: Attempting to raise:\n%s\n", exception.inspect_with_backtrace
-    LibIntrinsics.debugtrap
-    LibC.exit(1)
+    exception.callstack ||= Exception::CallStack.new
+    raise_without_backtrace(exception)
   end
 {% else %}
   # Raises the *exception*.

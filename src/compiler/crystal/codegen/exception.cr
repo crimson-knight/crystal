@@ -61,8 +61,14 @@ class Crystal::CodeGenVisitor
     # Note we codegen the ensure body three times! In practice this isn't a big deal, since ensure bodies are typically small.
 
     msvc = @program.has_flag?("msvc")
+    wasm32 = @program.has_flag?("wasm32")
+    use_funclet_eh = msvc || wasm32
 
-    context.fun.personality_function = windows_personality_fun.func if msvc
+    if msvc
+      context.fun.personality_function = windows_personality_fun.func
+    elsif wasm32
+      context.fun.personality_function = main_fun(personality_name).func
+    end
 
     # This is the block which is entered when the body raises an exception
     rescue_block = new_block "rescue"
@@ -109,46 +115,51 @@ class Crystal::CodeGenVisitor
 
       old_catch_pad = @catch_pad
 
-      if msvc
-        # Windows structured exception handling must enter a catch_switch instruction
-        # which decides which catch body block to enter. Crystal only ever generates one catch body
-        # which is used for all exceptions. For more information on how structured exception handling works in LLVM,
-        # see https://llvm.org/docs/ExceptionHandling.html#exception-handling-using-the-windows-runtime
+      if use_funclet_eh
+        # Both MSVC and WASM use funclet-based EH (catchswitch/catchpad)
         catch_body = new_block "catch_body"
         catch_switch = builder.catch_switch(@catch_pad || LLVM::Value.null, @rescue_block || LLVM::BasicBlock.null, 1)
         builder.add_handler catch_switch, catch_body
 
-        # We're now generating the catch body, which must begin with a catchpad instruction
         position_at_end catch_body
 
-        # Allocate space for the caught exception
-        exception_type = @program.exception.virtual_type
-        exception_llvm_type = llvm_type(exception_type)
-        caught_exception_ptr = alloca exception_llvm_type
+        if msvc
+          # MSVC: Allocate space for the caught exception and pass to catchpad
+          exception_type = @program.exception.virtual_type
+          exception_llvm_type = llvm_type(exception_type)
+          caught_exception_ptr = alloca exception_llvm_type
 
-        # The catchpad instruction dictates which types of exceptions this block handles,
-        # we want all of them, so we rescue all void* by passing the void_ptr_type_descriptor.
-        # We also need to record the catch pad instruction in `@catch_pad` to refer to the parent catch
-        # pad in nested rescue blocks, and to generate funclet information for function calls which are
-        # "inside" this catchpad. More information on this is available in the link above.
-        @catch_pad = builder.catch_pad catch_switch, [void_ptr_type_descriptor, int32(0), caught_exception_ptr]
+          @catch_pad = builder.catch_pad catch_switch, [void_ptr_type_descriptor, int32(0), caught_exception_ptr]
 
-        # builder.printf("catchpad entered #{node.location}\n", catch_pad: @catch_pad)
+          caught_exception = load exception_llvm_type, caught_exception_ptr
+          exception_type_id = type_id(caught_exception, exception_type)
+        else
+          # WASM: Catch-all catchpad, extract exception via intrinsics
+          @catch_pad = builder.catch_pad catch_switch, [llvm_context.void_pointer.null]
 
-        caught_exception = load exception_llvm_type, caught_exception_ptr
-        exception_type_id = type_id(caught_exception, exception_type)
+          # Get raw exception pointer via wasm.get.exception intrinsic
+          wasm_exn = call wasm_get_exception_fun, [@catch_pad.not_nil!]
+          unwind_ex_obj = wasm_exn
+
+          # Get Crystal exception from the unwind exception object
+          get_exception_fun = main_fun(GET_EXCEPTION_NAME)
+          get_exception_arg_type = get_exception_fun.type.params_types.first
+          get_exception_arg = pointer_cast(wasm_exn, get_exception_arg_type)
+
+          set_current_debug_location node if @debug.line_numbers?
+          caught_exception_ptr = call get_exception_fun, [get_exception_arg]
+          caught_exception = int2ptr caught_exception_ptr, llvm_typer.type_id_pointer
+
+          exception_type = @program.exception.virtual_type
+          exception_type_id = type_id(caught_exception, exception_type)
+        end
       else
-        # Unwind exception handling code - used on non-MSVC platforms (essentially the Itanium
-        # C++ ABI) - is a lot simpler.
-        # First we generate the landing pad instruction, this returns a tuple of the libunwind
-        # exception object and the type ID of the exception. This tuple is set up in the crystal
-        # personality function in raise.cr
+        # Itanium ABI (Unix/macOS)
         lp_ret_type = llvm_typer.landing_pad_type
         lp = builder.landing_pad lp_ret_type, main_fun(personality_name).func, [] of LLVM::Value
         unwind_ex_obj = extract_value lp, 0
         exception_type_id = extract_value lp, 1
 
-        # We call __crystal_get_exception to get the actual crystal `Exception` object.
         get_exception_fun = main_fun(GET_EXCEPTION_NAME)
         get_exception_arg_type = get_exception_fun.type.params_types.first # Void* or LibUnwind::Exception*
         get_exception_arg = pointer_cast(unwind_ex_obj, get_exception_arg_type)
@@ -249,14 +260,22 @@ class Crystal::CodeGenVisitor
 
         # Codegen catchswitch+pad or landing pad as described above.
         # This code is simpler because we never need to extract the exception type
-        if msvc
+        if use_funclet_eh
           rescue_ensure_body = new_block "rescue_ensure_body"
           catch_switch = builder.catch_switch(old_catch_pad || LLVM::Value.null, @rescue_block || LLVM::BasicBlock.null, 1)
           builder.add_handler catch_switch, rescue_ensure_body
 
           position_at_end rescue_ensure_body
 
-          @catch_pad = builder.catch_pad catch_switch, [void_ptr_type_descriptor, int32(0), llvm_context.void_pointer.null]
+          if msvc
+            @catch_pad = builder.catch_pad catch_switch, [void_ptr_type_descriptor, int32(0), llvm_context.void_pointer.null]
+          else
+            # WASM catch-all
+            @catch_pad = builder.catch_pad catch_switch, [llvm_context.void_pointer.null]
+            # Get the exception for re-raise
+            wasm_exn = call wasm_get_exception_fun, [@catch_pad.not_nil!]
+            unwind_ex_obj = wasm_exn
+          end
         else
           lp_ret_type = llvm_typer.landing_pad_type
           lp = builder.landing_pad lp_ret_type, main_fun(personality_name).func, [] of LLVM::Value
@@ -285,10 +304,11 @@ class Crystal::CodeGenVisitor
 
   def codegen_re_raise(node, unwind_ex_obj)
     if @program.has_flag?("msvc")
-      # On the MSVC C++ ABI we can re-raise by calling _CxxThrowException with two null arguments
+      # MSVC re-raises by calling _CxxThrowException with null args
       call windows_throw_fun, [llvm_context.void_pointer.null, llvm_context.void_pointer.null]
       unreachable
     else
+      # Both Itanium and WASM use __crystal_raise to re-raise
       raise_fun = main_fun(RAISE_NAME)
       raise_fun_arg_type = raise_fun.func.params.first.type # Void* or LibUnwind::Exception*
       raise_fun_arg = pointer_cast(unwind_ex_obj.not_nil!, raise_fun_arg_type)
@@ -326,6 +346,12 @@ class Crystal::CodeGenVisitor
   private def windows_personality_fun
     fetch_typed_fun(@llvm_mod, "__CxxFrameHandler3") do
       LLVM::Type.function([] of LLVM::Type, @llvm_context.int32, true)
+    end
+  end
+
+  private def wasm_get_exception_fun
+    fetch_typed_fun(@llvm_mod, "llvm.wasm.get.exception") do
+      LLVM::Type.function([@llvm_context.token], @llvm_context.void_pointer, false)
     end
   end
 end

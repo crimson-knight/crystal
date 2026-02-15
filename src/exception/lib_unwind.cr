@@ -123,13 +123,23 @@ lib LibUnwind
       exception_type_id : Int32
     end
 
-    fun backtrace = _Unwind_Backtrace((Context, Void*) -> ReasonCode, Void*) : Int32
-    fun get_language_specific_data = _Unwind_GetLanguageSpecificData(Context) : UInt8*
-    fun get_region_start = _Unwind_GetRegionStart(Context) : LibC::SizeT
-    fun get_ip = _Unwind_GetIP(context : Context) : LibC::SizeT
-    fun set_ip = _Unwind_SetIP(context : Context, ip : LibC::SizeT) : LibC::SizeT
-    fun set_gr = _Unwind_SetGR(context : Context, index : Int32, value : LibC::SizeT)
-    fun raise_exception = _Unwind_RaiseException(ex : Exception*) : ReasonCode
+    {% unless flag?(:wasm32) %}
+      fun backtrace = _Unwind_Backtrace((Context, Void*) -> ReasonCode, Void*) : Int32
+      fun get_language_specific_data = _Unwind_GetLanguageSpecificData(Context) : UInt8*
+      fun get_region_start = _Unwind_GetRegionStart(Context) : LibC::SizeT
+      fun get_ip = _Unwind_GetIP(context : Context) : LibC::SizeT
+      fun set_ip = _Unwind_SetIP(context : Context, ip : LibC::SizeT) : LibC::SizeT
+      fun set_gr = _Unwind_SetGR(context : Context, index : Int32, value : LibC::SizeT)
+      fun raise_exception = _Unwind_RaiseException(ex : Exception*) : ReasonCode
+    {% else %}
+      # On WASM, these bind to Crystal fun implementations defined below
+      # that operate on __wasm_lpad_context instead of real unwind state.
+      fun get_language_specific_data = _Unwind_GetLanguageSpecificData(Void*) : UInt8*
+      fun get_region_start = _Unwind_GetRegionStart(Void*) : LibC::SizeT
+      fun get_ip = _Unwind_GetIP(context : Void*) : LibC::SizeT
+      fun set_ip = _Unwind_SetIP(context : Void*, ip : LibC::SizeT)
+      fun set_gr = _Unwind_SetGR(context : Void*, index : Int32, value : LibC::SizeT)
+    {% end %}
   {% end %}
 
   {% if flag?(:x86_64) || flag?(:arm) || flag?(:aarch64) %}
@@ -195,5 +205,54 @@ end
     lsd += 1                                # skip personality routine address
     lsd += (((lsd.value) >> 24) & 0xff) + 1 # skip unwind opcodes
     lsd.as(UInt8*)
+  end
+{% end %}
+
+{% if flag?(:wasm32) %}
+  # WASM exception handling uses __wasm_lpad_context for personality function
+  # communication. LLVM's WasmEHPrepare pass generates code that calls
+  # _Unwind_CallPersonality, which in turn calls the personality function.
+  # The personality function uses these thin wrappers to read/write the
+  # landing pad context instead of real unwind state.
+
+  struct WasmLpadContext
+    lpad_index : Int32
+    lsda : UInt8*
+    selector : Int32
+  end
+
+  $__wasm_lpad_context = __wasm_lpad_context : WasmLpadContext
+
+  # :nodoc:
+  fun _Unwind_GetLanguageSpecificData(context : Void*) : UInt8*
+    $__wasm_lpad_context.lsda
+  end
+
+  # :nodoc:
+  fun _Unwind_GetRegionStart(context : Void*) : LibC::SizeT
+    LibC::SizeT.zero
+  end
+
+  # :nodoc:
+  fun _Unwind_GetIP(context : Void*) : LibC::SizeT
+    LibC::SizeT.new($__wasm_lpad_context.lpad_index)
+  end
+
+  # :nodoc:
+  fun _Unwind_SetIP(context : Void*, ip : LibC::SizeT)
+    # No-op on WASM
+  end
+
+  # :nodoc:
+  fun _Unwind_SetGR(context : Void*, index : Int32, value : LibC::SizeT)
+    if index == LibUnwind::EH_REGISTER_1
+      $__wasm_lpad_context.selector = value.to_i32
+    end
+  end
+
+  # :nodoc:
+  # Called by WasmEHPrepare-generated code to invoke the personality function
+  fun _Unwind_CallPersonality(exception : Void*) : Int32
+    $__wasm_lpad_context.selector
   end
 {% end %}
