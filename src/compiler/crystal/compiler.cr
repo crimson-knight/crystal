@@ -494,7 +494,7 @@ module Crystal
         link_flags = @link_flags || ""
         link_flags += " --stack-first -z stack-size=8388608"
 
-        link_flags += " --allow-undefined"
+        link_flags += " --allow-undefined --allow-multiple-definition"
 
         # Link WASM exception handling support objects (shipped with Crystal).
         # wasm_eh_tag.o defines the __cpp_exception tag used by try_table/catch.
@@ -527,7 +527,7 @@ module Crystal
           link_flags += " -L#{Process.quote_posix(wasm_libs)}"
         end
 
-        {"wasm-ld", %(wasm-ld "${@}"#{wasm_eh_objs} -o #{Process.quote_posix(output_filename)} #{link_flags} -lc #{program.lib_flags(@cross_compile)}), object_names}
+        {"wasm-ld", %(wasm-ld "${@}"#{wasm_eh_objs} -o #{Process.quote_posix(output_filename)} #{link_flags} -lc -lwasi-emulated-mman -lwasi-emulated-process-clocks #{program.lib_flags(@cross_compile)}), object_names}
       elsif program.has_flag? "avr"
         link_flags = @link_flags || ""
         link_flags += " --target=avr-unknown-unknown -mmcu=#{@mcpu} -Wl,--gc-sections"
@@ -627,9 +627,9 @@ module Crystal
         end
       end
 
-      if program.has_flag?("wasm32") && release?
+      if program.has_flag?("wasm32")
         @progress_tracker.stage("Codegen (wasm-opt)") do
-          run_wasm_opt(output_filename)
+          run_wasm_opt(output_filename, release?)
         end
       end
 
@@ -953,13 +953,27 @@ module Crystal
       end
     end
 
-    private def run_wasm_opt(output_filename)
-      # Run size optimization pass in release mode
-      opt_cmd = "wasm-opt #{Process.quote_posix(output_filename)} -o #{Process.quote_posix(output_filename)} -Oz --all-features"
-      print_command(opt_cmd, nil) if verbose?
-      status = Process.run(opt_cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+    private def run_wasm_opt(output_filename, optimize)
+      quoted = Process.quote_posix(output_filename)
+
+      # Always run --spill-pointers for GC support: spills pointer-typed locals
+      # to the C stack at every call site, enabling Boehm GC's conservative
+      # stack scanning to find all live GC roots in linear memory.
+      spill_cmd = "wasm-opt #{quoted} -o #{quoted} --spill-pointers --all-features"
+      print_command(spill_cmd, nil) if verbose?
+      status = Process.run(spill_cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
       unless status.success?
-        error "wasm-opt optimization pass failed with exit status #{status}: #{opt_cmd}"
+        error "wasm-opt --spill-pointers failed with exit status #{status}: #{spill_cmd}"
+      end
+
+      if optimize
+        # Run size optimization pass in release mode
+        opt_cmd = "wasm-opt #{quoted} -o #{quoted} -Oz --all-features"
+        print_command(opt_cmd, nil) if verbose?
+        status = Process.run(opt_cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+        unless status.success?
+          error "wasm-opt optimization pass failed with exit status #{status}: #{opt_cmd}"
+        end
       end
     end
 
