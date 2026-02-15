@@ -215,17 +215,19 @@ end
   # The personality function uses these thin wrappers to read/write the
   # landing pad context instead of real unwind state.
 
-  struct WasmLpadContext
-    lpad_index : Int32
-    lsda : UInt8*
-    selector : Int32
-  end
+  lib LibWasmEH
+    struct WasmLpadContext
+      lpad_index : Int32
+      lsda : UInt8*
+      selector : Int32
+    end
 
-  $__wasm_lpad_context = __wasm_lpad_context : WasmLpadContext
+    $__wasm_lpad_context = __wasm_lpad_context : WasmLpadContext
+  end
 
   # :nodoc:
   fun _Unwind_GetLanguageSpecificData(context : Void*) : UInt8*
-    $__wasm_lpad_context.lsda
+    LibWasmEH.__wasm_lpad_context.lsda
   end
 
   # :nodoc:
@@ -235,7 +237,7 @@ end
 
   # :nodoc:
   fun _Unwind_GetIP(context : Void*) : LibC::SizeT
-    LibC::SizeT.new($__wasm_lpad_context.lpad_index)
+    LibC::SizeT.new(LibWasmEH.__wasm_lpad_context.lpad_index)
   end
 
   # :nodoc:
@@ -246,13 +248,13 @@ end
   # :nodoc:
   fun _Unwind_SetGR(context : Void*, index : Int32, value : LibC::SizeT)
     if index == LibUnwind::EH_REGISTER_1
-      $__wasm_lpad_context.selector = value.to_i32
+      LibWasmEH.__wasm_lpad_context.selector = value.to_i32
     end
   end
 
   # :nodoc:
   # Called by WasmEHPrepare-generated code to invoke the personality function
   fun _Unwind_CallPersonality(exception : Void*) : Int32
-    $__wasm_lpad_context.selector
+    LibWasmEH.__wasm_lpad_context.selector
   end
 {% end %}

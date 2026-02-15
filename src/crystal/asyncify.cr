@@ -20,10 +20,22 @@ module Crystal::Asyncify
   end
 
   @@state = State::Normal
-  class_getter! main_func, current_func
+  @@main_func : (-> Void)? = nil
+  @@current_func : (-> Void)? = nil
+  @@rewind_data : LibAsyncify::Data*? = nil
+  @@rewind_func : (-> Void)? = nil
+  @@before_rewind : (-> Void)? = nil
+
+  def self.main_func : -> Void
+    @@main_func.not_nil!
+  end
+
+  def self.current_func : -> Void
+    @@current_func.not_nil!
+  end
 
   # Reads the __stack_pointer global via inline WASM assembly
-  def self.stack_pointer
+  def self.stack_pointer : Void*
     stack_pointer = uninitialized Void*
     asm("
       .globaltype __stack_pointer, i32
@@ -44,7 +56,7 @@ module Crystal::Asyncify
 
   # Wraps the entrypoint to capture/stop unwindings and trigger rewinds
   @[NoInline]
-  def self.wrap_main(&block)
+  def self.wrap_main(&block : -> Void)
     @@main_func = block
     @@current_func = block
     block.call
@@ -66,7 +78,7 @@ module Crystal::Asyncify
   end
 
   # Triggers stack unwind, optionally followed by rewind to another fiber
-  def self.unwind(*, unwind_data, rewind_data, rewind_func, before_rewind = nil)
+  def self.unwind(*, unwind_data : LibAsyncify::Data*, rewind_data : LibAsyncify::Data*?, rewind_func : -> Void, before_rewind : (-> Void)? = nil)
     @@rewind_data = rewind_data
     @@rewind_func = rewind_func
     @@before_rewind = before_rewind
@@ -74,7 +86,7 @@ module Crystal::Asyncify
   end
 
   @[NoInline]
-  private def self.real_unwind(unwind_data)
+  private def self.real_unwind(unwind_data : LibAsyncify::Data*)
     if @@state.rewinding?
       @@state = State::Normal
       LibAsyncify.stop_rewind

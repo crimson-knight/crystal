@@ -494,11 +494,22 @@ module Crystal
         link_flags = @link_flags || ""
         link_flags += " --stack-first -z stack-size=8388608"
 
+        # Allow undefined symbols that will be resolved post-link:
+        # - Asyncify imports (provided by wasm-opt --asyncify)
+        # - __cpp_exception tag (provided by WASM runtime)
+        link_flags += " --allow-undefined"
+
         # Use WASI SDK sysroot if available for system include/lib paths
+        wasm_eh_obj = ""
         if wasi_sdk = ENV["WASI_SDK_PATH"]?
           sysroot = File.join(wasi_sdk, "share", "wasi-sysroot")
           if Dir.exists?(sysroot)
             link_flags += " --sysroot #{Process.quote_posix(sysroot)}"
+          end
+          # Link WASM EH runtime support object (defines __wasm_lpad_context)
+          eh_obj = File.join(sysroot, "lib", "wasm32-wasi", "wasm_eh_support.o")
+          if File.exists?(eh_obj)
+            wasm_eh_obj = " #{Process.quote_posix(eh_obj)}"
           end
         end
 
@@ -507,7 +518,7 @@ module Crystal
           link_flags += " -L#{Process.quote_posix(wasm_libs)}"
         end
 
-        {"wasm-ld", %(wasm-ld "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} -lc #{program.lib_flags(@cross_compile)}), object_names}
+        {"wasm-ld", %(wasm-ld "${@}"#{wasm_eh_obj} -o #{Process.quote_posix(output_filename)} #{link_flags} -lc #{program.lib_flags(@cross_compile)}), object_names}
       elsif program.has_flag? "avr"
         link_flags = @link_flags || ""
         link_flags += " --target=avr-unknown-unknown -mmcu=#{@mcpu} -Wl,--gc-sections"

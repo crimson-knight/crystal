@@ -1,5 +1,4 @@
 require "./lib_wasi"
-require "crystal/asyncify"
 
 # This file serve as the entrypoint for WebAssembly applications compliant to the WASI spec.
 # See https://github.com/WebAssembly/WASI/blob/snapshot-01/design/application-abi.md.
@@ -23,11 +22,9 @@ end
 # alive and ready until they are unloaded from memory.
 fun _start
   LibC.__wasm_call_ctors
-  Crystal::Asyncify.wrap_main do
-    status = LibC.__main_void
-    LibC.__wasm_call_dtors
-    LibWasi.proc_exit(status) if status != 0
-  end
+  status = LibC.__main_void
+  LibC.__wasm_call_dtors
+  LibWasi.proc_exit(status) if status != 0
 end
 
 # `__main_argc_argv` is called by wasi-libc's `__main_void` with the program
