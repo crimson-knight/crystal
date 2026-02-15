@@ -116,13 +116,17 @@ void LLVMExtSetTargetMachineGlobalISel(LLVMTargetMachineRef T, LLVMBool Enable) 
 //
 // All are required because LLVMTargetMachineEmitToFile uses the legacy
 // pass manager, which checks the cl::opt flags directly.
+//
+// We use legacy EH (try/catch) instead of new EH (try_table/exnref) because
+// Binaryen's Asyncify pass does not support the new try_table instructions.
+// After Asyncify, we run --translate-to-exnref to convert to the new format.
 void LLVMExtSetWasmExceptionHandling(LLVMTargetMachineRef T) {
   auto *TM = reinterpret_cast<TargetMachine *>(T);
   TM->Options.ExceptionModel = ExceptionHandling::Wasm;
   const_cast<MCAsmInfo *>(TM->getMCAsmInfo())
       ->setExceptionsType(ExceptionHandling::Wasm);
   llvm::WebAssembly::WasmEnableEH = true;
-  llvm::WebAssembly::WasmUseLegacyEH = false;
+  llvm::WebAssembly::WasmUseLegacyEH = true;
 }
 
 } // extern "C"

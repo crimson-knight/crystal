@@ -226,12 +226,15 @@ class Crystal::Codegen::Target
       features += "+exception-handling,+bulk-memory,+mutable-globals,+sign-ext,+nontrapping-fptoint,+multivalue,+reference-types"
       # Enable WASM exception handling in the LLVM backend.
       # -wasm-enable-eh: master switch for WASM exception handling
-      # -wasm-use-legacy-eh=false: emit new try_table/exnref format (not legacy try/catch)
+      # -wasm-use-legacy-eh=true: emit legacy try/catch format (not new try_table/exnref)
+      #   We use legacy EH because Binaryen's Asyncify pass (needed for fiber
+      #   context switching) does not support the new try_table instructions.
+      #   After Asyncify, we run --translate-to-exnref to convert to the new format.
       # -exception-model=wasm: sets the exception handling model
       # We use @@wasm_eh_initialized to ensure this is only called once.
       unless @@wasm_eh_initialized
         @@wasm_eh_initialized = true
-        LLVM.parse_command_line_options({"", "-wasm-enable-eh", "-wasm-use-legacy-eh=false", "-exception-model=wasm"})
+        LLVM.parse_command_line_options({"", "-wasm-enable-eh", "-wasm-use-legacy-eh=true", "-exception-model=wasm"})
       end
     else
       raise Target::Error.new("Unsupported architecture for target triple: #{self}")
