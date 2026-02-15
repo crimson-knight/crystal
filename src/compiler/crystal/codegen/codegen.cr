@@ -299,8 +299,13 @@ module Crystal
         @personality_name = "__CxxFrameHandler3"
         @main.personality_function = windows_personality_fun.func
       elsif @program.has_flag?("wasm32")
-        @personality_name = "__crystal_personality"
-        @main.personality_function = main_fun(@personality_name).func
+        @personality_name = "__gxx_wasm_personality_v0"
+        @main.personality_function = wasm_personality_fun.func
+        {% if LibLLVM::IS_LT_150 %}
+          @main.add_attribute LLVM::Attribute::UWTable
+        {% else %}
+          @main.add_attribute LLVM::Attribute::UWTable, value: LLVM::UWTableKind::Async
+        {% end %}
       else
         @personality_name = "__crystal_personality"
       end

@@ -264,7 +264,7 @@ end
       LibWasmEH.__wasm_lpad_context.lpad_index,
       LibWasmEH.__wasm_lpad_context.lsda
     exception_object = exception.as(LibUnwind::Exception*)
-    result = __crystal_personality(
+    result = __gxx_wasm_personality_v0(
       1_i32,
       LibUnwind::Action::CLEANUP_PHASE | LibUnwind::Action::HANDLER_FRAME,
       exception_object.value.exception_class.to_u64,

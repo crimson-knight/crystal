@@ -5,6 +5,8 @@ class Crystal::Codegen::Target
   class Error < Crystal::Error
   end
 
+  @@wasm_eh_initialized = false
+
   getter architecture : String
   getter vendor : String
   getter environment : String
@@ -221,7 +223,16 @@ class Crystal::Codegen::Target
       end
     when "wasm32"
       LLVM.init_webassembly
-      features += "+exception-handling,+bulk-memory,+mutable-globals,+sign-ext,+nontrapping-fptoint"
+      features += "+exception-handling,+bulk-memory,+mutable-globals,+sign-ext,+nontrapping-fptoint,+multivalue,+reference-types"
+      # Enable WASM exception handling in the LLVM backend.
+      # -wasm-enable-eh: master switch for WASM exception handling
+      # -wasm-use-legacy-eh=false: emit new try_table/exnref format (not legacy try/catch)
+      # -exception-model=wasm: sets the exception handling model
+      # We use @@wasm_eh_initialized to ensure this is only called once.
+      unless @@wasm_eh_initialized
+        @@wasm_eh_initialized = true
+        LLVM.parse_command_line_options({"", "-wasm-enable-eh", "-wasm-use-legacy-eh=false", "-exception-model=wasm"})
+      end
     else
       raise Target::Error.new("Unsupported architecture for target triple: #{self}")
     end
@@ -247,6 +258,15 @@ class Crystal::Codegen::Target
     # See https://github.com/crystal-lang/crystal/issues/9297#issuecomment-636512270
     # for background info
     machine.enable_global_isel = false
+
+    # For WASM targets, set the exception model to Wasm on the target machine.
+    # The LLVM C API does not expose TargetOptions.ExceptionModel, so we use
+    # a C++ helper that also fixes MCAsmInfo.ExceptionsType (which the C API
+    # constructor fails to propagate from TargetOptions).
+    if @architecture == "wasm32"
+      machine.enable_wasm_eh
+    end
+
     machine
   end
 

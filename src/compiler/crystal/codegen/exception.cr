@@ -67,7 +67,7 @@ class Crystal::CodeGenVisitor
     if msvc
       context.fun.personality_function = windows_personality_fun.func
     elsif wasm32
-      context.fun.personality_function = main_fun(personality_name).func
+      context.fun.personality_function = wasm_personality_fun.func
     end
 
     # This is the block which is entered when the body raises an exception
@@ -346,6 +346,23 @@ class Crystal::CodeGenVisitor
   private def windows_personality_fun
     fetch_typed_fun(@llvm_mod, "__CxxFrameHandler3") do
       LLVM::Type.function([] of LLVM::Type, @llvm_context.int32, true)
+    end
+  end
+
+  private def wasm_personality_fun
+    # LLVM's WasmEHPrepare pass requires the personality function to be named
+    # __gxx_wasm_personality_v0. The actual Crystal personality function
+    # (__crystal_personality) is called through the runtime, not directly by
+    # the LLVM backend. We declare this as a forward reference; the runtime
+    # provides the actual implementation.
+    fetch_typed_fun(@llvm_mod, "__gxx_wasm_personality_v0") do
+      LLVM::Type.function([
+        @llvm_context.int32,        # version
+        @llvm_context.int32,        # actions (LibUnwind::Action flags)
+        @llvm_context.int64,        # exception_class
+        @llvm_context.void_pointer, # exception_object (LibUnwind::Exception*)
+        @llvm_context.void_pointer, # context (Void*)
+      ], @llvm_context.int32, false)
     end
   end
 

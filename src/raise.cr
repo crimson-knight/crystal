@@ -165,30 +165,26 @@ end
   require "exception/lib_unwind"
 
   # :nodoc:
-  fun __crystal_personality(
+  # Named __gxx_wasm_personality_v0 because LLVM's WasmEHPrepare pass
+  # checks for this specific name. The function implements Crystal's
+  # exception handling personality for the WASM target.
+  fun __gxx_wasm_personality_v0(
     version : Int32, actions : LibUnwind::Action, exception_class : UInt64, exception_object : LibUnwind::Exception*, context : Void*,
   ) : LibUnwind::ReasonCode
     start = LibUnwind.get_region_start(context)
     ip = LibUnwind.get_ip(context)
     lsd = LibUnwind.get_language_specific_data(context)
 
-    Crystal::System.print_error "personality: version=%d, actions=%d, start=%u, ip=%u, lsd=%p, type_id=%d\n",
-      version, actions.value, start, ip, lsd, exception_object.value.exception_type_id
-
     leb = LEBReader.new(lsd)
     reason = traverse_eh_table(leb, start, ip, actions) do |unwind_ip|
-      Crystal::System.print_error "personality: found handler, unwind_ip=%u, setting GR[0]=%u, GR[1]=%d\n",
-        unwind_ip, exception_object.address, exception_object.value.exception_type_id
       LibUnwind.set_gr(context, LibUnwind::EH_REGISTER_0, exception_object.address)
       LibUnwind.set_gr(context, LibUnwind::EH_REGISTER_1, exception_object.value.exception_type_id)
       LibUnwind.set_ip(context, unwind_ip)
     end
     if reason
-      Crystal::System.print_error "personality: returning reason=%d\n", reason.value
       return reason
     end
 
-    Crystal::System.print_error "personality: no handler found, continuing unwind\n"
     return LibUnwind::ReasonCode::CONTINUE_UNWIND
   end
 
