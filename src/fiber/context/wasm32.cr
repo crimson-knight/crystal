@@ -130,6 +130,15 @@ class Fiber
     # Mark current fiber as suspended
     current_context.value.resumable = 1
 
+    # NOTE: Unlike native platforms (x86_64, aarch64), we do NOT set
+    # new_context.value.resumable = 0 here. On native platforms, swapcontext
+    # atomically switches to the new fiber (which then IS running, hence
+    # resumable=0). On WASM, swapcontext only triggers an asyncify unwind;
+    # the actual fiber execution is handled by _start. Setting resumable=0
+    # here would prevent _start from running the fiber (it checks resumable?).
+    # Instead, _start marks the fiber as running (resumable=0) right before
+    # executing it, and dead fibers are caught by the dead? check in _start.
+
     # Reset the current fiber's asyncify buffer write position so
     # asyncify writes state from the beginning of the buffer.
     current_asyncify = current_context.value.asyncify_data

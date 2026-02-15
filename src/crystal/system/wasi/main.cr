@@ -27,10 +27,32 @@ fun _start
 
   # Fiber switching loop: when an asyncified function triggers an unwind
   # (via crystal_asyncify_switch), run_main/run_fiber returns here.
-  while Crystal::Asyncify.state.unwinding?
-    next_fiber = Crystal::Asyncify.stop_and_get_next
+  #
+  # CRITICAL: After run_main/run_fiber returns due to asyncify unwind,
+  # the asyncify runtime is still in the "unwinding" state. We MUST:
+  #   1. Check the asyncify runtime state using crystal_get_state (NOT asyncified)
+  #   2. Call crystal_stop_unwind (NOT asyncified) to stop the unwind
+  #   3. Only THEN can we safely call asyncified Crystal methods
+  #
+  # If we call asyncified Crystal methods while the runtime is still unwinding,
+  # they will detect the unwind state, save locals to the asyncify buffer, and
+  # return garbage values instead of executing their actual code.
+  while LibCrystalAsyncify.crystal_get_state == 1 # 1 = unwinding
+    # Stop the unwind FIRST using non-asyncified helper function.
+    # After this call, the asyncify runtime state is back to Normal (0),
+    # and it is safe to call asyncified Crystal methods.
+    LibCrystalAsyncify.crystal_stop_unwind
+
+    next_fiber = Crystal::Asyncify.get_next_fiber
     break unless next_fiber
+    break if next_fiber.dead?
     break unless next_fiber.resumable?
+
+    # Mark the fiber as running (not resumable) before executing it.
+    # On native platforms this happens atomically inside swapcontext,
+    # but on WASM the context switch is two-phase: swapcontext only
+    # triggers an asyncify unwind, and _start handles actual execution.
+    next_fiber.@context.resumable = 0
 
     if Crystal::Asyncify.fiber_fresh?(next_fiber)
       # Fresh fiber: start it for the first time

@@ -93,8 +93,23 @@ module Crystal::Asyncify
   # Called from _start after an asyncified function returns due to unwind.
   # Stops the unwind and prepares the next action.
   # Returns: the next fiber to run, or nil if done.
+  #
+  # NOTE: This method is asyncified. It must only be called when the
+  # asyncify runtime is in Normal state. _start must call
+  # crystal_stop_unwind BEFORE calling this method.
   def self.stop_and_get_next : Fiber?
     LibCrystalAsyncify.crystal_stop_unwind
+    @@state = State::Normal
+    fiber = @@next_fiber
+    @@next_fiber = nil
+    fiber
+  end
+
+  # Called from _start after crystal_stop_unwind has already been called.
+  # Returns the next fiber to run, or nil if done.
+  # This is safe to call from _start because the asyncify runtime is
+  # already in Normal state when this is called.
+  def self.get_next_fiber : Fiber?
     @@state = State::Normal
     fiber = @@next_fiber
     @@next_fiber = nil
