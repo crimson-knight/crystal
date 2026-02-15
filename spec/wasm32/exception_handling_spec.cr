@@ -1,13 +1,55 @@
-# WASM Exception Handling Tests — Phase 1 Verification
+# WASM Exception Handling Tests
 #
 # These tests verify that Crystal's exception handling works correctly
 # on the wasm32-wasi target. They serve as the acceptance criteria for
-# Phase 1 of the WASM roadmap.
+# the WASM roadmap's exception handling support.
 #
-# Build: bin/crystal build spec/wasm32/exception_handling_spec.cr -o wasm32_eh_spec.wasm --target wasm32-wasi
+# Build: bin/crystal build spec/wasm32/exception_handling_spec.cr -o wasm32_eh_spec.wasm --target wasm32-wasi -Dwithout_iconv -Dwithout_openssl
 # Run:   wasmtime run wasm32_eh_spec.wasm
 
 require "spec"
+
+# Custom exception class for testing user-defined exceptions
+private class WasmTestError < Exception
+  getter code : Int32
+
+  def initialize(message : String, @code : Int32 = 0)
+    super(message)
+  end
+end
+
+# Another custom exception inheriting from a non-Exception base
+private class WasmIOError < IO::Error
+end
+
+# Helper methods for testing method-level exception handling
+private def method_that_raises(msg : String) : String
+  raise msg
+  "not reached"
+end
+
+private def method_with_rescue : String
+  method_that_raises("from method")
+rescue ex
+  "rescued: #{ex.message}"
+end
+
+private def method_with_ensure(log : Array(String)) : String
+  log << "body"
+  raise "ensure test"
+rescue ex
+  log << "rescue"
+  "rescued"
+ensure
+  log << "ensure"
+end
+
+private def deeply_nested_raise(depth : Int32) : String
+  if depth <= 0
+    raise "bottom"
+  end
+  deeply_nested_raise(depth - 1)
+end
 
 describe "WASM Exception Handling" do
   describe "basic raise/rescue" do
@@ -210,6 +252,209 @@ describe "WASM Exception Handling" do
         "type cast caught"
       end
       result.should eq("type cast caught")
+    end
+  end
+
+  describe "method-level exceptions" do
+    it "rescues exception raised in a called method" do
+      result = begin
+        method_that_raises("test")
+      rescue ex
+        ex.message
+      end
+      result.should eq("test")
+    end
+
+    it "rescue inside a method works" do
+      method_with_rescue.should eq("rescued: from method")
+    end
+
+    it "ensure runs in method context" do
+      log = [] of String
+      method_with_ensure(log).should eq("rescued")
+      log.should eq(["body", "rescue", "ensure"])
+    end
+  end
+
+  describe "custom exception classes" do
+    it "catches a custom exception by type" do
+      result = begin
+        raise WasmTestError.new("custom", code: 42)
+      rescue ex : WasmTestError
+        "code=#{ex.code} msg=#{ex.message}"
+      end
+      result.should eq("code=42 msg=custom")
+    end
+
+    it "custom exception is caught by parent type" do
+      result = begin
+        raise WasmTestError.new("child")
+      rescue ex : Exception
+        "parent caught: #{ex.message}"
+      end
+      result.should eq("parent caught: child")
+    end
+
+    it "catches IO::Error subclass" do
+      result = begin
+        raise WasmIOError.new("io fail")
+      rescue ex : IO::Error
+        "io: #{ex.message}"
+      end
+      result.should eq("io: io fail")
+    end
+  end
+
+  describe "exception in closures and blocks" do
+    it "rescues exception raised inside a block" do
+      result = begin
+        [1, 2, 3].each do |i|
+          raise "block error at #{i}" if i == 2
+        end
+        "not reached"
+      rescue ex
+        ex.message
+      end
+      result.should eq("block error at 2")
+    end
+
+    it "ensure runs when exception is raised in block" do
+      ensured = false
+      begin
+        begin
+          [1].each { |_| raise "in block" }
+        ensure
+          ensured = true
+        end
+      rescue
+      end
+      ensured.should be_true
+    end
+
+    it "rescues exception from a proc call" do
+      p = ->{ raise "proc error"; 0 }
+      result = begin
+        p.call
+        "not reached"
+      rescue ex
+        ex.message
+      end
+      result.should eq("proc error")
+    end
+  end
+
+  describe "deeply nested exception propagation" do
+    it "propagates through multiple call frames" do
+      result = begin
+        deeply_nested_raise(10)
+      rescue ex
+        ex.message
+      end
+      result.should eq("bottom")
+    end
+
+    it "propagates through deeply nested begin/rescue" do
+      result = begin
+        begin
+          begin
+            begin
+              raise "deep"
+            rescue ex : ArgumentError
+              "wrong type"
+            end
+          rescue ex : IndexError
+            "wrong type 2"
+          end
+        rescue ex
+          ex.message
+        end
+      end
+      result.should eq("deep")
+    end
+  end
+
+  describe "ensure ordering with multiple handlers" do
+    it "runs ensure blocks in correct LIFO order" do
+      log = [] of String
+      begin
+        begin
+          begin
+            raise "test"
+          ensure
+            log << "inner"
+          end
+        ensure
+          log << "middle"
+        end
+      rescue
+      ensure
+        log << "outer"
+      end
+      log.should eq(["inner", "middle", "outer"])
+    end
+
+    it "ensure runs even when rescue re-raises" do
+      log = [] of String
+      begin
+        begin
+          raise "original"
+        rescue
+          log << "rescue"
+          raise "re-raised"
+        ensure
+          log << "ensure"
+        end
+      rescue ex
+        log << "outer: #{ex.message}"
+      end
+      log.should eq(["rescue", "ensure", "outer: re-raised"])
+    end
+  end
+
+  describe "exception message and inspect" do
+    it "preserves exception message through rescue" do
+      msg = "a" * 100
+      result = begin
+        raise msg
+      rescue ex
+        ex.message
+      end
+      result.should eq(msg)
+    end
+
+    it "exception class name is correct" do
+      result = begin
+        raise ArgumentError.new("test")
+      rescue ex
+        ex.class.name
+      end
+      result.should eq("ArgumentError")
+    end
+  end
+
+  describe "index out of bounds" do
+    it "catches IndexError on array access" do
+      result = begin
+        arr = [1, 2, 3]
+        arr[10]
+        "not reached"
+      rescue ex : IndexError
+        "index error caught"
+      end
+      result.should eq("index error caught")
+    end
+  end
+
+  describe "KeyError" do
+    it "catches KeyError on missing hash key" do
+      result = begin
+        h = {"a" => 1}
+        h["b"]
+        "not reached"
+      rescue ex : KeyError
+        "key error caught"
+      end
+      result.should eq("key error caught")
     end
   end
 end

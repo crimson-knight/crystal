@@ -346,7 +346,7 @@ module Crystal
 
       llvm_modules = @progress_tracker.stage("Codegen (crystal)") do
         program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: @single_module || @cross_compile || !@emit_targets.none?
+          single_module: @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
       end
 
       output_dir = CacheDir.instance.directory_for(sources)
@@ -493,6 +493,20 @@ module Crystal
       elsif program.has_flag? "wasm32"
         link_flags = @link_flags || ""
         link_flags += " --stack-first -z stack-size=8388608"
+
+        # Use WASI SDK sysroot if available for system include/lib paths
+        if wasi_sdk = ENV["WASI_SDK_PATH"]?
+          sysroot = File.join(wasi_sdk, "share", "wasi-sysroot")
+          if Dir.exists?(sysroot)
+            link_flags += " --sysroot #{Process.quote_posix(sysroot)}"
+          end
+        end
+
+        # Add CRYSTAL_WASM_LIBS as an additional library search path
+        if wasm_libs = ENV["CRYSTAL_WASM_LIBS"]?
+          link_flags += " -L#{Process.quote_posix(wasm_libs)}"
+        end
+
         {"wasm-ld", %(wasm-ld "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} -lc #{program.lib_flags(@cross_compile)}), object_names}
       elsif program.has_flag? "avr"
         link_flags = @link_flags || ""
@@ -590,6 +604,12 @@ module Crystal
       @progress_tracker.stage("Codegen (linking)") do
         Dir.cd(output_dir) do
           run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+        end
+      end
+
+      if program.has_flag?("wasm32")
+        @progress_tracker.stage("Codegen (wasm-opt)") do
+          run_wasm_opt(output_filename, release?)
         end
       end
 
@@ -910,6 +930,26 @@ module Crystal
           exit_code = 1
         end
         error "execution of command failed with exit status #{status}: #{command}", exit_code: exit_code
+      end
+    end
+
+    private def run_wasm_opt(output_filename, release)
+      # Run asyncify pass to enable fiber/coroutine support
+      asyncify_cmd = "wasm-opt #{Process.quote_posix(output_filename)} -o #{Process.quote_posix(output_filename)} --asyncify --all-features"
+      print_command(asyncify_cmd, nil) if verbose?
+      status = Process.run(asyncify_cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+      unless status.success?
+        error "wasm-opt asyncify pass failed with exit status #{status}: #{asyncify_cmd}"
+      end
+
+      if release
+        # Run size optimization pass in release mode
+        opt_cmd = "wasm-opt #{Process.quote_posix(output_filename)} -o #{Process.quote_posix(output_filename)} -Oz --all-features"
+        print_command(opt_cmd, nil) if verbose?
+        status = Process.run(opt_cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+        unless status.success?
+          error "wasm-opt optimization pass failed with exit status #{status}: #{opt_cmd}"
+        end
       end
     end
 
