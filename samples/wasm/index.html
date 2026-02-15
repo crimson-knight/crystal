@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crystal WASM Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+    h1 { color: #00d4ff; margin-bottom: 0.5rem; }
+    .subtitle { color: #888; margin-bottom: 2rem; }
+    #terminal {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 1rem;
+      width: 100%;
+      max-width: 700px;
+      min-height: 300px;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 14px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      overflow-y: auto;
+    }
+    .line { color: #c9d1d9; }
+    .line.ok { color: #3fb950; }
+    .line.info { color: #58a6ff; }
+    .line.warn { color: #d29922; }
+    .line.error { color: #f85149; }
+    .prompt { color: #8b949e; }
+    button {
+      margin-top: 1rem;
+      padding: 0.75rem 2rem;
+      background: #238636;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    button:hover { background: #2ea043; }
+    button:disabled { background: #555; cursor: not-allowed; }
+    .status { margin-top: 1rem; color: #8b949e; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Crystal WASM Demo</h1>
+  <p class="subtitle">Running Crystal code compiled to WebAssembly in your browser</p>
+
+  <div id="terminal">
+    <span class="prompt">$ crystal build hello.cr --target wasm32-wasi</span>
+    <br>
+    <span class="prompt">$ ./hello.wasm</span>
+    <br>
+  </div>
+
+  <button id="runBtn" onclick="runWasm()">Run Crystal WASM</button>
+  <div class="status" id="status">Click "Run Crystal WASM" to start</div>
+
+<script>
+// Minimal WASI Preview 1 shim for running Crystal WASM in the browser
+function createWasiShim(outputCallback) {
+  let memory;
+  let exitCode = null;
+
+  function setMemory(mem) { memory = mem; }
+
+  function getMemView() { return new DataView(memory.buffer); }
+  function getMemBytes() { return new Uint8Array(memory.buffer); }
+
+  // Read a string from WASM memory
+  function readString(ptr, len) {
+    return new TextDecoder().decode(getMemBytes().subarray(ptr, ptr + len));
+  }
+
+  const wasi = {
+    // args_get(argv: i32, argv_buf: i32) -> errno
+    args_get(argv, argv_buf) {
+      // Provide a single arg: "hello.wasm"
+      const arg = "hello.wasm\0";
+      const view = getMemView();
+      const bytes = getMemBytes();
+      view.setUint32(argv, argv_buf, true);
+      for (let i = 0; i < arg.length; i++) {
+        bytes[argv_buf + i] = arg.charCodeAt(i);
+      }
+      return 0;
+    },
+
+    // args_sizes_get(argc: i32, argv_buf_size: i32) -> errno
+    args_sizes_get(argc_ptr, argv_buf_size_ptr) {
+      const view = getMemView();
+      view.setUint32(argc_ptr, 1, true);       // 1 argument
+      view.setUint32(argv_buf_size_ptr, 11, true); // "hello.wasm\0"
+      return 0;
+    },
+
+    // environ_get(environ: i32, environ_buf: i32) -> errno
+    environ_get(environ, environ_buf) {
+      return 0; // no env vars
+    },
+
+    // environ_sizes_get(count: i32, buf_size: i32) -> errno
+    environ_sizes_get(count_ptr, buf_size_ptr) {
+      const view = getMemView();
+      view.setUint32(count_ptr, 0, true);
+      view.setUint32(buf_size_ptr, 0, true);
+      return 0;
+    },
+
+    // clock_time_get(id: i32, precision: i64, time: i32) -> errno
+    clock_time_get(id, precision, time_ptr) {
+      const view = getMemView();
+      const now = BigInt(Math.floor(performance.now() * 1_000_000)); // ns
+      view.setBigUint64(time_ptr, now, true);
+      return 0;
+    },
+
+    // fd_close(fd: i32) -> errno
+    fd_close(fd) { return 0; },
+
+    // fd_fdstat_get(fd: i32, stat: i32) -> errno
+    fd_fdstat_get(fd, stat_ptr) {
+      const view = getMemView();
+      // filetype: CHARACTER_DEVICE (2) for stdin/stdout/stderr
+      view.setUint8(stat_ptr, 2);
+      // fdflags
+      view.setUint16(stat_ptr + 2, 0, true);
+      // rights_base (allow everything)
+      view.setBigUint64(stat_ptr + 8, 0xFFFFFFFFFFFFFFFFn, true);
+      // rights_inheriting
+      view.setBigUint64(stat_ptr + 16, 0xFFFFFFFFFFFFFFFFn, true);
+      return 0;
+    },
+
+    // fd_fdstat_set_flags(fd: i32, flags: i32) -> errno
+    fd_fdstat_set_flags(fd, flags) { return 0; },
+
+    // fd_pread(fd: i32, iovs: i32, iovs_len: i32, offset: i64, nread: i32) -> errno
+    fd_pread(fd, iovs, iovs_len, offset, nread_ptr) {
+      const view = getMemView();
+      view.setUint32(nread_ptr, 0, true);
+      return 0;
+    },
+
+    // fd_seek(fd: i32, offset: i64, whence: i32, newoffset: i32) -> errno
+    fd_seek(fd, offset, whence, newoffset_ptr) {
+      const view = getMemView();
+      view.setBigUint64(newoffset_ptr, 0n, true);
+      return 0;
+    },
+
+    // fd_write(fd: i32, iovs: i32, iovs_len: i32, nwritten: i32) -> errno
+    fd_write(fd, iovs, iovs_len, nwritten_ptr) {
+      const view = getMemView();
+      const bytes = getMemBytes();
+      let totalWritten = 0;
+      let output = '';
+
+      for (let i = 0; i < iovs_len; i++) {
+        const ptr = view.getUint32(iovs + i * 8, true);
+        const len = view.getUint32(iovs + i * 8 + 4, true);
+        output += readString(ptr, len);
+        totalWritten += len;
+      }
+
+      view.setUint32(nwritten_ptr, totalWritten, true);
+
+      if (fd === 1 || fd === 2) {
+        outputCallback(output, fd === 2);
+      }
+      return 0;
+    },
+
+    // poll_oneoff(in: i32, out: i32, nsubs: i32, nevents: i32) -> errno
+    poll_oneoff(in_ptr, out_ptr, nsubs, nevents_ptr) {
+      const view = getMemView();
+      // Return 1 event (the first subscription as a clock event)
+      if (nsubs > 0) {
+        const userdata = view.getBigUint64(in_ptr, true);
+        // Write event: userdata(8) + error(2) + type(1) + pad(5) + fd_readwrite(16)
+        view.setBigUint64(out_ptr, userdata, true);
+        view.setUint16(out_ptr + 8, 0, true);    // no error
+        view.setUint8(out_ptr + 10, 0);           // type: clock
+        view.setUint32(nevents_ptr, 1, true);
+      } else {
+        view.setUint32(nevents_ptr, 0, true);
+      }
+      return 0;
+    },
+
+    // proc_exit(code: i32) -> noreturn
+    proc_exit(code) {
+      exitCode = code;
+      throw new WasiExit(code);
+    },
+
+    // random_get(buf: i32, buf_len: i32) -> errno
+    random_get(buf, buf_len) {
+      const bytes = getMemBytes();
+      crypto.getRandomValues(bytes.subarray(buf, buf + buf_len));
+      return 0;
+    },
+  };
+
+  return { wasi, setMemory, getExitCode: () => exitCode };
+}
+
+class WasiExit extends Error {
+  constructor(code) {
+    super(`WASI exit: ${code}`);
+    this.code = code;
+  }
+}
+
+const terminal = document.getElementById('terminal');
+const statusEl = document.getElementById('status');
+
+function appendLine(text, className) {
+  const span = document.createElement('span');
+  span.className = 'line' + (className ? ' ' + className : '');
+  span.textContent = text;
+  terminal.appendChild(span);
+  terminal.appendChild(document.createElement('br'));
+  terminal.scrollTop = terminal.scrollHeight;
+}
+
+let lineBuffer = '';
+
+function handleOutput(text, isStderr) {
+  lineBuffer += text;
+  const lines = lineBuffer.split('\n');
+  // Keep the last incomplete line in the buffer
+  lineBuffer = lines.pop() || '';
+
+  for (const line of lines) {
+    if (line.length === 0) continue;
+    let cls = '';
+    if (line.startsWith('Caught')) cls = 'warn';
+    else if (line.startsWith('All systems') || line.includes('ok') || line.includes('survived')) cls = 'ok';
+    else if (line.startsWith('Crystal') || line.startsWith('Target')) cls = 'info';
+    if (isStderr) cls = 'error';
+    appendLine(line, cls);
+  }
+}
+
+async function runWasm() {
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  statusEl.textContent = 'Loading WASM module...';
+
+  try {
+    const response = await fetch('hello.wasm');
+    if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
+
+    statusEl.textContent = 'Compiling WASM...';
+    const wasmBytes = await response.arrayBuffer();
+
+    const { wasi, setMemory } = createWasiShim(handleOutput);
+
+    statusEl.textContent = 'Instantiating...';
+
+    const importObject = {
+      wasi_snapshot_preview1: wasi,
+    };
+
+    const { instance } = await WebAssembly.instantiate(wasmBytes, importObject);
+
+    setMemory(instance.exports.memory);
+
+    statusEl.textContent = 'Running Crystal WASM...';
+    appendLine('');
+
+    try {
+      instance.exports._start();
+    } catch (e) {
+      if (e instanceof WasiExit) {
+        if (e.code !== 0) {
+          appendLine(`Process exited with code ${e.code}`, 'error');
+        }
+      } else {
+        // Check if it's a WASM exception (which is expected from Crystal's EH)
+        if (e instanceof WebAssembly.Exception) {
+          appendLine(`WASM exception (may need browser EH support): ${e.message}`, 'error');
+        } else {
+          throw e;
+        }
+      }
+    }
+
+    // Flush remaining buffer
+    if (lineBuffer.length > 0) {
+      handleOutput('\n', false);
+    }
+
+    statusEl.textContent = 'Done! Crystal WASM ran successfully in your browser.';
+
+  } catch (e) {
+    if (e instanceof WasiExit && e.code === 0) {
+      if (lineBuffer.length > 0) handleOutput('\n', false);
+      statusEl.textContent = 'Done! Crystal WASM ran successfully in your browser.';
+    } else {
+      appendLine(`Error: ${e.message}`, 'error');
+      statusEl.textContent = `Error: ${e.message}`;
+      console.error(e);
+    }
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Run Again';
+}
+</script>
+</body>
+</html>
