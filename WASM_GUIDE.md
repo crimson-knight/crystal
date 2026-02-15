@@ -2,6 +2,8 @@
 
 This guide explains how to compile Crystal programs to WebAssembly (WASM) using the `wasm32-unknown-wasi` target. Crystal compiles to WASM via LLVM's WebAssembly backend and runs on WASI-compatible runtimes like Wasmtime.
 
+**Status (February 2026)**: WASM compilation works for programs that do not use exception handling (raise/rescue) at runtime. Basic output, string interpolation, arrays, hashes, and other core data structures all work. Exception handling compiles but does not fully work at runtime yet (throw works, catch does not).
+
 ---
 
 ## Requirements
@@ -11,14 +13,15 @@ This guide explains how to compile Crystal programs to WebAssembly (WASM) using 
 
 ### Required Tools
 
-| Tool | Minimum Version | Purpose |
-|------|----------------|---------|
-| Crystal | 1.19+ (for bootstrapping) | Compile the compiler itself |
-| LLVM | 17.0+ | WebAssembly backend with exception handling support |
-| wasm-ld | (bundled with LLVM) | WebAssembly linker |
-| wasi-sdk | 21+ | WASI sysroot with wasi-libc |
-| Binaryen (wasm-opt) | 116+ | Asyncify pass for fibers and GC stack scanning |
-| Wasmtime | 25+ | Primary WASI runtime for executing `.wasm` binaries |
+| Tool | Minimum Version | Purpose | Install |
+|------|----------------|---------|---------|
+| Crystal | 1.19+ (for bootstrapping) | Compile the compiler itself | -- |
+| wasi-sdk | 21+ | WASI sysroot with wasi-libc, clang, and wasm-ld | GitHub releases, install to `/opt/wasi-sdk` |
+| lld | (from LLVM) | WebAssembly linker (`wasm-ld`) | `brew install lld` (macOS) |
+| Binaryen | 116+ | Provides `wasm-opt` for Asyncify pass | `brew install binaryen` (macOS) |
+| Wasmtime | 25+ | Primary WASI runtime for executing `.wasm` binaries | `curl https://wasmtime.dev/install.sh -sSf \| bash` |
+
+You also need a compiled `wasm_eh_support.o` object file for C++ exception handling ABI support. See the Prerequisites section below.
 
 ---
 
@@ -27,37 +30,66 @@ This guide explains how to compile Crystal programs to WebAssembly (WASM) using 
 ### macOS
 
 ```bash
-# 1. Install LLVM 18 (includes wasm-ld)
-brew install llvm@18
-
-# Add LLVM to PATH (add to ~/.zshrc or ~/.bash_profile for persistence)
-export PATH="$(brew --prefix llvm@18)/bin:$PATH"
+# 1. Install lld (provides wasm-ld)
+brew install lld
 
 # 2. Install Binaryen (provides wasm-opt)
 brew install binaryen
 
 # 3. Install Wasmtime
 curl https://wasmtime.dev/install.sh -sSf | bash
+export PATH="$HOME/.wasmtime/bin:$PATH"
 
 # 4. Install wasi-sdk
 # Download the latest release for macOS from:
 #   https://github.com/WebAssembly/wasi-sdk/releases
-# Example for wasi-sdk 25:
-curl -LO https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-macos.tar.gz
-tar xzf wasi-sdk-25.0-x86_64-macos.tar.gz
-sudo mv wasi-sdk-25.0-x86_64-macos /opt/wasi-sdk
+# Example for wasi-sdk 25 (use arm64 variant for Apple Silicon):
+curl -LO https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-arm64-macos.tar.gz
+tar xzf wasi-sdk-25.0-arm64-macos.tar.gz
+sudo mv wasi-sdk-25.0-arm64-macos /opt/wasi-sdk
 
-# Set environment variable
-export WASI_SDK_PATH=/opt/wasi-sdk
+# 5. Compile the wasm_eh_support.o helper object
+# This provides the C++ exception handling ABI functions (cxa_allocate_exception, etc.)
+# that Crystal's WASM exception handling requires.
+cat > /tmp/wasm_eh_support.cpp << 'CPPEOF'
+#include <cstdlib>
+#include <cstring>
 
-# 5. Download pre-compiled WASM libraries
-# These are pre-compiled .a archives of Crystal's C dependencies (libpcre2, bdwgc, etc.)
-# built for wasm32-wasi.
-git clone https://github.com/lbguilherme/wasm-libs.git ~/wasm-libs
+extern "C" {
 
-# Set environment variables
-export CRYSTAL_WASM_LIBS=~/wasm-libs
-export CRYSTAL_LIBRARY_PATH=~/wasm-libs
+struct ExceptionInfo {
+    void* ptr;
+    size_t size;
+};
+
+void* __cxa_allocate_exception(size_t size) {
+    ExceptionInfo* info = (ExceptionInfo*)malloc(sizeof(ExceptionInfo) + size);
+    if (!info) __builtin_trap();
+    info->size = size;
+    info->ptr = (void*)(info + 1);
+    return info->ptr;
+}
+
+void __cxa_free_exception(void* ptr) {
+    ExceptionInfo* info = ((ExceptionInfo*)ptr) - 1;
+    free(info);
+}
+
+void __cxa_throw(void* thrown_exception, void* tinfo, void (*dest)(void*)) {
+    __builtin_wasm_throw(0, thrown_exception);
+}
+
+}
+CPPEOF
+
+/opt/wasi-sdk/bin/clang++ -target wasm32-wasi \
+  --sysroot=/opt/wasi-sdk/share/wasi-sysroot \
+  -fwasm-exceptions \
+  -c /tmp/wasm_eh_support.cpp \
+  -o /opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/wasm_eh_support.o
+
+# 6. Set environment variables
+export CRYSTAL_LIBRARY_PATH=/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi
 ```
 
 ### Ubuntu / Debian
@@ -83,21 +115,23 @@ sudo cp binaryen-version_119/bin/* /usr/local/bin/
 
 # 3. Install Wasmtime
 curl https://wasmtime.dev/install.sh -sSf | bash
+export PATH="$HOME/.wasmtime/bin:$PATH"
 
 # 4. Install wasi-sdk
 curl -LO https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-linux.tar.gz
 tar xzf wasi-sdk-25.0-x86_64-linux.tar.gz
 sudo mv wasi-sdk-25.0-x86_64-linux /opt/wasi-sdk
 
-# Set environment variable
-export WASI_SDK_PATH=/opt/wasi-sdk
+# 5. Compile wasm_eh_support.o (see macOS section above for the C++ source)
+# Use the same source file and compile with:
+/opt/wasi-sdk/bin/clang++ -target wasm32-wasi \
+  --sysroot=/opt/wasi-sdk/share/wasi-sysroot \
+  -fwasm-exceptions \
+  -c /tmp/wasm_eh_support.cpp \
+  -o /opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/wasm_eh_support.o
 
-# 5. Download pre-compiled WASM libraries
-git clone https://github.com/lbguilherme/wasm-libs.git ~/wasm-libs
-
-# Set environment variables
-export CRYSTAL_WASM_LIBS=~/wasm-libs
-export CRYSTAL_LIBRARY_PATH=~/wasm-libs
+# 6. Set environment variables
+export CRYSTAL_LIBRARY_PATH=/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi
 ```
 
 ### Persist Environment Variables
@@ -105,9 +139,8 @@ export CRYSTAL_LIBRARY_PATH=~/wasm-libs
 Add these lines to your shell profile (`~/.zshrc`, `~/.bashrc`, or `~/.bash_profile`):
 
 ```bash
-export WASI_SDK_PATH=/opt/wasi-sdk
-export CRYSTAL_WASM_LIBS=~/wasm-libs
-export CRYSTAL_LIBRARY_PATH=~/wasm-libs
+export PATH="$HOME/.wasmtime/bin:$PATH"
+export CRYSTAL_LIBRARY_PATH=/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi
 ```
 
 ---
@@ -116,56 +149,60 @@ export CRYSTAL_LIBRARY_PATH=~/wasm-libs
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `WASI_SDK_PATH` | Path to the wasi-sdk installation. The compiler uses this to locate the WASI sysroot (`share/wasi-sysroot`) for system headers and libraries. | `/opt/wasi-sdk` |
-| `CRYSTAL_WASM_LIBS` | Directory containing pre-compiled WASM `.a` archive files (bdwgc, libpcre2, etc.). | `~/wasm-libs` |
-| `CRYSTAL_LIBRARY_PATH` | Crystal's library search path. Should include the WASM libs directory so the linker can find them. | `~/wasm-libs` |
-
-The compiler automatically detects `WASI_SDK_PATH` and adds the sysroot library path (`$WASI_SDK_PATH/share/wasi-sysroot/lib/wasm32-wasi`) to the linker search paths.
+| `CRYSTAL_LIBRARY_PATH` | Crystal's library search path. Must point to the wasi-sysroot lib directory so the linker can find wasi-libc and wasm_eh_support.o. | `/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi` |
+| `PATH` | Must include wasmtime's bin directory. | `$HOME/.wasmtime/bin:$PATH` |
 
 ---
 
 ## Your First WASM App
 
-Create a file called `hello_wasm.cr`:
+Create a file called `hello.cr`:
 
 ```crystal
-# hello_wasm.cr
+# hello.cr
 puts "Hello from Crystal on WebAssembly!"
-
-# Exception handling works
-begin
-  raise "Testing exceptions"
-rescue ex
-  puts "Caught: #{ex.message}"
-end
-
-# Fiber concurrency works
-ch = Channel(String).new
-spawn do
-  ch.send("Fibers work too!")
-end
-puts ch.receive
+puts "1 + 2 = #{1 + 2}"
+puts "Array: #{[1, 2, 3]}"
+puts "It works!"
 ```
 
-Compile it:
+Compile it using the locally built Crystal compiler (from the repo root):
 
 ```bash
-crystal build hello_wasm.cr --target wasm32-unknown-wasi -o hello.wasm
+export PATH="$HOME/.wasmtime/bin:$PATH"
+export CRYSTAL_LIBRARY_PATH=/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi
+
+bin/crystal build hello.cr \
+  --target wasm32-unknown-wasi \
+  -Dwithout_iconv \
+  -Dwithout_openssl \
+  --link-flags="--allow-undefined /opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/wasm_eh_support.o -lc++abi" \
+  -o hello.wasm
 ```
 
-Run it with Wasmtime:
+Run it with Wasmtime (the `-W exceptions` flag is required for WASM exception handling support):
 
 ```bash
-wasmtime run hello.wasm
+wasmtime run -W exceptions hello.wasm
 ```
 
 Expected output:
 
 ```
 Hello from Crystal on WebAssembly!
-Caught: Testing exceptions
-Fibers work too!
+1 + 2 = 3
+Array: [1, 2, 3]
+It works!
 ```
+
+**Important notes about the build command:**
+
+- `-Dwithout_iconv` and `-Dwithout_openssl` are required because these C libraries are not available on WASM.
+- `--link-flags` passes additional flags to `wasm-ld`:
+  - `--allow-undefined` allows unresolved symbols (needed for some WASI imports).
+  - `/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/wasm_eh_support.o` links the C++ exception handling support object.
+  - `-lc++abi` links the C++ ABI library for exception handling runtime support.
+- `wasmtime run -W exceptions` enables the WASM exception handling proposal in Wasmtime, which is required for Crystal's exception throw mechanism.
 
 ---
 
@@ -181,11 +218,8 @@ The following Crystal features are supported on the WASM target:
 - String interpolation, symbol literals
 
 ### Runtime Features
-- **Exception handling** -- full `raise`/`rescue`/`ensure` support including type dispatch, nested exceptions, re-raise, and custom exception classes
-- **Garbage collection** -- Boehm GC compiled to WASM with Asyncify-based stack scanning
-- **Fiber concurrency** -- `spawn`, `Fiber.yield`, `Channel` send/receive via Binaryen Asyncify
-- **Basic I/O** -- writing to STDOUT and STDERR
-- **sleep** -- via WASI `poll_oneoff` clock subscriptions
+- **Basic I/O** -- writing to STDOUT and STDERR via `puts`, `print`, `STDOUT.puts`, etc.
+- **Exception throwing** -- `raise` compiles and the throw side works via WASM exception handling instructions
 
 ### Standard Library
 - Data structures: `Array`, `Hash`, `Set`, `Deque`, `Slice`, `Tuple`, `NamedTuple`, `StaticArray`
@@ -198,18 +232,21 @@ The following Crystal features are supported on the WASM target:
 
 ---
 
-## What Doesn't Work
+## What Doesn't Work (Current Limitations)
 
-| Feature | Reason |
-|---------|--------|
-| Threads | WASI has no thread creation API. Crystal runs single-threaded on WASM. |
-| Sockets / HTTP | Requires WASI Preview 2 socket support, which is not yet integrated. |
-| Signal handling | Not meaningful in the WASM sandbox. Signals are excluded via `flag?(:wasm32)`. |
-| Process spawning | WASM sandboxed environment does not support spawning processes. |
-| OpenSSL / TLS | Would require OpenSSL cross-compiled to WASM. Not currently available. |
-| Full file system | Limited to WASI preopens. Only directories explicitly granted by the runtime are accessible. |
-| Call stack / backtraces | The WASM operand stack is opaque; backtraces return empty. |
-| iconv | Not available on WASM. Use `-Dwithout_iconv`. |
+| Feature | Status | Details |
+|---------|--------|---------|
+| **Exception catching (rescue)** | Throw works, catch does not | `raise` correctly throws a WASM exception, but `rescue`/`catch` does not catch it at runtime. Programs that raise will trap instead of being rescued. This is the primary limitation. |
+| **Fibers / Concurrency** | Stubbed out | `spawn`, `Fiber.yield`, `Channel` are stub implementations. Fibers require Binaryen Asyncify integration which is not yet wired up. |
+| **Garbage Collection** | None (leak allocator) | Uses `gc/none` -- all allocations leak. No garbage collection occurs. Long-running programs will run out of memory. |
+| **OpenSSL / TLS** | Not available | Would require OpenSSL cross-compiled to WASM. Build with `-Dwithout_openssl`. |
+| **iconv** | Not available | Character encoding conversion not available on WASM. Build with `-Dwithout_iconv`. |
+| **Threads** | Not available | WASI has no thread creation API. Crystal runs single-threaded on WASM. |
+| **Sockets / HTTP** | Not available | Requires WASI Preview 2 socket support, which is not yet integrated. |
+| **Signal handling** | Not available | Not meaningful in the WASM sandbox. Signals are excluded via `flag?(:wasm32)`. |
+| **Process spawning** | Not available | WASM sandboxed environment does not support spawning processes. |
+| **Full file system** | Limited | Only directories explicitly granted by the runtime via WASI preopens are accessible. |
+| **Call stack / backtraces** | Empty | The WASM operand stack is opaque; backtraces return empty. |
 
 ---
 
@@ -223,23 +260,54 @@ The following Crystal features are supported on the WASM target:
 
 This tells Crystal and LLVM to emit WebAssembly targeting the WASI interface.
 
-### Recommended Flags
+### Required Flags
 
 | Flag | Purpose |
 |------|---------|
 | `--target wasm32-unknown-wasi` | Target the WASM/WASI platform |
 | `-Dwithout_iconv` | Skip iconv, which is not available on WASM |
 | `-Dwithout_openssl` | Skip OpenSSL, which is not available on WASM |
+| `--link-flags="..."` | Pass additional flags to wasm-ld (see below) |
+
+### Required Link Flags
+
+The `--link-flags` argument must include:
+
+| Link Flag | Purpose |
+|-----------|---------|
+| `--allow-undefined` | Allow unresolved symbols (needed for WASI imports) |
+| `/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/wasm_eh_support.o` | C++ exception handling ABI support object |
+| `-lc++abi` | C++ ABI library for exception handling runtime |
+
+### Optional Flags
+
+| Flag | Purpose |
+|------|---------|
 | `--release` | Enable optimizations. Strongly recommended for WASM. Reduces code size significantly and avoids Cranelift compilation failures on very large functions. |
 
 ### Example: Full Build Command
 
 ```bash
-# Debug build
-crystal build app.cr --target wasm32-unknown-wasi -Dwithout_iconv -Dwithout_openssl -o app.wasm
+# Set up environment
+export PATH="$HOME/.wasmtime/bin:$PATH"
+export CRYSTAL_LIBRARY_PATH=/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi
 
-# Release build (recommended)
-crystal build app.cr --target wasm32-unknown-wasi -Dwithout_iconv -Dwithout_openssl --release -o app.wasm
+# Debug build (from the Crystal repo root, using the locally built compiler)
+bin/crystal build app.cr \
+  --target wasm32-unknown-wasi \
+  -Dwithout_iconv \
+  -Dwithout_openssl \
+  --link-flags="--allow-undefined /opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/wasm_eh_support.o -lc++abi" \
+  -o app.wasm
+
+# Release build (recommended for smaller binaries and fewer Cranelift issues)
+bin/crystal build app.cr \
+  --target wasm32-unknown-wasi \
+  -Dwithout_iconv \
+  -Dwithout_openssl \
+  --link-flags="--allow-undefined /opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/wasm_eh_support.o -lc++abi" \
+  --release \
+  -o app.wasm
 ```
 
 ### What Happens During Compilation
@@ -248,9 +316,7 @@ The compiler performs these steps for WASM targets:
 
 1. **Crystal codegen** -- Crystal source is compiled to LLVM IR with WASM-specific features enabled (exception handling, bulk memory, mutable globals, sign extension, non-trapping float-to-int). The compiler forces `single_module` mode for WASM.
 2. **LLVM compilation** -- LLVM IR is compiled to a `.o` WebAssembly object file.
-3. **Linking** -- `wasm-ld` links the object file with wasi-libc and any pre-compiled WASM libraries. The linker uses `--stack-first -z stack-size=8388608` to place the stack before data (preventing silent stack overflow corruption) and set an 8MB stack.
-4. **Asyncify pass** -- `wasm-opt --asyncify --all-features` transforms the binary to support fiber switching and GC stack scanning via Binaryen's Asyncify instrumentation.
-5. **Optimization** (release only) -- `wasm-opt -Oz --all-features` optimizes for code size.
+3. **Linking** -- `wasm-ld` links the object file with wasi-libc, the `wasm_eh_support.o` object, and the C++ ABI library. The linker uses `--stack-first -z stack-size=8388608` to place the stack before data (preventing silent stack overflow corruption) and set an 8MB stack.
 
 ---
 
@@ -258,66 +324,40 @@ The compiler performs these steps for WASM targets:
 
 ### Wasmtime (Recommended)
 
+**Important**: The `-W exceptions` flag is required for all Crystal WASM programs. Crystal uses WASM exception handling instructions, and Wasmtime requires this flag to enable them.
+
 ```bash
-# Basic execution
-wasmtime run app.wasm
+# Basic execution (the -W exceptions flag is REQUIRED)
+wasmtime run -W exceptions app.wasm
 
 # Grant file system access to the current directory
-wasmtime run --dir=. app.wasm
+wasmtime run -W exceptions --dir=. app.wasm
 
 # Grant access to a specific directory
-wasmtime run --dir=/path/to/data app.wasm
+wasmtime run -W exceptions --dir=/path/to/data app.wasm
 
 # Pass command-line arguments
-wasmtime run app.wasm -- arg1 arg2
+wasmtime run -W exceptions app.wasm -- arg1 arg2
 
 # Set environment variables
-wasmtime run --env MY_VAR=value app.wasm
+wasmtime run -W exceptions --env MY_VAR=value app.wasm
 ```
 
 The `--dir=.` flag grants the WASM program access to the current directory via WASI preopens. Without it, the program cannot read or write any files.
 
+If you forget the `-W exceptions` flag, you will see an error like: `unknown import: __wasm_tag is not a function`.
+
 ### Wasmer
 
+Wasmer may work for some programs but is less tested. Note that Wasmer's singlepass compiler may crash on ARM64. Use Wasmtime on Apple Silicon Macs.
+
 ```bash
-# Basic execution
 wasmer run app.wasm
-
-# With file system access
-wasmer run --dir=. app.wasm
-```
-
-Note: Wasmer's singlepass compiler may crash on ARM64. Use Wasmtime on Apple Silicon Macs.
-
-### Node.js
-
-Node.js supports WASI through its built-in `node:wasi` module:
-
-```javascript
-// run_wasm.mjs
-import { readFile } from "node:fs/promises";
-import { WASI } from "node:wasi";
-
-const wasi = new WASI({
-  version: "preview1",
-  args: process.argv.slice(1),
-  preopens: { "/": "." },
-});
-
-const wasm = await WebAssembly.compile(await readFile("./app.wasm"));
-const instance = await WebAssembly.instantiate(wasm, wasi.getImportObject());
-wasi.start(instance);
-```
-
-Run with:
-
-```bash
-node --experimental-wasi-unstable-preview1 run_wasm.mjs
 ```
 
 ### Browser
 
-Crystal WASM binaries target WASI and cannot run directly in the browser without a WASI polyfill. A thin JavaScript wrapper using a library like `@aspect-build/aspect-wasi` or `browser_wasi_shim` is needed to provide the WASI interface. Browser support is experimental.
+Crystal WASM binaries target WASI and cannot run directly in the browser without a WASI polyfill. A thin JavaScript wrapper using a library like `@aspect-build/aspect-wasi` or `browser_wasi_shim` is needed to provide the WASI interface. Browser support is experimental and untested.
 
 ---
 
@@ -335,14 +375,14 @@ A validation script is included to verify that all required tools are installed 
 
 The script checks:
 
-1. **Tool presence**: Crystal, wasm-ld, wasm-opt, wasmtime, LLVM
-2. **Environment variables**: `WASI_SDK_PATH`, `CRYSTAL_WASM_LIBS`, `CRYSTAL_LIBRARY_PATH`
+1. **Tool presence**: Crystal (local `bin/crystal`), wasm-ld, wasm-opt, wasmtime
+2. **Prerequisites**: `CRYSTAL_LIBRARY_PATH` set, wasi-sdk installed, `wasm_eh_support.o` exists
 3. **Compilation tests** (full mode only):
-   - Exception handling (basic raise/rescue, type dispatch, ensure blocks)
-   - Garbage collection (allocation, `GC.collect`)
-   - Fiber concurrency (spawn/yield, channel send/receive)
-   - Event loop (sleep via `poll_oneoff`)
+   - Basic output (puts, string interpolation, arrays)
+   - String operations and data structures
    - WASM-specific spec files in `spec/wasm32/`
+
+Note: The validation script uses the same build command documented above, including the `--link-flags` and `wasmtime run -W exceptions` invocation.
 
 ---
 
@@ -365,54 +405,63 @@ The linker is configured with `--stack-first -z stack-size=8388608`, which produ
 
 Placing the stack first prevents stack overflow from silently corrupting heap data (the default layout puts the stack between data and heap, where overflow corrupts `dlmalloc` structures).
 
-### Exception Handling
+### Exception Handling (Partial)
 
-Crystal's exceptions use LLVM's funclet-based exception handling model (catchswitch/catchpad/catchret). LLVM's WASM backend translates this to WASM's native exception handling instructions (`try_table`/`throw`/`throw_ref`), which are enabled via the `+exception-handling` target feature. The WASM EH proposal is standardized and supported by all major runtimes.
+Crystal's exceptions use LLVM's exception handling model. LLVM's WASM backend translates this to WASM's native exception handling instructions (`try_table`/`throw`/`throw_ref`), which are enabled via the `+exception-handling` target feature. The throw side works: `raise` correctly creates and throws a WASM exception. However, the catch side (`rescue`/`ensure`) does not work at runtime yet -- thrown exceptions are not caught and instead cause the program to trap. This is the primary area of active development.
 
-### Fiber Switching via Asyncify
+The `wasm_eh_support.o` object file provides the C++ exception handling ABI functions (`__cxa_allocate_exception`, `__cxa_throw`, etc.) that bridge Crystal's exception model to WASM's native exception handling instructions.
 
-WASM's call stack and operand stack are opaque -- user code cannot inspect or modify them directly. Crystal uses Binaryen's **Asyncify** transformation to enable fiber switching:
+### Garbage Collection (Not Yet Implemented)
 
-1. `wasm-opt --asyncify` instruments every function with suspend/resume logic.
-2. When a fiber yields, Asyncify **unwinds** the call stack by having each frame serialize its locals to a buffer in linear memory, then return.
-3. When a fiber resumes, Asyncify **rewinds** by re-entering the function chain and restoring locals from the buffer.
-4. The WASM `__stack_pointer` global (the shadow stack pointer) is saved and restored separately via inline WASM assembly.
+WASM currently uses `gc/none` -- a leak allocator with no garbage collection. All memory allocations persist for the lifetime of the program. This is adequate for short-running programs but will cause out-of-memory errors for long-running or allocation-heavy programs.
 
-Each fiber has its own stack region in linear memory. The region holds both the shadow stack (growing downward) and the Asyncify buffer (growing upward from a header):
+The planned approach is to use Boehm GC with Binaryen's Asyncify transformation for stack scanning (see WASM_ROADMAP.md for details).
 
-```
-+--------+---------------------------+------------------------+
-| Header | Asyncify buffer =>        |               <= Stack |
-+--------+---------------------------+------------------------+
-^        ^                                                    ^
-stack_low  (+ header)                                    stack_top
-```
+### Fiber Switching (Not Yet Implemented)
 
-### Garbage Collection
-
-Boehm GC (bdwgc) is cross-compiled to WASM. The core challenge is stack scanning: GC needs to find root pointers on the stack, but WASM locals are invisible. Asyncify solves this by spilling all locals to linear memory during an unwind, allowing the GC to scan the buffer for pointer-like values (conservative scanning).
+Fiber context switching is stubbed out. The planned approach uses Binaryen's Asyncify transformation to enable cooperative concurrency (see WASM_ROADMAP.md for details).
 
 ### Event Loop
 
-The WASI event loop (`Crystal::EventLoop::Wasi`) uses WASI's `poll_oneoff` syscall with clock subscriptions for sleep/timeout functionality. It supports cooperative fiber scheduling through the Asyncify mechanism. Socket-based I/O events are not yet supported (requires WASI Preview 2).
+The WASI event loop (`Crystal::EventLoop::Wasi`) has limited functionality. Most methods raise `NotImplementedError`. Basic `poll_oneoff` support exists for sleep/timeout via clock subscriptions.
 
 ---
 
 ## Troubleshooting
 
-### "wasm-ld: error: unable to find library -lc"
+### "unknown import: __wasm_tag is not a function"
 
-The linker cannot find wasi-libc. Set the `WASI_SDK_PATH` environment variable:
+You forgot the `-W exceptions` flag when running with Wasmtime. Crystal WASM binaries require exception handling support:
 
 ```bash
-export WASI_SDK_PATH=/opt/wasi-sdk
+# Wrong:
+wasmtime run app.wasm
+
+# Correct:
+wasmtime run -W exceptions app.wasm
+```
+
+### "wasm-ld: error: unable to find library -lc"
+
+The linker cannot find wasi-libc. Ensure `CRYSTAL_LIBRARY_PATH` points to the wasi-sysroot lib directory:
+
+```bash
+export CRYSTAL_LIBRARY_PATH=/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi
 ```
 
 Verify the sysroot exists:
 
 ```bash
-ls $WASI_SDK_PATH/share/wasi-sysroot/lib/wasm32-wasi/libc.a
+ls /opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/libc.a
 ```
+
+### "wasm-ld: error: unable to find library -lc++abi"
+
+The C++ ABI library is not found. Ensure `CRYSTAL_LIBRARY_PATH` points to the correct wasi-sysroot directory, and that wasi-sdk is fully installed at `/opt/wasi-sdk`.
+
+### "cannot open wasm_eh_support.o: No such file or directory"
+
+You need to compile the `wasm_eh_support.o` file. See the Setup section above for the C++ source and compilation command.
 
 ### "wasm-opt: command not found"
 
@@ -430,14 +479,18 @@ sudo apt install binaryen
 
 ### "EXITING: __crystal_raise called"
 
-You are running an older Crystal compiler that does not have WASM exception handling support. The `__crystal_raise` stub in older versions simply prints this message and calls `exit(1)`. Use this fork (`crimson-knight/crystal`, branch `wasm-support`) which implements full WASM exception handling.
+You are running an older Crystal compiler that does not have WASM exception handling support. The `__crystal_raise` stub in older versions simply prints this message and calls `exit(1)`. Use this fork (`crimson-knight/crystal`, branch `wasm-support`) which has the WASM exception handling codegen.
+
+### Program traps when an exception is raised
+
+This is a known limitation. The throw side of exception handling works (WASM `throw` instruction fires), but the catch side (`rescue`/`ensure`) does not work at runtime yet. Programs that raise exceptions will trap. Avoid `raise`/`rescue` in your WASM programs for now. Be aware that some stdlib operations raise internally (e.g., out-of-bounds array access, nil assertions).
 
 ### "out of bounds memory access" (runtime trap)
 
 This usually indicates a stack overflow. The default 8MB stack may be insufficient for deeply recursive programs or programs with many large stack frames. Possible causes:
 
 - Deep recursion without `--release` (unoptimized code uses more stack)
-- Very large functions generated without optimization (Asyncify overhead)
+- Very large functions generated without optimization
 
 Workaround: Build with `--release` to reduce stack usage through optimization.
 
@@ -445,15 +498,19 @@ Workaround: Build with `--release` to reduce stack usage through optimization.
 
 WASM binaries can be large for several reasons:
 
-1. **Asyncify overhead**: The Asyncify transformation adds 10-50% to code size because every function is instrumented with suspend/resume logic.
-2. **No release mode**: Debug builds include much more code. Always use `--release` for production.
-3. **Standard library**: Crystal's stdlib is statically linked. Only used code is included, but the type system can pull in more than expected.
+1. **No release mode**: Debug builds include much more code. Always use `--release` for production.
+2. **Standard library**: Crystal's stdlib is statically linked. Only used code is included, but the type system can pull in more than expected.
 
 Mitigation:
 
 ```bash
 # Always build with --release for smaller binaries
-crystal build app.cr --target wasm32-unknown-wasi --release -o app.wasm
+bin/crystal build app.cr \
+  --target wasm32-unknown-wasi \
+  -Dwithout_iconv -Dwithout_openssl \
+  --link-flags="--allow-undefined /opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/wasm_eh_support.o -lc++abi" \
+  --release \
+  -o app.wasm
 
 # Check the binary size
 ls -lh app.wasm
@@ -461,27 +518,31 @@ ls -lh app.wasm
 
 ### "Compiling ... failed" with Cranelift errors in Wasmtime
 
-Without `--release`, LLVM can produce extremely large functions (e.g., `String::Grapheme::codepoints` with over 34,000 local variables). The Asyncify pass makes these larger. Wasmtime's Cranelift compiler may refuse to compile such functions.
+Without `--release`, LLVM can produce extremely large functions (e.g., `String::Grapheme::codepoints` with over 34,000 local variables). Wasmtime's Cranelift compiler may refuse to compile such functions.
 
 Solution: Always build with `--release`, which dramatically reduces the number of locals through optimization.
 
 ### Missing library errors during linking
 
-If you see errors about missing `.a` files (e.g., `-lgc`, `-lpcre2-8`), the pre-compiled WASM libraries are not found. Ensure `CRYSTAL_LIBRARY_PATH` points to the directory containing the WASM `.a` files:
+If you see errors about missing `.a` files, ensure `CRYSTAL_LIBRARY_PATH` points to the wasi-sysroot lib directory:
 
 ```bash
-export CRYSTAL_LIBRARY_PATH=~/wasm-libs
-ls ~/wasm-libs/*.a
+export CRYSTAL_LIBRARY_PATH=/opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi
+ls /opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi/libc.a
 ```
 
 ---
 
 ## Known Limitations
 
-- **Asyncify code size overhead**: Asyncify adds 10-50% code size because it instruments every function for suspend/resume. Future versions may use `--asyncify-only-list` to limit instrumentation to functions that actually need it.
+- **Exception catching does not work**: `raise` throws correctly but `rescue`/`ensure` do not catch exceptions at runtime. This is the primary blocker for many Crystal programs. Programs that trigger exceptions (including implicit ones from nil assertions, bounds checks, etc.) will trap.
+- **No garbage collection**: Uses the leak allocator (`gc/none`). All allocations persist. Long-running programs will exhaust memory.
+- **No fiber/concurrency support**: `spawn`, `Fiber.yield`, and `Channel` are stubbed out and do not function.
 - **Release mode strongly recommended**: Without `--release`, some functions are too large for Wasmtime's Cranelift compiler. Always use `--release` for WASM builds.
-- **No parallelism**: WASM is single-threaded. Crystal's `-Dpreview_mt` multi-threading is not available. All fibers run cooperatively on one thread.
-- **bdwgc cross-compilation**: The Boehm GC must be separately cross-compiled for WASM with threads and parallel marking disabled. The pre-compiled libraries from `lbguilherme/wasm-libs` include this.
+- **No parallelism**: WASM is single-threaded. Crystal's `-Dpreview_mt` multi-threading is not available.
+- **No OpenSSL, iconv, or other C libraries**: These must be excluded with `-Dwithout_openssl` and `-Dwithout_iconv`.
+- **Requires wasi-sdk at /opt/wasi-sdk**: The `wasm_eh_support.o` file and wasi-libc must be available from the wasi-sdk installation.
+- **Requires wasmtime with -W exceptions**: The WASM exception handling proposal must be enabled in the runtime.
 - **WASI API is evolving**: This target uses WASI Preview 1 (`snapshot-01`). WASI Preview 2 introduces the Component Model with different APIs, and Preview 3 will add native async I/O. Migration will be needed as runtimes deprecate Preview 1.
 - **32-bit address space**: WASM32 has a 4GB address limit. Pointers are 32-bit (`sizeof(Pointer(Void)) == 4`).
 - **No backtraces**: The WASM operand stack is opaque, so `Exception#backtrace` returns empty results.
@@ -490,48 +551,15 @@ ls ~/wasm-libs/*.a
 
 ## Examples
 
-### JSON Processing
+**Important**: All examples below avoid `raise`/`rescue` since exception catching does not work at runtime yet. Also avoid fibers/channels and any operations that trigger implicit exceptions (like out-of-bounds access).
+
+### Basic Output and String Interpolation
 
 ```crystal
-require "json"
-
-data = JSON.parse(%({"name": "Crystal", "target": "wasm32"}))
-puts data["name"]   # => Crystal
-puts data["target"] # => wasm32
-
-record Person, name : String, age : Int32 do
-  include JSON::Serializable
-end
-
-person = Person.from_json(%({"name": "Alice", "age": 30}))
-puts person.to_json # => {"name":"Alice","age":30}
-```
-
-### Concurrent Computation with Channels
-
-```crystal
-ch = Channel(Int32).new
-
-10.times do |i|
-  spawn do
-    ch.send(i * i)
-  end
-end
-
-sum = 0
-10.times do
-  sum += ch.receive
-end
-puts "Sum of squares: #{sum}" # => Sum of squares: 285
-```
-
-### File Access (with WASI Preopens)
-
-```crystal
-# Run with: wasmtime run --dir=. app.wasm
-File.write("output.txt", "Written from Crystal WASM!")
-content = File.read("output.txt")
-puts content # => Written from Crystal WASM!
+puts "Hello from Crystal on WebAssembly!"
+puts "1 + 2 = #{1 + 2}"
+puts "Array: #{[1, 2, 3]}"
+puts "It works!"
 ```
 
 ### Working with Collections
@@ -544,4 +572,38 @@ puts lengths.inspect # => [5, 3, 7]
 scores = {"math" => 95, "science" => 88, "history" => 92}
 average = scores.values.sum / scores.size
 puts "Average: #{average}" # => Average: 91
+```
+
+### JSON Processing
+
+```crystal
+require "json"
+
+data = JSON.parse(%({"name": "Crystal", "target": "wasm32"}))
+puts data["name"]   # => Crystal
+puts data["target"] # => wasm32
+```
+
+### Math and Computation
+
+```crystal
+# Fibonacci (iterative to avoid deep recursion)
+def fib(n : Int32) : Int64
+  a, b = 0i64, 1i64
+  n.times { a, b = b, a + b }
+  a
+end
+
+10.times do |i|
+  puts "fib(#{i}) = #{fib(i)}"
+end
+```
+
+### File Access (with WASI Preopens)
+
+```crystal
+# Compile normally, then run with: wasmtime run -W exceptions --dir=. app.wasm
+File.write("output.txt", "Written from Crystal WASM!")
+content = File.read("output.txt")
+puts content # => Written from Crystal WASM!
 ```

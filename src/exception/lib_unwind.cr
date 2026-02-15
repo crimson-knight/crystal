@@ -253,8 +253,27 @@ end
   end
 
   # :nodoc:
-  # Called by WasmEHPrepare-generated code to invoke the personality function
+  # Called by WasmEHPrepare-generated code to invoke the personality function.
+  # WasmEHPrepare sets __wasm_lpad_context.lpad_index and .lsda before calling
+  # this. We must call the actual personality function which reads those fields
+  # (via _Unwind_GetIP and _Unwind_GetLanguageSpecificData wrappers), traverses
+  # the exception table, and writes the selector (via _Unwind_SetGR).
   fun _Unwind_CallPersonality(exception : Void*) : Int32
+    Crystal::System.print_error "CallPersonality: exception=%p, lpad_index=%d, lsda=%p\n",
+      exception,
+      LibWasmEH.__wasm_lpad_context.lpad_index,
+      LibWasmEH.__wasm_lpad_context.lsda
+    exception_object = exception.as(LibUnwind::Exception*)
+    result = __crystal_personality(
+      1_i32,
+      LibUnwind::Action::CLEANUP_PHASE | LibUnwind::Action::HANDLER_FRAME,
+      exception_object.value.exception_class.to_u64,
+      exception_object,
+      Pointer(Void).null
+    )
+    Crystal::System.print_error "CallPersonality: result=%d, selector=%d\n",
+      result.value,
+      LibWasmEH.__wasm_lpad_context.selector
     LibWasmEH.__wasm_lpad_context.selector
   end
 {% end %}

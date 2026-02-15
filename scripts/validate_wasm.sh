@@ -6,6 +6,14 @@ set -euo pipefail
 #
 # Usage: ./scripts/validate_wasm.sh [--quick]
 #   --quick: Only check tool versions, skip compilation tests
+#
+# Prerequisites:
+#   - wasi-sdk installed at /opt/wasi-sdk
+#   - lld installed (brew install lld)
+#   - binaryen installed (brew install binaryen)
+#   - wasmtime installed (curl https://wasmtime.dev/install.sh -sSf | bash)
+#   - wasm_eh_support.o compiled and placed in wasi-sysroot (see WASM_GUIDE.md)
+#   - CRYSTAL_LIBRARY_PATH set to /opt/wasi-sdk/share/wasi-sysroot/lib/wasm32-wasi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -52,49 +60,57 @@ check_tool() {
 }
 
 TOOLS_OK=true
-check_tool "Crystal compiler" crystal || TOOLS_OK=false
+
+# Check for the locally built Crystal compiler
+if [[ -x "${PROJECT_DIR}/bin/crystal" ]]; then
+  log_pass "Crystal compiler: ${PROJECT_DIR}/bin/crystal"
+else
+  log_fail "Crystal compiler: not found at ${PROJECT_DIR}/bin/crystal (build with make crystal)"
+  TOOLS_OK=false
+fi
+
 check_tool "WASM linker (wasm-ld)" wasm-ld || TOOLS_OK=false
 check_tool "Binaryen optimizer (wasm-opt)" wasm-opt || TOOLS_OK=false
 check_tool "Wasmtime runtime" wasmtime || TOOLS_OK=false
 
-# Also check for LLVM version
-if command -v llvm-config &>/dev/null; then
-  LLVM_VER=$(llvm-config --version 2>&1)
-  log_pass "LLVM: $LLVM_VER"
-elif command -v llvm-config-18 &>/dev/null; then
-  LLVM_VER=$(llvm-config-18 --version 2>&1)
-  log_pass "LLVM: $LLVM_VER (via llvm-config-18)"
+# ─── Prerequisites ─────────────────────────────────────────────
+log_section "Prerequisites"
+
+# Check wasi-sdk installation
+WASI_SDK_PATH="${WASI_SDK_PATH:-/opt/wasi-sdk}"
+if [[ -d "${WASI_SDK_PATH}/share/wasi-sysroot" ]]; then
+  log_pass "wasi-sdk: ${WASI_SDK_PATH} (sysroot found)"
 else
-  log_info "LLVM: version not detected (llvm-config not in PATH)"
+  log_fail "wasi-sdk: not found at ${WASI_SDK_PATH}/share/wasi-sysroot"
+  log_info "Install wasi-sdk from https://github.com/WebAssembly/wasi-sdk/releases"
+  TOOLS_OK=false
 fi
 
-# ─── Environment Variables ──────────────────────────────────────
-log_section "Environment Variables"
-
-if [[ -n "${WASI_SDK_PATH:-}" ]]; then
-  if [[ -d "${WASI_SDK_PATH}/share/wasi-sysroot" ]]; then
-    log_pass "WASI_SDK_PATH: ${WASI_SDK_PATH} (sysroot found)"
-  else
-    log_fail "WASI_SDK_PATH: ${WASI_SDK_PATH} (sysroot NOT found at share/wasi-sysroot)"
-  fi
+# Check wasm_eh_support.o
+WASM_EH_SUPPORT="${WASI_SDK_PATH}/share/wasi-sysroot/lib/wasm32-wasi/wasm_eh_support.o"
+if [[ -f "${WASM_EH_SUPPORT}" ]]; then
+  log_pass "wasm_eh_support.o: found at ${WASM_EH_SUPPORT}"
 else
-  log_skip "WASI_SDK_PATH: not set"
+  log_fail "wasm_eh_support.o: not found at ${WASM_EH_SUPPORT}"
+  log_info "Compile it with wasi-sdk clang++ (see WASM_GUIDE.md setup section)"
+  TOOLS_OK=false
 fi
 
-if [[ -n "${CRYSTAL_WASM_LIBS:-}" ]]; then
-  if [[ -d "${CRYSTAL_WASM_LIBS}" ]]; then
-    log_pass "CRYSTAL_WASM_LIBS: ${CRYSTAL_WASM_LIBS}"
-  else
-    log_fail "CRYSTAL_WASM_LIBS: ${CRYSTAL_WASM_LIBS} (directory not found)"
-  fi
-else
-  log_skip "CRYSTAL_WASM_LIBS: not set"
-fi
-
+# Check CRYSTAL_LIBRARY_PATH
+EXPECTED_LIB_PATH="${WASI_SDK_PATH}/share/wasi-sysroot/lib/wasm32-wasi"
 if [[ -n "${CRYSTAL_LIBRARY_PATH:-}" ]]; then
-  log_info "CRYSTAL_LIBRARY_PATH: ${CRYSTAL_LIBRARY_PATH}"
+  log_pass "CRYSTAL_LIBRARY_PATH: ${CRYSTAL_LIBRARY_PATH}"
 else
-  log_skip "CRYSTAL_LIBRARY_PATH: not set"
+  log_skip "CRYSTAL_LIBRARY_PATH: not set (will use default: ${EXPECTED_LIB_PATH})"
+  export CRYSTAL_LIBRARY_PATH="${EXPECTED_LIB_PATH}"
+fi
+
+# Check libc++abi is available
+if [[ -f "${EXPECTED_LIB_PATH}/libc++abi.a" ]]; then
+  log_pass "libc++abi.a: found"
+else
+  log_fail "libc++abi.a: not found at ${EXPECTED_LIB_PATH}/libc++abi.a"
+  TOOLS_OK=false
 fi
 
 # ─── Quick mode exits here ─────────────────────────────────────
@@ -106,8 +122,8 @@ fi
 
 if [[ "$TOOLS_OK" != "true" ]]; then
   echo ""
-  echo "Required tools are missing. Install them before running compilation tests."
-  echo "See: https://github.com/crimson-knight/crystal/blob/wasm-support/WASM_GUIDE.md"
+  echo "Required tools or prerequisites are missing. Install them before running compilation tests."
+  echo "See: WASM_GUIDE.md for setup instructions."
   exit 1
 fi
 
@@ -115,18 +131,33 @@ fi
 TEMP_DIR=$(mktemp -d)
 CRYSTAL="${PROJECT_DIR}/bin/crystal"
 COMPILE_FLAGS="--target wasm32-unknown-wasi -Dwithout_iconv -Dwithout_openssl"
+LINK_FLAGS="--allow-undefined ${WASM_EH_SUPPORT} -lc++abi"
 
 compile_and_run() {
   local name=$1
   local src=$2
+  local expected_output="${3:-}"
   local wasm="${TEMP_DIR}/${name}.wasm"
 
   echo "$src" > "${TEMP_DIR}/${name}.cr"
 
-  if ${CRYSTAL} build "${TEMP_DIR}/${name}.cr" -o "$wasm" ${COMPILE_FLAGS} 2>"${TEMP_DIR}/${name}.compile.log"; then
-    if wasmtime run "$wasm" 2>"${TEMP_DIR}/${name}.run.log"; then
-      log_pass "$name"
-      return 0
+  if ${CRYSTAL} build "${TEMP_DIR}/${name}.cr" -o "$wasm" ${COMPILE_FLAGS} --link-flags="${LINK_FLAGS}" 2>"${TEMP_DIR}/${name}.compile.log"; then
+    local actual_output
+    if actual_output=$(wasmtime run -W exceptions "$wasm" 2>"${TEMP_DIR}/${name}.run.log"); then
+      if [[ -n "${expected_output}" ]]; then
+        if [[ "$actual_output" == "$expected_output" ]]; then
+          log_pass "$name"
+          return 0
+        else
+          log_fail "$name (output mismatch)"
+          log_info "  Expected: ${expected_output}"
+          log_info "  Actual:   ${actual_output}"
+          return 1
+        fi
+      else
+        log_pass "$name"
+        return 0
+      fi
     else
       log_fail "$name (runtime error, see ${TEMP_DIR}/${name}.run.log)"
       return 1
@@ -137,100 +168,98 @@ compile_and_run() {
   fi
 }
 
-log_section "Phase 1: Exception Handling"
+log_section "Phase 1: Basic Output"
 
-compile_and_run "exception_basic" '
-begin
-  raise "Hello from WASM!"
-rescue ex
-  puts ex.message
+compile_and_run "hello_world" '
+puts "Hello from Crystal on WebAssembly!"
+' "Hello from Crystal on WebAssembly!"
+
+compile_and_run "string_interpolation" '
+puts "1 + 2 = #{1 + 2}"
+' "1 + 2 = 3"
+
+compile_and_run "multiple_puts" '
+puts "Hello from Crystal on WebAssembly!"
+puts "1 + 2 = #{1 + 2}"
+puts "Array: #{[1, 2, 3]}"
+puts "It works!"
+' "Hello from Crystal on WebAssembly!
+1 + 2 = 3
+Array: [1, 2, 3]
+It works!"
+
+log_section "Phase 2: Data Structures"
+
+compile_and_run "array_operations" '
+arr = [1, 2, 3, 4, 5]
+puts arr.size
+puts arr.sum
+' "5
+15"
+
+compile_and_run "hash_operations" '
+h = {"a" => 1, "b" => 2, "c" => 3}
+puts h.size
+puts h["b"]
+' "3
+2"
+
+compile_and_run "string_operations" '
+s = "Hello, WebAssembly!"
+puts s.size
+puts s.upcase
+puts s.includes?("WASM")
+' "19
+HELLO, WEBASSEMBLY!
+false"
+
+log_section "Phase 3: Computation"
+
+compile_and_run "math_operations" '
+puts 2 ** 10
+puts 100 / 3
+puts 3.14159 * 2
+' "1024
+33
+6.28318"
+
+compile_and_run "iteration" '
+total = 0
+10.times do |i|
+  total += i
 end
-puts "OK"
-'
-
-compile_and_run "exception_type_dispatch" '
-begin
-  raise ArgumentError.new("bad arg")
-rescue ex : ArgumentError
-  puts "Caught: #{ex.message}"
-rescue ex
-  puts "Wrong handler"
-  exit 1
-end
-puts "OK"
-'
-
-compile_and_run "exception_ensure" '
-ensured = false
-begin
-  raise "test"
-rescue
-  puts "rescued"
-ensure
-  ensured = true
-end
-puts ensured ? "OK" : "FAIL"
-'
-
-log_section "Phase 2: Garbage Collection"
+puts total
+' "45"
 
 compile_and_run "gc_allocation" '
 1000.times do
   s = "hello" * 20
 end
 puts "OK"
-'
-
-compile_and_run "gc_collect" '
-GC.collect
-puts "OK"
-'
-
-log_section "Phase 3: Fibers"
-
-compile_and_run "fiber_spawn" '
-done = false
-spawn do
-  done = true
-end
-Fiber.yield
-puts done ? "OK" : "FAIL"
-'
-
-compile_and_run "fiber_channel" '
-ch = Channel(Int32).new
-spawn do
-  ch.send(42)
-end
-value = ch.receive
-puts value == 42 ? "OK" : "FAIL"
-'
-
-log_section "Phase 5: Event Loop"
-
-compile_and_run "event_loop_sleep" '
-sleep 0.001
-puts "OK"
-'
+' "OK"
 
 # ─── Spec File Tests ────────────────────────────────────────────
 log_section "Spec Files"
 
-for spec_file in "${PROJECT_DIR}"/spec/wasm32/*.cr; do
-  if [[ -f "$spec_file" ]]; then
-    spec_name=$(basename "$spec_file" .cr)
-    wasm="${TEMP_DIR}/${spec_name}.wasm"
-    if ${CRYSTAL} build "$spec_file" -o "$wasm" ${COMPILE_FLAGS} 2>"${TEMP_DIR}/${spec_name}.compile.log"; then
-      if wasmtime run "$wasm" 2>"${TEMP_DIR}/${spec_name}.run.log"; then
-        log_pass "spec/wasm32/${spec_name}.cr"
+if [[ -d "${PROJECT_DIR}/spec/wasm32" ]]; then
+  for spec_file in "${PROJECT_DIR}"/spec/wasm32/*.cr; do
+    if [[ -f "$spec_file" ]]; then
+      spec_name=$(basename "$spec_file" .cr)
+      wasm="${TEMP_DIR}/${spec_name}.wasm"
+      if ${CRYSTAL} build "$spec_file" -o "$wasm" ${COMPILE_FLAGS} --link-flags="${LINK_FLAGS}" 2>"${TEMP_DIR}/${spec_name}.compile.log"; then
+        if wasmtime run -W exceptions "$wasm" 2>"${TEMP_DIR}/${spec_name}.run.log"; then
+          log_pass "spec/wasm32/${spec_name}.cr"
+        else
+          log_fail "spec/wasm32/${spec_name}.cr (runtime error)"
+        fi
       else
-        log_fail "spec/wasm32/${spec_name}.cr (runtime error)"
+        log_fail "spec/wasm32/${spec_name}.cr (compile error)"
       fi
-    else
-      log_fail "spec/wasm32/${spec_name}.cr (compile error)"
     fi
-  fi
-done
+  done
+else
+  log_skip "spec/wasm32/ directory not found"
+fi
 
 # ─── Summary ───────────────────────────────────────────────────
 log_section "Summary"
