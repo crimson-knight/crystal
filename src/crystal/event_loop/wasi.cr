@@ -12,16 +12,77 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   end
 
   # Runs the event loop.
+  #
+  # In the WASI single-threaded environment, this performs a single poll_oneoff
+  # call. When *blocking* is true, it waits using a clock subscription to avoid
+  # busy-waiting. When false, it uses a zero timeout to return immediately.
+  #
+  # Returns `true` to indicate there may be more work to do. In WASI's
+  # single-threaded cooperative model, this always returns `true` since we
+  # cannot track registered event count without additional infrastructure.
   def run(blocking : Bool) : Bool
-    raise NotImplementedError.new("Crystal::Wasi::EventLoop.run")
+    if blocking
+      # Block for a short duration to avoid busy-waiting.
+      # Use a 100ms poll to allow the runtime to periodically check for work.
+      poll_timeout_ns = 100_000_000_u64 # 100ms in nanoseconds
+    else
+      # Non-blocking: use a zero timeout so poll_oneoff returns immediately
+      poll_timeout_ns = 0_u64
+    end
+
+    subscription = LibWasi::Subscription.new
+    subscription.userdata = 0_u64
+    subscription.u_tag = LibWasi::EventType::Clock
+    clock = LibWasi::SubscriptionClock.new
+    clock.id = 1_u64 # CLOCK_MONOTONIC
+    clock.timeout = poll_timeout_ns
+    clock.precision = 0_u64
+    clock.flags = LibWasi::SubClockFlags::None
+    subscription.u = LibWasi::SubscriptionU.new
+    subscription.u.clock = clock
+
+    event = LibWasi::Event.new
+    nevents = LibWasi::Size.new(0)
+
+    LibWasi.poll_oneoff(pointerof(subscription), pointerof(event), 1, pointerof(nevents))
+
+    true
   end
 
+  # Interrupts a blocking run loop.
+  #
+  # In WASI's single-threaded model, there is no concurrent thread to
+  # interrupt. This is a no-op since the run loop will return on its own
+  # after the poll timeout expires.
   def interrupt : Nil
-    raise NotImplementedError.new("Crystal::Wasi::EventLoop.interrupt")
+    # No-op: WASI is single-threaded; the run loop will return after
+    # the poll_oneoff timeout expires.
   end
 
+  # Suspends the current fiber for *duration* using WASI poll_oneoff with
+  # a clock subscription.
   def sleep(duration : ::Time::Span) : Nil
-    raise NotImplementedError.new("Crystal::Wasi::EventLoop.sleep")
+    # Convert the duration to nanoseconds for WASI poll_oneoff.
+    # Clamp to zero to handle negative durations gracefully.
+    timeout_ns = duration.total_nanoseconds
+    timeout_ns = 0.0 if timeout_ns < 0
+    timeout_ns = timeout_ns.to_u64
+
+    subscription = LibWasi::Subscription.new
+    subscription.userdata = 0_u64
+    subscription.u_tag = LibWasi::EventType::Clock
+    clock = LibWasi::SubscriptionClock.new
+    clock.id = 1_u64 # CLOCK_MONOTONIC
+    clock.timeout = timeout_ns
+    clock.precision = 0_u64
+    clock.flags = LibWasi::SubClockFlags::None
+    subscription.u = LibWasi::SubscriptionU.new
+    subscription.u.clock = clock
+
+    event = LibWasi::Event.new
+    nevents = LibWasi::Size.new(0)
+
+    LibWasi.poll_oneoff(pointerof(subscription), pointerof(event), 1, pointerof(nevents))
   end
 
   # Creates a timeout_event.

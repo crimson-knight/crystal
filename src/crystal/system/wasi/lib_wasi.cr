@@ -93,6 +93,67 @@ lib LibWasi
     d_type : FileType
   end
 
+  # Event types for poll_oneoff subscriptions
+  enum EventType : UInt8
+    Clock   = 0 # Timer/clock event
+    FdRead  = 1 # File descriptor ready for reading
+    FdWrite = 2 # File descriptor ready for writing
+  end
+
+  # Subscription flags for clock events
+  @[Flags]
+  enum SubClockFlags : UInt16
+    Absolute # If set, the timeout is absolute; otherwise it is relative
+  end
+
+  # Clock subscription body
+  struct SubscriptionClock
+    id : UInt64         # Clock ID (0 = CLOCK_REALTIME, 1 = CLOCK_MONOTONIC)
+    timeout : UInt64    # Timeout in nanoseconds
+    precision : UInt64  # Precision hint in nanoseconds
+    flags : SubClockFlags
+  end
+
+  # FD read/write subscription body
+  struct SubscriptionFdReadwrite
+    file_descriptor : Fd
+  end
+
+  # Tagged union content for a subscription
+  # The WASI preview1 ABI lays this out as a tagged union where the
+  # tag (EventType) is stored in the Subscription struct itself, not
+  # inside this union.
+  union SubscriptionU
+    clock : SubscriptionClock
+    fd_read : SubscriptionFdReadwrite
+    fd_write : SubscriptionFdReadwrite
+  end
+
+  # A subscription to an event that can be passed to poll_oneoff.
+  # WASI preview1 layout: userdata(8) + tag(1) + pad(7) + union(32) = 48 bytes
+  struct Subscription
+    userdata : UInt64
+    u_tag : EventType
+    u : SubscriptionU
+  end
+
+  # Event readwrite data returned by poll_oneoff for FD events
+  struct EventFdReadwrite
+    nbytes : FileSize # Number of bytes available
+    flags : UInt16    # Event flags (e.g. HANGUP)
+  end
+
+  # An event produced by poll_oneoff.
+  # WASI preview1 layout: userdata(8) + error(2) + type(1) + pad(5) + fd_readwrite(16) = 32 bytes
+  struct Event
+    userdata : UInt64
+    error : UInt16
+    type : EventType
+    fd_readwrite : EventFdReadwrite
+  end
+
+  fun poll_oneoff = __wasi_poll_oneoff(in_ptr : Subscription*, out_ptr : Event*, nsubscriptions : Size, nevents : Size*) : WasiError
+
   fun fd_prestat_get = __wasi_fd_prestat_get(fd : Fd, stat : Prestat*) : WasiError
   fun fd_prestat_dir_name = __wasi_fd_prestat_dir_name(fd : Fd, path : UInt8*, len : Size) : WasiError
   fun path_open = __wasi_path_open(fd : Fd, dirflags : LookupFlags, path : UInt8*, oflags : OpenFlags, fs_rights_base : Rights, fs_rights_inheriting : Rights, fdflags : FdFlags, ret : Fd*) : WasiError
