@@ -63,7 +63,7 @@ JSON format with:
 ## Success Criteria
 - [x] `INCREMENTAL_PLAN.md` exists at repo root with all sections populated
 - [x] `IC_PHASE_0_DOCS.md` exists (this file)
-- [ ] All 7 `IC_PHASE_*.md` files exist with complete detail
+- [x] All 7 `IC_PHASE_*.md` files exist with complete detail
 - [ ] `INCREMENTAL_PLAN.canvas` opens correctly in Obsidian
 - [ ] Canvas nodes link to the correct phase article files
 - [ ] Opening the canvas gives an immediate visual understanding of scope and dependencies
