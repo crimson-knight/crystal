@@ -165,14 +165,14 @@ Files changed:                    3 of 130
 - **AST cloning**: `ASTNode#clone` at `syntax/ast.cr:44-49`
 
 ## Success Criteria
-- [ ] After first compilation with `--incremental`, `incremental_cache.json` exists in cache directory
-- [ ] Cache JSON contains correct compiler version, target, flags, and per-file fingerprints
-- [ ] On second compilation with no changes, parse cache hits 100% (visible via `--stats`)
-- [ ] Modifying one file shows 1 cache miss, all others hit (via `--stats`)
-- [ ] Changing compiler flags invalidates entire cache (version/flags mismatch)
-- [ ] In watch mode, second recompilation is measurably faster (parse phase shorter)
-- [ ] `ASTNode#clone` correctly deep-copies nodes (semantic doesn't corrupt cache)
-- [ ] Parse cache memory usage is reasonable (< 2x single compilation memory)
+- [x] After first compilation with `--incremental`, `incremental_cache.json` exists in cache directory
+- [x] Cache JSON contains correct compiler version, target, flags, and per-file fingerprints
+- [x] On second compilation with no changes, parse cache hits 100% (visible via `--stats`)
+- [x] Modifying one file shows 1 cache miss, all others hit (via `--stats`)
+- [x] Changing compiler flags invalidates entire cache (version/flags mismatch)
+- [x] In watch mode, second recompilation is measurably faster (parse phase shorter)
+- [x] `ASTNode#clone` correctly deep-copies nodes (semantic doesn't corrupt cache)
+- [x] Parse cache memory usage is reasonable (< 2x single compilation memory)
 
 ## Testing Instructions
 ```bash

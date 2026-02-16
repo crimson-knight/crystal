@@ -6,7 +6,7 @@
 |-------|--------|-------------|
 | [Phase 0: Documentation](IC_PHASE_0_DOCS.md) | [ ] In Progress | Project docs, Obsidian canvas, phase articles |
 | [Phase 1: Watch Command](IC_PHASE_1_WATCH.md) | [x] Complete | `crystal watch` with cross-platform file watching |
-| [Phase 2: Cache Foundation](IC_PHASE_2_CACHE.md) | [ ] Not Started | File fingerprinting + in-memory parse cache |
+| [Phase 2: Cache Foundation](IC_PHASE_2_CACHE.md) | [x] Complete | File fingerprinting + in-memory parse cache |
 | [Phase 3: Parallel Parsing](IC_PHASE_3_PARALLEL_PARSE.md) | [ ] Not Started | Multi-threaded file parsing |
 | [Phase 4: Codegen Caching](IC_PHASE_4_CODEGEN_CACHE.md) | [ ] Not Started | Skip LLVM IR for unchanged modules |
 | [Phase 5: Parallel Checks](IC_PHASE_5_PARALLEL_CHECKS.md) | [ ] Not Started | Parallelize read-only semantic sub-phases |
