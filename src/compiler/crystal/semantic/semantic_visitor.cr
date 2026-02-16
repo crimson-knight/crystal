@@ -85,19 +85,57 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   end
 
   private def require_file(node : Require, filename : String)
-    parser = @program.new_parser(File.read(filename))
-    parser.filename = filename
-    parser.wants_doc = @program.wants_doc?
-    begin
-      parsed_nodes = parser.parse
-      parsed_nodes = @program.normalize(parsed_nodes, inside_exp: inside_exp?)
-      # We must type the node immediately, in case a file requires another
-      # *before* one of the files in `filenames`
-      parsed_nodes.accept self
-    rescue ex : CodeError
-      node.raise "while requiring \"#{node.string}\"", ex
-    rescue ex
-      raise Error.new "while requiring \"#{node.string}\"", ex
+    if (compiler = @program.compiler) && compiler.incremental?
+      parse_cache = compiler.parse_cache
+      content = File.read(filename)
+      content_hash = Crystal::Digest::MD5.hexdigest(content)
+
+      if cached_ast = parse_cache.get(filename, content_hash)
+        begin
+          parsed_nodes = @program.normalize(cached_ast, inside_exp: inside_exp?)
+          # We must type the node immediately, in case a file requires another
+          # *before* one of the files in `filenames`
+          parsed_nodes.accept self
+          return FileNode.new(parsed_nodes, filename)
+        rescue ex : CodeError
+          node.raise "while requiring \"#{node.string}\"", ex
+        rescue ex
+          raise Error.new "while requiring \"#{node.string}\"", ex
+        end
+      end
+
+      # Cache miss - parse normally and store result
+      parser = @program.new_parser(content)
+      parser.filename = filename
+      parser.wants_doc = @program.wants_doc?
+      begin
+        parsed_nodes = parser.parse
+        parse_cache.store(filename, content_hash, parsed_nodes.clone)
+        parsed_nodes = @program.normalize(parsed_nodes, inside_exp: inside_exp?)
+        # We must type the node immediately, in case a file requires another
+        # *before* one of the files in `filenames`
+        parsed_nodes.accept self
+      rescue ex : CodeError
+        node.raise "while requiring \"#{node.string}\"", ex
+      rescue ex
+        raise Error.new "while requiring \"#{node.string}\"", ex
+      end
+    else
+      # Original code path (no incremental compilation)
+      parser = @program.new_parser(File.read(filename))
+      parser.filename = filename
+      parser.wants_doc = @program.wants_doc?
+      begin
+        parsed_nodes = parser.parse
+        parsed_nodes = @program.normalize(parsed_nodes, inside_exp: inside_exp?)
+        # We must type the node immediately, in case a file requires another
+        # *before* one of the files in `filenames`
+        parsed_nodes.accept self
+      rescue ex : CodeError
+        node.raise "while requiring \"#{node.string}\"", ex
+      rescue ex
+        raise Error.new "while requiring \"#{node.string}\"", ex
+      end
     end
 
     FileNode.new(parsed_nodes, filename)

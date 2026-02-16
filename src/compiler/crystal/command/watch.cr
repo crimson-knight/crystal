@@ -76,6 +76,9 @@ class Crystal::Command
 
     sources = gather_sources(filenames)
 
+    # Enable incremental compilation by default in watch mode
+    compiler.incremental = true
+
     # Determine output filename
     output_extension = compiler.codegen_target.executable_extension
     first_filename = sources.first.filename

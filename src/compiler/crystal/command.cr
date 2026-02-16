@@ -564,6 +564,9 @@ class Crystal::Command
         opts.on("--static", "Link statically") do
           compiler.static = true
         end
+        opts.on("--incremental", "Enable incremental compilation (file fingerprinting and parse cache)") do
+          compiler.incremental = true
+        end
       end
 
       opts.on("--stdin-filename ", "Source file name to be read from STDIN") do |stdin_filename|
@@ -700,6 +703,9 @@ class Crystal::Command
     opts.on("--no-color", "Disable colored output") do
       @color = false
       compiler.color = false
+    end
+    opts.on("--incremental", "Enable incremental compilation (file fingerprinting and parse cache)") do
+      compiler.incremental = true
     end
     target_specific_opts(opts, compiler)
     setup_compiler_warning_options(opts, compiler)

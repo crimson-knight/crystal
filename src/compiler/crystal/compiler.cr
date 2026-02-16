@@ -2,6 +2,7 @@ require "option_parser"
 require "file_utils"
 require "colorize"
 require "crystal/digest/md5"
+require "./incremental_cache"
 {% if flag?(:msvc) %}
   require "./loader"
 {% end %}
@@ -203,6 +204,15 @@ module Crystal
 
     property dependency_printer : DependencyPrinter? = nil
 
+    # In-memory cache of parsed ASTs for incremental compilation.
+    # Survives across compile() calls so the watch loop can skip
+    # re-parsing unchanged files.
+    property parse_cache : ParseCache = ParseCache.new
+
+    # If `true`, enables incremental compilation features:
+    # file fingerprinting, parse caching, and cache persistence.
+    property? incremental = false
+
     # Program that was created for the last compilation.
     property! program : Program
 
@@ -235,9 +245,12 @@ module Crystal
 
       units = codegen program, node, source, output_filename unless @no_codegen
 
+      save_incremental_cache(program, source) if @incremental
+
       @progress_tracker.clear
       print_macro_run_stats(program)
       print_codegen_stats(units)
+      print_parse_cache_stats
 
       Result.new program, node
     end
@@ -275,6 +288,8 @@ module Crystal
     end
 
     private def new_program(sources)
+      @parse_cache.reset_stats if @incremental
+
       @program = program = Program.new
       program.compiler = self
       program.filename = sources.first.filename
@@ -838,6 +853,42 @@ module Crystal
           puts " - #{unit.original_name} (#{unit.name}.bc)"
         end
       end
+    end
+
+    private def print_parse_cache_stats
+      return unless @progress_tracker.stats?
+      return unless @incremental
+
+      cache = @parse_cache
+      total = cache.total_lookups
+      return if total == 0
+
+      puts
+      puts "Parse cache:"
+      puts " - hits: #{cache.hits}, misses: #{cache.misses} (#{sprintf("%.1f", cache.hit_rate)}% hit rate)"
+    end
+
+    private def save_incremental_cache(program, sources)
+      output_dir = CacheDir.instance.directory_for(sources)
+
+      fingerprints = {} of String => FileFingerprint
+      program.requires.each do |filename|
+        begin
+          fingerprints[filename] = IncrementalCache.fingerprint(filename)
+        rescue IO::Error
+          # File may have been deleted between compilation and cache save
+        end
+      end
+
+      data = IncrementalCacheData.new(
+        compiler_version: Config.version,
+        codegen_target: @codegen_target.to_s,
+        flags: @flags.dup,
+        prelude: @prelude,
+        file_fingerprints: fingerprints,
+      )
+
+      IncrementalCache.save(output_dir, data)
     end
 
     getter(target_machine : LLVM::TargetMachine) do
