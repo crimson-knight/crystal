@@ -518,18 +518,8 @@ module Crystal
           end
         end
 
-        # Use WASI SDK sysroot if available for system include/lib paths
-        if wasi_sdk = ENV["WASI_SDK_PATH"]?
-          sysroot = File.join(wasi_sdk, "share", "wasi-sysroot")
-          if Dir.exists?(sysroot)
-            link_flags += " --sysroot #{Process.quote_posix(sysroot)}"
-          end
-        end
-
-        # Add CRYSTAL_WASM_LIBS as an additional library search path
-        if wasm_libs = ENV["CRYSTAL_WASM_LIBS"]?
-          link_flags += " -L#{Process.quote_posix(wasm_libs)}"
-        end
+        # NOTE: wasm-ld does not support --sysroot. WASI SDK sysroot library
+        # paths are added via -L flags in lib_flags_wasm (link.cr).
 
         {"wasm-ld", %(wasm-ld "${@}"#{wasm_eh_objs} -o #{Process.quote_posix(output_filename)} #{link_flags} -lc -lwasi-emulated-mman -lwasi-emulated-process-clocks #{program.lib_flags(@cross_compile)}), object_names}
       elsif program.has_flag? "avr"

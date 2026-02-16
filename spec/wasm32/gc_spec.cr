@@ -97,7 +97,7 @@ describe "WASM Garbage Collection" do
 
     it "survives pressure with periodic collection" do
       100.times do |i|
-        arr = (0..10).map { |j| "item_#{i}_#{j}" }
+        _arr = (0..10).map { |j| "item_#{i}_#{j}" }
         GC.collect if i % 50 == 0
       end
     end
@@ -117,7 +117,7 @@ describe "WASM Garbage Collection" do
   describe "GC with exceptions" do
     it "handles exception during GC-managed allocation" do
       result = begin
-        arr = [1, 2, 3]
+        _arr = [1, 2, 3]
         raise "gc exception test"
         "not reached"
       rescue ex

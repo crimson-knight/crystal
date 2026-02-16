@@ -23,9 +23,8 @@ private class WasmIOError < IO::Error
 end
 
 # Helper methods for testing method-level exception handling
-private def method_that_raises(msg : String) : String
+private def method_that_raises(msg : String) : NoReturn
   raise msg
-  "not reached"
 end
 
 private def method_with_rescue : String
@@ -76,7 +75,7 @@ describe "WASM Exception Handling" do
     it "does not enter rescue when no exception is raised" do
       rescued = false
       begin
-        x = 1 + 2
+        _x = 1 + 2
       rescue
         rescued = true
       end
@@ -126,7 +125,7 @@ describe "WASM Exception Handling" do
     it "executes ensure after normal flow" do
       ensured = false
       begin
-        x = 1
+        _x = 1
       ensure
         ensured = true
       end
