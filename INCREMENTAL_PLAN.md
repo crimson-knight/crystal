@@ -8,7 +8,7 @@
 | [Phase 1: Watch Command](IC_PHASE_1_WATCH.md) | [x] Complete | `crystal watch` with cross-platform file watching |
 | [Phase 2: Cache Foundation](IC_PHASE_2_CACHE.md) | [x] Complete | File fingerprinting + in-memory parse cache |
 | [Phase 3: Parallel Parsing](IC_PHASE_3_PARALLEL_PARSE.md) | [x] Complete | Multi-threaded file parsing |
-| [Phase 4: Codegen Caching](IC_PHASE_4_CODEGEN_CACHE.md) | [ ] Not Started | Skip LLVM IR for unchanged modules |
+| [Phase 4: Codegen Caching](IC_PHASE_4_CODEGEN_CACHE.md) | [x] Complete | Skip LLVM IR for unchanged modules |
 | [Phase 5: Parallel Checks](IC_PHASE_5_PARALLEL_CHECKS.md) | [x] Complete | Parallelize read-only semantic sub-phases |
 | [Phase 6: Signature Tracking](IC_PHASE_6_SIGNATURES.md) | [ ] Not Started | Skip semantic for body-only changes |
 | [Phase 7: Semantic Parallelism](IC_PHASE_7_SEMANTIC.md) | [ ] Not Started | Parallelize MainVisitor type inference |
