@@ -1,0 +1,28 @@
+========================================================================
+   Crystal Watch Mode Benchmark Results
+========================================================================
+ Compiler:  Crystal 1.20.0-dev [1a1cc54ec] (2026-02-16)
+ Date:      2026-02-16 18:19:47
+ Machine:   arm64 / macOS 26.2
+ Iterations: 3
+========================================================================
+
+Target: spider-gazelle
+
+Sequential builds:
+  Cold build:                      8307 ms
+  Warm (no change):                 322 ms
+  Warm (file touched):             1791 ms
+
+Watch mode:
+  Initial compilation:             7997 ms
+  Recompilation #1 (touched):      2017 ms
+  Recompilation #2 (touched):      2515 ms
+  Recompilation #3 (touched):      2137 ms
+  Average recompilation:           2223 ms
+
+  Watch mode advantage:             24% slower
+
+------------------------------------------------------------------------
+
+========================================================================

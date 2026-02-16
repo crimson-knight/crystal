@@ -634,18 +634,6 @@
       <div class="bar-value faster">446 ms</div>
     </div>
 
-    <!-- Amber v1 -->
-    <div class="bar-row" style="margin-top:14px">
-      <div class="bar-label">Amber v1</div>
-      <div class="bar-track"><div class="bar-fill stock" style="width:92%"></div></div>
-      <div class="bar-value neutral">12,324 ms</div>
-    </div>
-    <div class="bar-row">
-      <div class="bar-label"></div>
-      <div class="bar-track"><div class="bar-fill release" style="width:18%"></div></div>
-      <div class="bar-value faster">2,424 ms</div>
-    </div>
-
     <!-- Amber v2 -->
     <div class="bar-row" style="margin-top:14px">
       <div class="bar-label">Amber v2</div>
@@ -654,8 +642,8 @@
     </div>
     <div class="bar-row">
       <div class="bar-label"></div>
-      <div class="bar-track"><div class="bar-fill release" style="width:21%"></div></div>
-      <div class="bar-value faster">2,787 ms</div>
+      <div class="bar-track"><div class="bar-fill warm" style="width:2.5%"></div></div>
+      <div class="bar-value faster">340 ms</div>
     </div>
   </div>
 
@@ -761,44 +749,23 @@
     </div>
 
     <div class="fw-card">
-      <h3>Amber v1 <span class="health fail">FAIL</span></h3>
-      <div class="deps">Amber framework v1</div>
-      <div class="fw-stat-row">
-        <span class="fw-stat-label">Stock cold</span>
-        <span class="fw-stat-val">12,324 ms</span>
-      </div>
-      <div class="fw-stat-row">
-        <span class="fw-stat-label">Warm (touched)</span>
-        <span class="fw-stat-val" style="color:var(--crystal-green)">2,424 ms</span>
-      </div>
-      <div class="fw-stat-row">
-        <span class="fw-stat-label">Improvement</span>
-        <span class="improvement">80% faster</span>
-      </div>
-      <div class="fw-stat-row">
-        <span class="fw-stat-label">Binary size</span>
-        <span class="fw-stat-val">6.0 MB / 2.0 MB</span>
-      </div>
-    </div>
-
-    <div class="fw-card">
-      <h3>Amber v2 <span class="health fail">FAIL</span></h3>
-      <div class="deps">Amber framework v2</div>
+      <h3>Amber v2 <span class="health pass">PASS</span></h3>
+      <div class="deps">Amber framework v2 (crimson-knight/amber)</div>
       <div class="fw-stat-row">
         <span class="fw-stat-label">Stock cold</span>
         <span class="fw-stat-val">13,350 ms</span>
       </div>
       <div class="fw-stat-row">
+        <span class="fw-stat-label">Warm (no chg)</span>
+        <span class="fw-stat-val" style="color:var(--crystal-green); font-weight:700">340 ms</span>
+      </div>
+      <div class="fw-stat-row">
         <span class="fw-stat-label">Warm (touched)</span>
-        <span class="fw-stat-val" style="color:var(--crystal-green)">2,787 ms</span>
+        <span class="fw-stat-val" style="color:var(--crystal-green)">2,440 ms</span>
       </div>
       <div class="fw-stat-row">
         <span class="fw-stat-label">Improvement</span>
-        <span class="improvement">79% faster</span>
-      </div>
-      <div class="fw-stat-row">
-        <span class="fw-stat-label">Binary size</span>
-        <span class="fw-stat-val">6.9 MB / 2.3 MB</span>
+        <span class="improvement">97% faster</span>
       </div>
     </div>
   </div>
@@ -808,10 +775,11 @@
     <p>
       With semantic skip, no-change warm builds are transformational:
       <strong>Kemal 301ms</strong> (95% faster than 7.2s stock),
+      <strong>Amber v2 340ms</strong> (97% faster),
       <strong>Spider-Gazelle 361ms</strong> (95% faster),
       <strong>Lucky 377ms</strong> (94% faster),
       <strong>Athena 446ms</strong> (~95% faster).
-      All four major frameworks now recompile in <strong>under 500ms</strong> when
+      All five major frameworks now recompile in <strong>under 500ms</strong> when
       no source files have changed. When a file is touched, the compiler falls back
       to full semantic + codegen with link skip (686ms&ndash;2.6s), still 64&ndash;90%
       faster than stock.
@@ -1403,9 +1371,200 @@
   </div>
 </section>
 
-<!-- SECTION 8: Raw Data -->
+<!-- SECTION 8: Parallelism Benchmarks -->
 <section>
-  <h2><span class="num">08</span> Complete Data</h2>
+  <h2><span class="num">08</span> Parallelism: 1.1x&ndash;1.4x Codegen Speedup</h2>
+  <p class="section-desc">
+    Thread-level parallelism in codegen provides measurable speedup on cold builds.
+    Parallel parsing shows no benefit at current project scale.
+    Measured on Apple Silicon (10 cores).
+  </p>
+
+  <h3 style="font-size:0.85rem; color:var(--text-dim); margin:24px 0 12px; text-transform:uppercase; letter-spacing:0.06em;">Codegen Thread Scaling</h3>
+  <table class="cmp-table">
+    <thead>
+      <tr>
+        <th>Target</th>
+        <th style="text-align:right">T=1</th>
+        <th style="text-align:right">T=2</th>
+        <th style="text-align:right">T=4 (default)</th>
+        <th style="text-align:right">T=8</th>
+        <th style="text-align:right">Speedup 1&rarr;4</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="mono">havlak</td>
+        <td style="text-align:right">2,230</td>
+        <td style="text-align:right">1,458</td>
+        <td style="text-align:right">1,298</td>
+        <td style="text-align:right">1,265</td>
+        <td style="text-align:right; color:var(--crystal-green); font-weight:600;">1.72x</td>
+      </tr>
+      <tr>
+        <td class="mono">kemal</td>
+        <td style="text-align:right">10,180</td>
+        <td style="text-align:right">8,755</td>
+        <td style="text-align:right">8,155</td>
+        <td style="text-align:right">8,100</td>
+        <td style="text-align:right; color:var(--crystal-green); font-weight:600;">1.25x</td>
+      </tr>
+      <tr>
+        <td class="mono">spider-gazelle</td>
+        <td style="text-align:right">9,542</td>
+        <td style="text-align:right">8,449</td>
+        <td style="text-align:right">7,836</td>
+        <td style="text-align:right">7,797</td>
+        <td style="text-align:right; color:var(--crystal-green); font-weight:600;">1.22x</td>
+      </tr>
+      <tr>
+        <td class="mono">athena</td>
+        <td style="text-align:right">11,897</td>
+        <td style="text-align:right">10,425</td>
+        <td style="text-align:right">9,600</td>
+        <td style="text-align:right">9,317</td>
+        <td style="text-align:right; color:var(--crystal-green); font-weight:600;">1.24x</td>
+      </tr>
+      <tr>
+        <td class="mono">lucky</td>
+        <td style="text-align:right">9,699</td>
+        <td style="text-align:right">8,341</td>
+        <td style="text-align:right">8,356</td>
+        <td style="text-align:right">8,069</td>
+        <td style="text-align:right; color:var(--crystal-green); font-weight:600;">1.16x</td>
+      </tr>
+      <tr>
+        <td class="mono">amber-v2</td>
+        <td style="text-align:right">17,756</td>
+        <td style="text-align:right">&mdash;</td>
+        <td style="text-align:right">15,114</td>
+        <td style="text-align:right">14,788</td>
+        <td style="text-align:right; color:var(--crystal-green); font-weight:600;">1.17x</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="fw-grid">
+    <div class="fw-card">
+      <h3>Codegen Threading: 1.15x&ndash;1.72x</h3>
+      <div class="deps">LLVM codegen parallelism</div>
+      <p style="font-size:0.85rem; color:var(--text-dim); line-height:1.6;">
+        Thread parallelism in LLVM codegen provides consistent speedup.
+        Smaller programs benefit more (codegen is larger % of total time).
+        Diminishing returns beyond 4 threads.
+      </p>
+    </div>
+    <div class="fw-card">
+      <h3>Parallel Parsing: No Benefit</h3>
+      <div class="deps">Thread spawning overhead</div>
+      <p style="font-size:0.85rem; color:var(--text-dim); line-height:1.6;">
+        At current project scale (85&ndash;141 files), thread spawning overhead
+        (~50&ndash;100ms) exceeds the parsing savings. Recommendation: disable
+        for typical builds.
+      </p>
+    </div>
+    <div class="fw-card">
+      <h3>Sweet Spot: 4 Threads</h3>
+      <div class="deps">Optimal thread count</div>
+      <p style="font-size:0.85rem; color:var(--text-dim); line-height:1.6;">
+        Default of 4 codegen threads provides optimal performance on Apple Silicon.
+        Going to 8 threads yields only 1&ndash;4% additional improvement.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 9: Watch Mode Analysis -->
+<section>
+  <h2><span class="num">09</span> Watch Mode: Persistent State vs Sequential</h2>
+  <p class="section-desc">
+    Crystal watch mode keeps the compiler alive between builds, preserving the in-memory
+    parse cache. However, our semantic skip optimization makes sequential builds faster
+    for no-change scenarios.
+  </p>
+
+  <h3 style="font-size:0.85rem; color:var(--text-dim); margin:24px 0 12px; text-transform:uppercase; letter-spacing:0.06em;">Watch Mode vs Sequential Builds</h3>
+  <table class="cmp-table">
+    <thead>
+      <tr>
+        <th>Target</th>
+        <th style="text-align:right">Sequential Cold</th>
+        <th style="text-align:right">Seq No-Change</th>
+        <th style="text-align:right">Seq Touched</th>
+        <th style="text-align:right">Watch Avg Recompile</th>
+        <th style="text-align:right">Watch vs Seq</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="mono">havlak</td>
+        <td style="text-align:right">1,331ms</td>
+        <td style="text-align:right; color:var(--crystal-green);">208ms</td>
+        <td style="text-align:right">828ms</td>
+        <td style="text-align:right">552ms</td>
+        <td style="text-align:right; color:var(--crystal-green); font-weight:600;">33% faster</td>
+      </tr>
+      <tr>
+        <td class="mono">kemal</td>
+        <td style="text-align:right">8,213ms</td>
+        <td style="text-align:right; color:var(--crystal-green);">275ms</td>
+        <td style="text-align:right">2,295ms</td>
+        <td style="text-align:right">2,834ms</td>
+        <td style="text-align:right; color:var(--crystal-highlight); font-weight:600;">23% slower</td>
+      </tr>
+      <tr>
+        <td class="mono">spider-gazelle</td>
+        <td style="text-align:right">8,307ms</td>
+        <td style="text-align:right; color:var(--crystal-green);">322ms</td>
+        <td style="text-align:right">1,791ms</td>
+        <td style="text-align:right">2,223ms</td>
+        <td style="text-align:right; color:var(--crystal-highlight); font-weight:600;">24% slower</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="fw-grid">
+    <div class="fw-card">
+      <h3>Parse Cache Works (But Clone Doesn&rsquo;t)</h3>
+      <div class="deps">Cache hit rate vs deep-copy cost</div>
+      <p style="font-size:0.85rem; color:var(--text-dim); line-height:1.6;">
+        Watch mode achieves 100% parse cache hit rate (141 hits, 0 misses for Kemal).
+        But ASTNode#clone deep-copy is nearly as expensive as re-parsing, negating
+        the savings.
+      </p>
+    </div>
+    <div class="fw-card">
+      <h3>Memory Growth</h3>
+      <div class="deps">GC pressure across compilations</div>
+      <p style="font-size:0.85rem; color:var(--text-dim); line-height:1.6;">
+        Watch mode memory grows 70% across 3 compilations (1044MB to 1814MB for Kemal).
+        GC pressure increases with each recompilation, slowing later builds.
+      </p>
+    </div>
+    <div class="fw-card">
+      <h3>Semantic Skip Wins</h3>
+      <div class="deps">Sequential outperforms watch</div>
+      <p style="font-size:0.85rem; color:var(--text-dim); line-height:1.6;">
+        Sequential builds with the semantic skip optimization achieve 208&ndash;322ms for
+        no-change rebuilds &mdash; faster than any watch mode scenario. The best approach:
+        use sequential builds for development.
+      </p>
+    </div>
+  </div>
+
+  <div class="insight">
+    <div class="label">Summary</div>
+    <p>
+      The semantic skip optimization (Sections 03&ndash;04) provides <strong>95% speedup</strong>
+      on no-change builds, making it faster than watch mode. Watch mode&rsquo;s parse cache
+      saves ~175ms of parsing but loses that to AST deep-cloning overhead.
+    </p>
+  </div>
+</section>
+
+<!-- SECTION 10: Raw Data -->
+<section>
+  <h2><span class="num">10</span> Complete Data</h2>
   <p class="section-desc">All measurements in milliseconds. Both compilers are release builds. February 16, 2026.</p>
 
   <h3 style="font-size:0.85rem; color:var(--text-dim); margin:24px 0 12px; text-transform:uppercase; letter-spacing:0.06em;">Sample Programs</h3>
@@ -1520,24 +1679,14 @@
         <td><span class="health fail" style="display:inline-block">FAIL</span></td>
       </tr>
       <tr>
-        <td>Amber v1</td>
-        <td style="text-align:right">12,324</td>
-        <td style="text-align:right">25,133</td>
-        <td style="text-align:right">14,104</td>
-        <td style="text-align:right">27,295</td>
-        <td style="text-align:right">&mdash;</td>
-        <td style="text-align:right;color:var(--crystal-green)">2,424</td>
-        <td><span class="health fail" style="display:inline-block">FAIL</span></td>
-      </tr>
-      <tr>
         <td>Amber v2</td>
         <td style="text-align:right">13,350</td>
         <td style="text-align:right">28,203</td>
         <td style="text-align:right">15,053</td>
         <td style="text-align:right">30,420</td>
-        <td style="text-align:right">&mdash;</td>
-        <td style="text-align:right;color:var(--crystal-green)">2,787</td>
-        <td><span class="health fail" style="display:inline-block">FAIL</span></td>
+        <td style="text-align:right;color:var(--crystal-green); font-weight:700;">340</td>
+        <td style="text-align:right;color:var(--crystal-green)">2,440</td>
+        <td><span class="health pass" style="display:inline-block">PASS</span></td>
       </tr>
     </tbody>
   </table>

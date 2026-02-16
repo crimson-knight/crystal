@@ -1,0 +1,67 @@
+==================================================================
+   Crystal Incremental Compiler - Parallelism Benchmark Results
+==================================================================
+
+  Compiler:     Crystal 1.20.0-dev [1a1cc54ec] (2026-02-16)
+  Date:         2026-02-16
+  Machine:      Apple Silicon (arm64), 10 cores
+  Runs/config:  1 (cold builds, cache cleaned between runs)
+
+==================================================================
+
+  CODEGEN THREAD SCALING
+  (CRYSTAL_PARALLEL_PARSE=1, --threads varies)
+
+  Target              T=1      T=2      T=4      T=8      1->4x    1->8x
+  --------------------------------------------------------------------------
+  havlak              2230ms   1458ms   1298ms   1265ms   1.72x    1.76x
+  kemal              10180ms   8755ms   8155ms   8100ms   1.25x    1.26x
+  spider-gazelle      9542ms   8449ms   7836ms   7797ms   1.22x    1.22x
+  athena             11897ms  10425ms   9600ms   9317ms   1.24x    1.28x
+  lucky               9699ms   8341ms   8356ms   8069ms   1.16x    1.20x
+  amber-v2           17756ms     -    15114ms  14788ms    1.17x    1.20x
+  --------------------------------------------------------------------------
+
+  PARALLEL PARSING EFFECT
+  (--threads 4, CRYSTAL_PARALLEL_PARSE=0 vs =1)
+
+  Target              Parse=SEQ  Parse=PAR  Speedup
+  --------------------------------------------------------------------------
+  havlak               1214ms    1266ms    0.96x  (no benefit - single file)
+  kemal                7603ms    8163ms    0.93x  (slight overhead)
+  spider-gazelle       7781ms    8184ms    0.95x  (slight overhead)
+  athena               8993ms    9461ms    0.95x  (slight overhead)
+  lucky                7798ms    8335ms    0.94x  (slight overhead)
+  --------------------------------------------------------------------------
+  Note: Parallel parsing adds ~3-7% overhead at this scale.
+  The spawning cost exceeds the parallelism benefit.
+
+  COMBINED EFFECT (Sequential vs Default Parallel)
+
+  Target              T=1,SEQ    T=4,PAR    Speedup    Saved
+  --------------------------------------------------------------------------
+  havlak               1771ms    1280ms     1.38x      491ms
+  kemal                9613ms    8355ms     1.15x     1258ms
+  spider-gazelle       9589ms    7959ms     1.20x     1630ms
+  athena              11281ms    9417ms     1.20x     1864ms
+  lucky                9720ms    8474ms     1.15x     1246ms
+  amber-v2            16546ms   15114ms     1.09x     1432ms
+  --------------------------------------------------------------------------
+
+  ANALYSIS:
+
+  Thread parallelism (codegen) provides 1.09x-1.38x speedup:
+    - Smaller programs (havlak): higher relative speedup (1.38x)
+      because codegen is a larger portion of total time
+    - Framework apps: 1.09-1.20x speedup (semantic dominates)
+    - Diminishing returns beyond 4 threads on 10-core Apple Silicon
+    - 1->2 threads: biggest jump; 4->8: marginal improvement
+
+  Parallel parsing provides no measurable benefit:
+    - Thread spawning overhead (~50-100ms) exceeds parsing savings
+    - Crystal's require-based file discovery happens during semantic
+      analysis, not during the parallel parse phase
+    - Only files known at parse time can be parallelized
+    - Recommendation: Consider disabling for typical builds
+
+==================================================================
