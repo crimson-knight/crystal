@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crystal Caverns - A Crystal WASM Adventure</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-dark: #0a0a0f;
+      --bg-panel: #0f0f18;
+      --bg-input: #0c0c14;
+      --border-glow: #2a2a4a;
+      --border-bright: #4a4a7a;
+      --text-main: #c8c8d4;
+      --text-dim: #5a5a72;
+      --text-bright: #e8e8f0;
+      --accent-cyan: #00d4ff;
+      --accent-gold: #ffd700;
+      --accent-green: #3fb950;
+      --accent-red: #f85149;
+      --accent-orange: #f0883e;
+      --accent-purple: #a371f7;
+      --hp-green: #3fb950;
+      --hp-yellow: #d29922;
+      --hp-red: #f85149;
+    }
+
+    body {
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', 'Courier New', monospace;
+      background: var(--bg-dark);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      overflow-x: hidden;
+    }
+
+    /* Scanline overlay */
+    body::after {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.03) 2px,
+        rgba(0, 0, 0, 0.03) 4px
+      );
+      z-index: 1000;
+    }
+
+    /* Header */
+    .header {
+      text-align: center;
+      padding: 1.5rem 1rem 1rem;
+      width: 100%;
+      max-width: 900px;
+    }
+
+    .header h1 {
+      font-family: 'Press Start 2P', monospace;
+      font-size: clamp(1.2rem, 4vw, 2rem);
+      color: var(--accent-gold);
+      text-shadow:
+        0 0 10px rgba(255, 215, 0, 0.5),
+        0 0 30px rgba(255, 215, 0, 0.2);
+      letter-spacing: 2px;
+      margin-bottom: 0.4rem;
+    }
+
+    .header .subtitle {
+      font-size: clamp(0.6rem, 2vw, 0.8rem);
+      color: var(--text-dim);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+    }
+
+    /* Main game container */
+    .game-container {
+      width: 100%;
+      max-width: 900px;
+      padding: 0 1rem 1rem;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    /* Status bar */
+    .status-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 1rem;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-glow);
+      border-radius: 6px;
+      font-size: 0.75rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .status-bar .room-name {
+      color: var(--accent-cyan);
+      font-weight: bold;
+    }
+
+    .status-bar .status-info {
+      color: var(--text-dim);
+    }
+
+    .status-bar .status-info span {
+      color: var(--text-main);
+    }
+
+    /* HP bar */
+    .hp-container {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .hp-label {
+      color: var(--accent-red);
+      font-weight: bold;
+      font-size: 0.75rem;
+      min-width: 24px;
+    }
+
+    .hp-bar-outer {
+      width: 120px;
+      height: 14px;
+      background: #1a0a0a;
+      border: 1px solid #3a1a1a;
+      border-radius: 3px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hp-bar-inner {
+      height: 100%;
+      background: var(--hp-green);
+      transition: width 0.4s ease, background-color 0.4s ease;
+      border-radius: 2px;
+      position: relative;
+    }
+
+    .hp-bar-inner.flash {
+      animation: hpFlash 0.3s ease;
+    }
+
+    @keyframes hpFlash {
+      0%, 100% { filter: brightness(1); }
+      50% { filter: brightness(2); }
+    }
+
+    .hp-text {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      min-width: 50px;
+    }
+
+    /* Output log */
+    .output-container {
+      flex: 1;
+      min-height: 300px;
+      max-height: calc(100vh - 340px);
+      background: var(--bg-panel);
+      border: 1px solid var(--border-glow);
+      border-radius: 6px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .output-container::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    #output-log {
+      padding: 1rem;
+      height: 100%;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+      line-height: 1.6;
+      font-size: 0.85rem;
+    }
+
+    #output-log::-webkit-scrollbar {
+      width: 6px;
+    }
+    #output-log::-webkit-scrollbar-track {
+      background: var(--bg-dark);
+    }
+    #output-log::-webkit-scrollbar-thumb {
+      background: var(--border-glow);
+      border-radius: 3px;
+    }
+    #output-log::-webkit-scrollbar-thumb:hover {
+      background: var(--border-bright);
+    }
+
+    /* Output line styles */
+    .line {
+      display: block;
+      opacity: 0;
+      animation: lineAppear 0.15s ease forwards;
+      padding: 1px 0;
+      word-wrap: break-word;
+    }
+
+    .line.no-anim {
+      opacity: 1;
+      animation: none;
+    }
+
+    @keyframes lineAppear {
+      from { opacity: 0; transform: translateY(2px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .line.user-input {
+      color: var(--accent-gold);
+      font-weight: bold;
+    }
+
+    .line.user-input::before {
+      content: '> ';
+      color: var(--accent-gold);
+    }
+
+    .line.combat {
+      color: var(--accent-orange);
+    }
+
+    .line.item {
+      color: var(--accent-green);
+    }
+
+    .line.error {
+      color: var(--accent-red);
+    }
+
+    .line.status-line {
+      color: var(--accent-cyan);
+    }
+
+    .line.system {
+      color: var(--accent-purple);
+      font-style: italic;
+    }
+
+    .line.room-title {
+      color: var(--accent-gold);
+      font-weight: bold;
+      font-size: 0.95rem;
+      padding-top: 0.3rem;
+    }
+
+    .line.separator {
+      color: var(--border-glow);
+    }
+
+    .line.regular {
+      color: var(--text-main);
+    }
+
+    .line.empty {
+      height: 0.5em;
+    }
+
+    /* Room transition */
+    .room-transition #output-log {
+      animation: roomFade 0.3s ease;
+    }
+
+    @keyframes roomFade {
+      0% { opacity: 0.5; }
+      100% { opacity: 1; }
+    }
+
+    /* Input area */
+    .input-area {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-glow);
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+    }
+
+    .input-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .input-prompt {
+      color: var(--accent-gold);
+      font-weight: bold;
+      font-size: 1rem;
+      user-select: none;
+    }
+
+    #command-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-bright);
+      font-family: inherit;
+      font-size: 0.9rem;
+      caret-color: var(--accent-gold);
+    }
+
+    #command-input::placeholder {
+      color: var(--text-dim);
+      opacity: 0.5;
+    }
+
+    #command-input:disabled {
+      opacity: 0.3;
+    }
+
+    .input-hint {
+      margin-top: 0.4rem;
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      opacity: 0.6;
+    }
+
+    /* Quick action buttons */
+    .quick-actions {
+      display: flex;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .quick-actions button {
+      padding: 0.4rem 0.8rem;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-glow);
+      border-radius: 4px;
+      color: var(--text-dim);
+      font-family: inherit;
+      font-size: 0.7rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .quick-actions button:hover {
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+      background: rgba(0, 212, 255, 0.05);
+    }
+
+    .quick-actions button:active {
+      transform: scale(0.95);
+    }
+
+    .quick-actions button.dir-btn {
+      min-width: 36px;
+    }
+
+    .quick-actions button.action-btn {
+      border-color: var(--accent-orange);
+      color: var(--accent-orange);
+      opacity: 0.6;
+    }
+
+    .quick-actions button.action-btn:hover {
+      border-color: var(--accent-orange);
+      color: var(--accent-orange);
+      background: rgba(240, 136, 62, 0.1);
+      opacity: 1;
+    }
+
+    /* Loading screen */
+    .loading-screen {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: var(--bg-dark);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 500;
+      transition: opacity 0.5s ease;
+    }
+
+    .loading-screen.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .loading-text {
+      color: var(--accent-cyan);
+      font-size: 0.9rem;
+      margin-top: 1rem;
+    }
+
+    .loading-dots::after {
+      content: '';
+      animation: dots 1.5s steps(4, end) infinite;
+    }
+
+    @keyframes dots {
+      0% { content: ''; }
+      25% { content: '.'; }
+      50% { content: '..'; }
+      75% { content: '...'; }
+    }
+
+    /* Game over / Victory overlay */
+    .overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 400;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.5s ease;
+    }
+
+    .overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .overlay h2 {
+      font-family: 'Press Start 2P', monospace;
+      font-size: clamp(1.5rem, 5vw, 3rem);
+      margin-bottom: 1rem;
+    }
+
+    .overlay.death h2 {
+      color: var(--accent-red);
+      text-shadow: 0 0 20px rgba(248, 81, 73, 0.5);
+    }
+
+    .overlay.victory h2 {
+      color: var(--accent-gold);
+      text-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
+      animation: victoryPulse 2s ease infinite;
+    }
+
+    @keyframes victoryPulse {
+      0%, 100% { text-shadow: 0 0 20px rgba(255, 215, 0, 0.5); }
+      50% { text-shadow: 0 0 40px rgba(255, 215, 0, 0.8), 0 0 60px rgba(255, 215, 0, 0.3); }
+    }
+
+    .overlay p {
+      color: var(--text-dim);
+      font-size: 0.9rem;
+      margin-bottom: 2rem;
+    }
+
+    .overlay button {
+      padding: 0.75rem 2rem;
+      background: transparent;
+      border: 2px solid var(--accent-cyan);
+      border-radius: 4px;
+      color: var(--accent-cyan);
+      font-family: 'Press Start 2P', monospace;
+      font-size: 0.7rem;
+      cursor: pointer;
+      letter-spacing: 2px;
+      transition: all 0.2s ease;
+    }
+
+    .overlay button:hover {
+      background: var(--accent-cyan);
+      color: var(--bg-dark);
+    }
+
+    /* Error screen */
+    .error-screen {
+      text-align: center;
+      padding: 2rem;
+    }
+
+    .error-screen h3 {
+      color: var(--accent-red);
+      margin-bottom: 1rem;
+    }
+
+    .error-screen p {
+      color: var(--text-dim);
+      font-size: 0.8rem;
+      line-height: 1.8;
+    }
+
+    .error-screen code {
+      color: var(--accent-cyan);
+      background: var(--bg-dark);
+      padding: 0.2rem 0.4rem;
+      border-radius: 3px;
+    }
+
+    /* Responsive */
+    @media (max-width: 600px) {
+      .header { padding: 1rem 0.5rem 0.5rem; }
+      .game-container { padding: 0 0.5rem 0.5rem; }
+      .output-container { max-height: calc(100vh - 380px); min-height: 200px; }
+      .status-bar { font-size: 0.65rem; padding: 0.4rem 0.6rem; }
+      .hp-bar-outer { width: 80px; }
+      .quick-actions button { padding: 0.5rem 0.6rem; font-size: 0.65rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Loading screen -->
+  <div class="loading-screen" id="loading-screen">
+    <div style="color: var(--accent-gold); font-family: 'Press Start 2P', monospace; font-size: 1.2rem;">Crystal Caverns</div>
+    <div class="loading-text">
+      <span class="loading-dots">Entering the dungeon</span>
+    </div>
+  </div>
+
+  <!-- Death overlay -->
+  <div class="overlay death" id="death-overlay">
+    <h2>GAME OVER</h2>
+    <p>You have perished in the Crystal Caverns...</p>
+    <button onclick="restartGame()">TRY AGAIN</button>
+  </div>
+
+  <!-- Victory overlay -->
+  <div class="overlay victory" id="victory-overlay">
+    <h2>VICTORY!</h2>
+    <p>You have conquered the Crystal Caverns!</p>
+    <button onclick="restartGame()">PLAY AGAIN</button>
+  </div>
+
+  <!-- Header -->
+  <div class="header">
+    <h1>Crystal Caverns</h1>
+    <div class="subtitle">A Crystal WASM Adventure</div>
+  </div>
+
+  <!-- Main game area -->
+  <div class="game-container">
+
+    <!-- Status bar -->
+    <div class="status-bar" id="status-bar">
+      <span class="room-name" id="room-name">Loading...</span>
+      <div class="hp-container">
+        <span class="hp-label">HP</span>
+        <div class="hp-bar-outer">
+          <div class="hp-bar-inner" id="hp-bar" style="width: 100%;"></div>
+        </div>
+        <span class="hp-text" id="hp-text">-- / --</span>
+      </div>
+      <span class="status-info" id="game-status-text">Status: <span>playing</span></span>
+    </div>
+
+    <!-- Output log -->
+    <div class="output-container" id="output-container">
+      <div id="output-log"></div>
+    </div>
+
+    <!-- Input area -->
+    <div class="input-area" id="input-area">
+      <div class="input-row">
+        <span class="input-prompt">&gt;</span>
+        <input
+          type="text"
+          id="command-input"
+          placeholder="Enter command..."
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          disabled
+        >
+      </div>
+      <div class="input-hint">
+        Commands: look, go north/south/east/west, attack, take, use, inventory, help
+      </div>
+    </div>
+
+    <!-- Quick action buttons -->
+    <div class="quick-actions" id="quick-actions">
+      <button class="dir-btn" onclick="quickCommand('go north')" title="Go North">N</button>
+      <button class="dir-btn" onclick="quickCommand('go south')" title="Go South">S</button>
+      <button class="dir-btn" onclick="quickCommand('go east')" title="Go East">E</button>
+      <button class="dir-btn" onclick="quickCommand('go west')" title="Go West">W</button>
+      <button class="action-btn" onclick="quickCommand('attack')" title="Attack">ATK</button>
+      <button class="action-btn" onclick="quickCommand('look')" title="Look around">LOOK</button>
+      <button class="action-btn" onclick="quickCommand('inventory')" title="Check inventory">INV</button>
+      <button class="action-btn" onclick="quickCommand('help')" title="Show help">HELP</button>
+    </div>
+  </div>
+
+<script>
+// ========================================================================
+// WASI Preview 1 Shim (complete, from Crystal WASM index.html)
+// ========================================================================
+function createWasiShim(outputCallback, programName) {
+  let memory;
+  let exitCode = null;
+
+  function setMemory(mem) { memory = mem; }
+  function getMemView() { return new DataView(memory.buffer); }
+  function getMemBytes() { return new Uint8Array(memory.buffer); }
+
+  function readString(ptr, len) {
+    return new TextDecoder().decode(getMemBytes().subarray(ptr, ptr + len));
+  }
+
+  const argStr = programName + '\0';
+
+  const wasi = {
+    // args_get(argv: i32, argv_buf: i32) -> errno
+    args_get(argv, argv_buf) {
+      const view = getMemView();
+      const bytes = getMemBytes();
+      view.setUint32(argv, argv_buf, true);
+      for (let i = 0; i < argStr.length; i++) {
+        bytes[argv_buf + i] = argStr.charCodeAt(i);
+      }
+      return 0;
+    },
+
+    // args_sizes_get(argc: i32, argv_buf_size: i32) -> errno
+    args_sizes_get(argc_ptr, argv_buf_size_ptr) {
+      const view = getMemView();
+      view.setUint32(argc_ptr, 1, true);
+      view.setUint32(argv_buf_size_ptr, argStr.length, true);
+      return 0;
+    },
+
+    // environ_get(environ: i32, environ_buf: i32) -> errno
+    environ_get(environ, environ_buf) {
+      return 0;
+    },
+
+    // environ_sizes_get(count: i32, buf_size: i32) -> errno
+    environ_sizes_get(count_ptr, buf_size_ptr) {
+      const view = getMemView();
+      view.setUint32(count_ptr, 0, true);
+      view.setUint32(buf_size_ptr, 0, true);
+      return 0;
+    },
+
+    // clock_time_get(id: i32, precision: i64, time: i32) -> errno
+    clock_time_get(id, precision, time_ptr) {
+      const view = getMemView();
+      const now = BigInt(Math.floor(performance.now() * 1_000_000));
+      view.setBigUint64(time_ptr, now, true);
+      return 0;
+    },
+
+    // fd_close(fd: i32) -> errno
+    fd_close(fd) { return 0; },
+
+    // fd_fdstat_get(fd: i32, stat: i32) -> errno
+    fd_fdstat_get(fd, stat_ptr) {
+      const view = getMemView();
+      view.setUint8(stat_ptr, 2);
+      view.setUint16(stat_ptr + 2, 0, true);
+      view.setBigUint64(stat_ptr + 8, 0xFFFFFFFFFFFFFFFFn, true);
+      view.setBigUint64(stat_ptr + 16, 0xFFFFFFFFFFFFFFFFn, true);
+      return 0;
+    },
+
+    // fd_fdstat_set_flags(fd: i32, flags: i32) -> errno
+    fd_fdstat_set_flags(fd, flags) { return 0; },
+
+    // fd_pread(fd: i32, iovs: i32, iovs_len: i32, offset: i64, nread: i32) -> errno
+    fd_pread(fd, iovs, iovs_len, offset, nread_ptr) {
+      const view = getMemView();
+      view.setUint32(nread_ptr, 0, true);
+      return 0;
+    },
+
+    // fd_seek(fd: i32, offset: i64, whence: i32, newoffset: i32) -> errno
+    fd_seek(fd, offset, whence, newoffset_ptr) {
+      const view = getMemView();
+      view.setBigUint64(newoffset_ptr, 0n, true);
+      return 0;
+    },
+
+    // fd_write(fd: i32, iovs: i32, iovs_len: i32, nwritten: i32) -> errno
+    fd_write(fd, iovs, iovs_len, nwritten_ptr) {
+      const view = getMemView();
+      const bytes = getMemBytes();
+      let totalWritten = 0;
+      let output = '';
+
+      for (let i = 0; i < iovs_len; i++) {
+        const ptr = view.getUint32(iovs + i * 8, true);
+        const len = view.getUint32(iovs + i * 8 + 4, true);
+        output += readString(ptr, len);
+        totalWritten += len;
+      }
+
+      view.setUint32(nwritten_ptr, totalWritten, true);
+
+      if (fd === 1 || fd === 2) {
+        outputCallback(output, fd === 2);
+      }
+      return 0;
+    },
+
+    // poll_oneoff(in: i32, out: i32, nsubs: i32, nevents: i32) -> errno
+    poll_oneoff(in_ptr, out_ptr, nsubs, nevents_ptr) {
+      const view = getMemView();
+      if (nsubs > 0) {
+        const userdata = view.getBigUint64(in_ptr, true);
+        view.setBigUint64(out_ptr, userdata, true);
+        view.setUint16(out_ptr + 8, 0, true);
+        view.setUint8(out_ptr + 10, 0);
+        view.setUint32(nevents_ptr, 1, true);
+      } else {
+        view.setUint32(nevents_ptr, 0, true);
+      }
+      return 0;
+    },
+
+    // proc_exit(code: i32) -> noreturn
+    proc_exit(code) {
+      exitCode = code;
+      throw new WasiExit(code);
+    },
+
+    // random_get(buf: i32, buf_len: i32) -> errno
+    random_get(buf, buf_len) {
+      const bytes = getMemBytes();
+      crypto.getRandomValues(bytes.subarray(buf, buf + buf_len));
+      return 0;
+    },
+
+    // fd_prestat_get(fd: i32, buf: i32) -> errno
+    fd_prestat_get(fd, buf_ptr) {
+      return 8; // EBADF - no preopened directories in browser
+    },
+
+    // fd_prestat_dir_name(fd: i32, path: i32, path_len: i32) -> errno
+    fd_prestat_dir_name(fd, path_ptr, path_len) {
+      return 8; // EBADF
+    },
+
+    // fd_read(fd: i32, iovs: i32, iovs_len: i32, nread: i32) -> errno
+    fd_read(fd, iovs, iovs_len, nread_ptr) {
+      const view = getMemView();
+      view.setUint32(nread_ptr, 0, true);
+      return 0; // EOF
+    },
+
+    // path_open(fd: i32, dirflags: i32, path: i32, path_len: i32, oflags: i32,
+    //           fs_rights_base: i64, fs_rights_inheriting: i64, fdflags: i32, opened_fd: i32) -> errno
+    path_open(fd, dirflags, path, path_len, oflags, fs_rights_base, fs_rights_inheriting, fdflags, opened_fd_ptr) {
+      return 76; // ENOTCAPABLE - no filesystem access in browser
+    },
+  };
+
+  return { wasi, setMemory, getExitCode: () => exitCode };
+}
+
+class WasiExit extends Error {
+  constructor(code) {
+    super(`WASI exit: ${code}`);
+    this.code = code;
+  }
+}
+
+// ========================================================================
+// Game State
+// ========================================================================
+let wasmInstance = null;
+let wasmMemory = null;
+let gameReady = false;
+let commandHistory = [];
+let historyIndex = -1;
+let lastRoomId = -1;
+let isProcessing = false;
+
+// Room name lookup
+const ROOM_NAMES = {
+  1: 'Entrance Hall',
+  2: 'Dark Corridor',
+  3: 'Treasure Chamber',
+  4: 'Armory',
+  5: 'Dragon\'s Lair',
+  6: 'Crystal Throne',
+};
+
+// ========================================================================
+// DOM References
+// ========================================================================
+const outputLog = document.getElementById('output-log');
+const commandInput = document.getElementById('command-input');
+const hpBar = document.getElementById('hp-bar');
+const hpText = document.getElementById('hp-text');
+const roomNameEl = document.getElementById('room-name');
+const gameStatusText = document.getElementById('game-status-text');
+const loadingScreen = document.getElementById('loading-screen');
+const deathOverlay = document.getElementById('death-overlay');
+const victoryOverlay = document.getElementById('victory-overlay');
+const outputContainer = document.getElementById('output-container');
+
+// ========================================================================
+// WASM Helpers
+// ========================================================================
+function readWasmString(ptr, len) {
+  const bytes = new Uint8Array(wasmMemory.buffer, ptr, len);
+  return new TextDecoder().decode(bytes);
+}
+
+function writeWasmString(str) {
+  const encoder = new TextEncoder();
+  const encoded = encoder.encode(str);
+  const ptr = wasmInstance.exports.game_alloc(encoded.length);
+  const bytes = new Uint8Array(wasmMemory.buffer, ptr, encoded.length);
+  bytes.set(encoded);
+  return { ptr, len: encoded.length };
+}
+
+// ========================================================================
+// Output Rendering
+// ========================================================================
+function classifyLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return 'empty';
+  if (trimmed.startsWith('[COMBAT]') || trimmed.includes('[HIT]') || trimmed.includes('[DEFEAT]') || trimmed.includes('[MISS]')) return 'combat';
+  if (trimmed.startsWith('[ITEM]') || trimmed.includes('[LOOT]') || trimmed.includes('[PICKUP]')) return 'item';
+  if (trimmed.startsWith('[ERROR]')) return 'error';
+  if (trimmed.startsWith('[STATUS]') || trimmed.startsWith('[INFO]')) return 'status-line';
+  if (trimmed.startsWith('[ROOM]') || trimmed.startsWith('===') || trimmed.startsWith('***')) return 'room-title';
+  if (trimmed.startsWith('---') || trimmed.startsWith('~~~')) return 'separator';
+  return 'regular';
+}
+
+function appendOutputLine(text, className, animate) {
+  const line = document.createElement('div');
+  line.className = 'line ' + (className || 'regular');
+  if (!animate) line.classList.add('no-anim');
+  line.textContent = text;
+  outputLog.appendChild(line);
+  return line;
+}
+
+function appendUserInput(cmd) {
+  const line = document.createElement('div');
+  line.className = 'line user-input no-anim';
+  line.textContent = cmd;
+  outputLog.appendChild(line);
+}
+
+function appendSystemMessage(text) {
+  const line = document.createElement('div');
+  line.className = 'line system no-anim';
+  line.textContent = text;
+  outputLog.appendChild(line);
+}
+
+async function renderOutputLines(text, animate) {
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const cls = classifyLine(rawLine);
+    if (cls === 'empty' && rawLine.trim() === '') {
+      appendOutputLine('\u00A0', 'empty', animate);
+    } else {
+      appendOutputLine(rawLine, cls, animate);
+    }
+    if (animate) {
+      await sleep(20);
+    }
+  }
+  scrollToBottom();
+}
+
+function scrollToBottom() {
+  outputLog.scrollTop = outputLog.scrollHeight;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ========================================================================
+// HP Bar Updates
+// ========================================================================
+function updateHpBar() {
+  if (!wasmInstance) return;
+
+  let hp, maxHp;
+  try {
+    hp = wasmInstance.exports.game_get_hp();
+    maxHp = wasmInstance.exports.game_get_max_hp();
+  } catch (e) {
+    return;
+  }
+
+  if (maxHp <= 0) maxHp = 1;
+  const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
+
+  hpBar.style.width = pct + '%';
+  hpText.textContent = hp + ' / ' + maxHp;
+
+  // Color based on health percentage
+  if (pct > 60) {
+    hpBar.style.backgroundColor = 'var(--hp-green)';
+  } else if (pct > 30) {
+    hpBar.style.backgroundColor = 'var(--hp-yellow)';
+  } else {
+    hpBar.style.backgroundColor = 'var(--hp-red)';
+  }
+
+  // Flash animation
+  hpBar.classList.remove('flash');
+  void hpBar.offsetWidth; // Force reflow
+  hpBar.classList.add('flash');
+}
+
+// ========================================================================
+// Status Updates
+// ========================================================================
+function updateStatus() {
+  if (!wasmInstance) return;
+
+  try {
+    const roomId = wasmInstance.exports.game_get_room();
+    const status = wasmInstance.exports.game_get_status();
+
+    // Room name
+    const roomName = ROOM_NAMES[roomId] || ('Room ' + roomId);
+    roomNameEl.textContent = roomName;
+
+    // Check for room transition
+    if (lastRoomId !== -1 && lastRoomId !== roomId) {
+      outputContainer.classList.add('room-transition');
+      setTimeout(() => outputContainer.classList.remove('room-transition'), 300);
+    }
+    lastRoomId = roomId;
+
+    // Game status
+    let statusStr = 'playing';
+    if (status === 1) statusStr = 'VICTORY';
+    else if (status === -1) statusStr = 'DEAD';
+    gameStatusText.innerHTML = 'Status: <span>' + statusStr + '</span>';
+
+    // Check for game end
+    if (status === 1) {
+      setTimeout(() => victoryOverlay.classList.add('active'), 500);
+      commandInput.disabled = true;
+    } else if (status === -1) {
+      setTimeout(() => deathOverlay.classList.add('active'), 500);
+      commandInput.disabled = true;
+    }
+  } catch (e) {
+    // Silently ignore status read errors
+  }
+}
+
+// ========================================================================
+// Command Processing
+// ========================================================================
+async function sendCommand(cmd) {
+  if (!gameReady || isProcessing) return;
+  if (!cmd || !cmd.trim()) return;
+
+  cmd = cmd.trim();
+  isProcessing = true;
+
+  // Add to history
+  commandHistory.push(cmd);
+  if (commandHistory.length > 50) commandHistory.shift();
+  historyIndex = commandHistory.length;
+
+  // Echo user input
+  appendUserInput(cmd);
+  scrollToBottom();
+
+  try {
+    // Write command to WASM memory
+    const { ptr, len } = writeWasmString(cmd);
+
+    // Process command
+    const outputLen = wasmInstance.exports.game_command(ptr, len);
+
+    // Read output
+    let outputText = '';
+    if (outputLen > 0) {
+      const outputPtr = wasmInstance.exports.game_get_output();
+      outputText = readWasmString(outputPtr, outputLen);
+    }
+
+    // Render with animation
+    if (outputText) {
+      await renderOutputLines(outputText, true);
+    }
+
+    // Update UI
+    updateHpBar();
+    updateStatus();
+
+  } catch (e) {
+    if (e instanceof WasiExit) {
+      appendSystemMessage('Game process exited (code ' + e.code + ')');
+    } else if (e instanceof WebAssembly.Exception) {
+      appendSystemMessage('WASM exception: ' + e.message);
+    } else {
+      appendSystemMessage('Error: ' + e.message);
+      console.error('Command error:', e);
+    }
+  }
+
+  isProcessing = false;
+
+  // Re-focus input
+  commandInput.value = '';
+  if (!commandInput.disabled) {
+    commandInput.focus();
+  }
+}
+
+function quickCommand(cmd) {
+  if (commandInput.disabled || isProcessing) return;
+  sendCommand(cmd);
+}
+
+// ========================================================================
+// Input Handling
+// ========================================================================
+commandInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sendCommand(commandInput.value);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (commandHistory.length > 0) {
+      historyIndex = Math.max(0, historyIndex - 1);
+      commandInput.value = commandHistory[historyIndex] || '';
+    }
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (historyIndex < commandHistory.length - 1) {
+      historyIndex++;
+      commandInput.value = commandHistory[historyIndex] || '';
+    } else {
+      historyIndex = commandHistory.length;
+      commandInput.value = '';
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    commandInput.value = '';
+    historyIndex = commandHistory.length;
+  }
+});
+
+// Focus input when clicking on the output area
+outputContainer.addEventListener('click', () => {
+  if (!commandInput.disabled) commandInput.focus();
+});
+
+// ========================================================================
+// Game Initialization
+// ========================================================================
+async function initGame() {
+  const loadingEl = document.getElementById('loading-screen');
+  outputLog.innerHTML = '';
+  deathOverlay.classList.remove('active');
+  victoryOverlay.classList.remove('active');
+  commandInput.disabled = true;
+  gameReady = false;
+  lastRoomId = -1;
+  commandHistory = [];
+  historyIndex = -1;
+
+  loadingEl.classList.remove('hidden');
+
+  try {
+    // Fetch the WASM module
+    appendSystemMessage('Loading game.wasm...');
+    const response = await fetch('game.wasm');
+    if (!response.ok) {
+      throw new Error('Failed to fetch game.wasm: HTTP ' + response.status + '. Make sure game.wasm exists in the same directory.');
+    }
+
+    appendSystemMessage('Compiling WASM module...');
+    const wasmBytes = await response.arrayBuffer();
+
+    // Create WASI shim
+    const { wasi, setMemory } = createWasiShim((output, isStderr) => {
+      // During initialization, capture stdout/stderr to the output log
+      if (isStderr) {
+        const lines = output.split('\n').filter(l => l.trim());
+        for (const line of lines) {
+          appendOutputLine(line, 'error', false);
+        }
+      }
+    }, 'game.wasm');
+
+    const importObject = {
+      wasi_snapshot_preview1: wasi,
+    };
+
+    // Instantiate
+    appendSystemMessage('Instantiating WASM...');
+    const result = await WebAssembly.instantiate(wasmBytes, importObject);
+    wasmInstance = result.instance;
+    wasmMemory = wasmInstance.exports.memory;
+    setMemory(wasmMemory);
+
+    // Call _start() to initialize WASI runtime
+    appendSystemMessage('Initializing WASI runtime...');
+    try {
+      wasmInstance.exports._start();
+    } catch (e) {
+      if (e instanceof WasiExit && e.code === 0) {
+        // Normal exit from _start, that's fine
+      } else if (e instanceof WasiExit) {
+        throw new Error('WASI initialization failed with exit code ' + e.code);
+      } else if (e instanceof WebAssembly.Exception) {
+        // Crystal EH exception, may be acceptable
+        console.warn('WASM exception during _start:', e);
+      } else {
+        throw e;
+      }
+    }
+
+    // Initialize game state
+    appendSystemMessage('Initializing game...');
+    wasmInstance.exports.game_init();
+
+    // Clear system messages
+    outputLog.innerHTML = '';
+
+    // Mark as ready
+    gameReady = true;
+    commandInput.disabled = false;
+
+    // Update initial HP
+    updateHpBar();
+    updateStatus();
+
+    // Send initial "look" command to show the first room
+    await sendCommand('look');
+
+    // Hide loading and focus
+    loadingEl.classList.add('hidden');
+    commandInput.focus();
+
+  } catch (e) {
+    loadingEl.classList.add('hidden');
+    console.error('Game initialization failed:', e);
+
+    outputLog.innerHTML = '';
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'error-screen';
+    errorDiv.innerHTML =
+      '<h3>Failed to Load Game</h3>' +
+      '<p>' + escapeHtml(e.message) + '</p>' +
+      '<br>' +
+      '<p>Make sure <code>game.wasm</code> is in the same directory as this HTML file.<br><br>' +
+      'Build it with:<br>' +
+      '<code>crystal build game.cr --target wasm32-wasi -o game.wasm</code><br><br>' +
+      'Then serve with a local HTTP server:<br>' +
+      '<code>python3 -m http.server 8080</code></p>';
+    outputLog.appendChild(errorDiv);
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+async function restartGame() {
+  wasmInstance = null;
+  wasmMemory = null;
+  await initGame();
+}
+
+// ========================================================================
+// Start
+// ========================================================================
+window.addEventListener('load', () => {
+  initGame();
+});
+</script>
+</body>
+</html>
