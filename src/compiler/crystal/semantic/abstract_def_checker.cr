@@ -23,10 +23,83 @@
 # end
 # ```
 class Crystal::AbstractDefChecker
+  {% if flag?(:preview_mt) %}
+    @warnings_mutex : Mutex?
+  {% end %}
+
   def initialize(@program : Program)
   end
 
   def run
+    {% if flag?(:preview_mt) %}
+      parallel_run
+    {% else %}
+      sequential_run
+    {% end %}
+  end
+
+  # Collects all types in the program that need checking into a flat array.
+  # This traverses the nested type hierarchy so that workers can process
+  # types independently without recursive descent.
+  private def collect_all_types : Array(Type)
+    types = [] of Type
+    collect_types_into(@program, types)
+    @program.file_modules.each_value do |file_module|
+      collect_types_into(file_module, types)
+    end
+    types
+  end
+
+  private def collect_types_into(type, types : Array(Type))
+    type.types?.try &.each_value do |inner_type|
+      types << inner_type
+      collect_types_into(inner_type, types)
+    end
+  end
+
+  {% if flag?(:preview_mt) %}
+    private def parallel_run
+      types = collect_all_types
+      return if types.empty?
+
+      n_workers = {System.cpu_count.to_i, 4}.max.clamp(1..types.size)
+
+      wg = WaitGroup.new
+      mutex = Mutex.new
+      errors = [] of TypeException
+      channel = Channel(Type).new(n_workers * 2)
+
+      # Protect @program.warnings.add_warning calls from concurrent access
+      @warnings_mutex = mutex
+
+      n_workers.times do
+        wg.spawn do
+          while type = channel.receive?
+            begin
+              check_single_type(type)
+            rescue ex : TypeException
+              mutex.synchronize { errors << ex }
+            end
+          end
+        end
+      end
+
+      types.each { |t| channel.send(t) }
+      channel.close
+      wg.wait
+
+      @warnings_mutex = nil
+
+      unless errors.empty?
+        # Sort errors by location for deterministic output regardless of
+        # worker execution order.
+        errors.sort_by!(&.true_filename)
+        raise errors.first
+      end
+    end
+  {% end %}
+
+  private def sequential_run
     check_types(@program)
     @program.file_modules.each_value do |file_module|
       check_types(file_module)
@@ -40,6 +113,13 @@ class Crystal::AbstractDefChecker
   end
 
   def check_single(type)
+    check_single_type(type)
+    check_types(type)
+  end
+
+  # Checks abstract def implementation for a single type without recursing
+  # into nested types. Used by both parallel and sequential paths.
+  private def check_single_type(type)
     if type.abstract? || type.module?
       type.defs.try &.each_value do |defs_with_metadata|
         defs_with_metadata.each do |def_with_metadata|
@@ -51,8 +131,6 @@ class Crystal::AbstractDefChecker
         end
       end
     end
-
-    check_types(type)
   end
 
   def check_implemented_in_subtypes(type, method, free_vars)
@@ -371,7 +449,17 @@ class Crystal::AbstractDefChecker
       impl_param = impl_method.args[i]
       base_param = base_method.args[i]
       unless impl_param.external_name == base_param.external_name
-        @program.warnings.add_warning(impl_param, "positional parameter '#{impl_param.external_name}' corresponds to parameter '#{base_param.external_name}' of the overridden method #{Call.def_full_name(base_type, base_method)}, which has a different name and may affect named argument passing")
+        {% if flag?(:preview_mt) %}
+          if wm = @warnings_mutex
+            wm.synchronize do
+              @program.warnings.add_warning(impl_param, "positional parameter '#{impl_param.external_name}' corresponds to parameter '#{base_param.external_name}' of the overridden method #{Call.def_full_name(base_type, base_method)}, which has a different name and may affect named argument passing")
+            end
+          else
+            @program.warnings.add_warning(impl_param, "positional parameter '#{impl_param.external_name}' corresponds to parameter '#{base_param.external_name}' of the overridden method #{Call.def_full_name(base_type, base_method)}, which has a different name and may affect named argument passing")
+          end
+        {% else %}
+          @program.warnings.add_warning(impl_param, "positional parameter '#{impl_param.external_name}' corresponds to parameter '#{base_param.external_name}' of the overridden method #{Call.def_full_name(base_type, base_method)}, which has a different name and may affect named argument passing")
+        {% end %}
       end
     end
   end
