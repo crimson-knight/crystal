@@ -861,6 +861,7 @@ function appendUserInput(cmd) {
   line.className = 'line user-input no-anim';
   line.textContent = cmd;
   outputLog.appendChild(line);
+  scrollToBottom();
 }
 
 function appendSystemMessage(text) {
@@ -868,6 +869,7 @@ function appendSystemMessage(text) {
   line.className = 'line system no-anim';
   line.textContent = text;
   outputLog.appendChild(line);
+  scrollToBottom();
 }
 
 async function renderOutputLines(text, animate) {
@@ -880,6 +882,7 @@ async function renderOutputLines(text, animate) {
     } else {
       appendOutputLine(rawLine, cls, animate);
     }
+    scrollToBottom();
     if (animate) {
       await sleep(20);
     }
