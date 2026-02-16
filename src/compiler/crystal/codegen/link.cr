@@ -107,9 +107,12 @@ module Crystal
 
       CrystalPath.expand_paths(paths)
 
-      # Add WASI SDK sysroot library path for wasm32 targets
+      # Add WASI SDK sysroot library path for wasm32 targets.
+      # Check both "wasm32-wasi" (WASI SDK <20) and "wasm32-wasip1" (WASI SDK 20+).
       if wasi_sdk = ENV["WASI_SDK_PATH"]?
-        sysroot_lib = File.join(wasi_sdk, "share", "wasi-sysroot", "lib", "wasm32-wasi")
+        sysroot_base = File.join(wasi_sdk, "share", "wasi-sysroot", "lib")
+        sysroot_lib = File.join(sysroot_base, "wasm32-wasi")
+        sysroot_lib = File.join(sysroot_base, "wasm32-wasip1") unless Dir.exists?(sysroot_lib)
         if Dir.exists?(sysroot_lib) && !paths.includes?(sysroot_lib)
           paths << sysroot_lib
         end
@@ -213,9 +216,12 @@ module Crystal
         flags << quote_flag("-L#{path}", cross_compiling)
       end
 
-      # Add WASI sysroot library path if available
+      # Add WASI sysroot library path if available.
+      # Check both "wasm32-wasi" (WASI SDK <20) and "wasm32-wasip1" (WASI SDK 20+).
       if wasi_sdk = ENV["WASI_SDK_PATH"]?
-        sysroot_lib = File.join(wasi_sdk, "share", "wasi-sysroot", "lib", "wasm32-wasi")
+        sysroot_base = File.join(wasi_sdk, "share", "wasi-sysroot", "lib")
+        sysroot_lib = File.join(sysroot_base, "wasm32-wasi")
+        sysroot_lib = File.join(sysroot_base, "wasm32-wasip1") unless Dir.exists?(sysroot_lib)
         if Dir.exists?(sysroot_lib)
           flags << quote_flag("-L#{sysroot_lib}", cross_compiling)
         end

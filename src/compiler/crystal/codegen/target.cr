@@ -35,6 +35,14 @@ class Crystal::Codegen::Target
       # no need to tweak the architecture
     end
 
+    # Normalize WASI Preview 1 target name: "wasip1" -> "wasi"
+    # Rust removed wasm32-wasi in January 2025, replacing it with
+    # wasm32-wasip1 to be explicit about WASI Preview 1. We accept
+    # both names and normalize to "wasi" for the LLVM target triple.
+    if @environment == "wasip1"
+      @environment = "wasi"
+    end
+
     if linux? && environment_parts.size == 1
       case @vendor
       when "suse", "redhat", "slackware", "amazon", "unknown", "montavista", "mti"
