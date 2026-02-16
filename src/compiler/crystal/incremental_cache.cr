@@ -1,6 +1,51 @@
 require "json"
+require "./syntax/ast"
+require "./syntax/visitor"
 
 module Crystal
+  # Structural signature of a type declaration (class, struct, module, enum, lib).
+  # Captures the type's name, kind, parent type, and generic parameters.
+  # Used for incremental compilation: if a type's signature hasn't changed,
+  # dependent files may not need re-processing.
+  record TypeDeclarationSig,
+    name : String,
+    kind : String,
+    parent : String?,
+    generic_params : Array(String) do
+    include JSON::Serializable
+  end
+
+  # Structural signature of a method definition.
+  # Captures the method name, argument names and type restrictions, return type
+  # restriction, and whether it's abstract. Method body changes do NOT affect
+  # this signature -- only the interface (arguments, types, abstract flag).
+  record MethodSig,
+    name : String,
+    arg_names : Array(String),
+    arg_restrictions : Array(String?),
+    return_restriction : String?,
+    is_abstract : Bool do
+    include JSON::Serializable
+  end
+
+  # Aggregate top-level signature for a single source file.
+  # Captures everything that TopLevelVisitor registers for this file:
+  # type declarations, method signatures, include/extend (mixins),
+  # constants, and whether the file contains top-level macro calls.
+  #
+  # If the FileTopLevelSignature for a changed file is identical to
+  # the cached version, the change is "body-only" (method bodies changed
+  # but no structural/interface change). Dependent files do not need
+  # re-processing in that case.
+  record FileTopLevelSignature,
+    type_declarations : Array(TypeDeclarationSig),
+    method_signatures : Array(MethodSig),
+    mixins : Array(String),
+    constants : Array(String),
+    has_top_level_macro_calls : Bool do
+    include JSON::Serializable
+  end
+
   # Fingerprint of a single source file for incremental compilation tracking.
   # Includes mtime, content hash, and byte size for fast change detection.
   record FileFingerprint,
@@ -32,10 +77,19 @@ module Crystal
     @[JSON::Field(emit_null: false)]
     getter module_file_mapping : Hash(String, Array(String))? = nil
 
+    # Per-file top-level signatures extracted after the TopLevelVisitor pass.
+    # Used by Phase 6 signature tracking to determine whether a changed file
+    # has only body-level changes (signature identical) or structural changes
+    # (signature differs). Nil when not available (old cache format or
+    # incremental signatures not yet computed).
+    @[JSON::Field(emit_null: false)]
+    getter file_signatures : Hash(String, FileTopLevelSignature)? = nil
+
     def initialize(@compiler_version : String, @codegen_target : String,
                    @flags : Array(String), @prelude : String,
                    @file_fingerprints : Hash(String, FileFingerprint),
-                   @module_file_mapping : Hash(String, Array(String))? = nil)
+                   @module_file_mapping : Hash(String, Array(String))? = nil,
+                   @file_signatures : Hash(String, FileTopLevelSignature)? = nil)
     end
   end
 
@@ -123,6 +177,450 @@ module Crystal
       end
 
       changed
+    end
+  end
+
+  # Extracts top-level structural signatures from the program's parsed AST.
+  # This visitor walks the AST after parsing (before semantic mutation) and
+  # collects type declarations, method signatures, include/extend statements,
+  # constants, and top-level macro calls, grouped by source filename.
+  #
+  # The extracted signatures are used for Phase 6 incremental compilation:
+  # if a file's content changed but its top-level signature is identical,
+  # the change is "body-only" and dependent files may not need re-processing.
+  class SignatureExtractor < Visitor
+    # Per-file accumulated signatures.
+    getter file_signatures : Hash(String, FileTopLevelSignature)
+
+    # Intermediate per-file data collected during traversal.
+    @type_decls = Hash(String, Array(TypeDeclarationSig)).new { |h, k| h[k] = [] of TypeDeclarationSig }
+    @method_sigs = Hash(String, Array(MethodSig)).new { |h, k| h[k] = [] of MethodSig }
+    @mixins = Hash(String, Array(String)).new { |h, k| h[k] = [] of String }
+    @constants = Hash(String, Array(String)).new { |h, k| h[k] = [] of String }
+    @macro_call_files = Set(String).new
+
+    # Stack of type scope names for building fully-qualified names.
+    @type_scope = [] of String
+
+    # Nesting depth: when > 0, we are inside a def/macro body and should
+    # not extract further signatures (TopLevelVisitor doesn't enter them either).
+    @inside_def = 0
+
+    def initialize
+      @file_signatures = {} of String => FileTopLevelSignature
+    end
+
+    # Build the final FileTopLevelSignature map from collected data.
+    # Call this after the visitor has processed the full AST.
+    def build_signatures : Hash(String, FileTopLevelSignature)
+      all_files = Set(String).new
+      all_files.concat(@type_decls.keys)
+      all_files.concat(@method_sigs.keys)
+      all_files.concat(@mixins.keys)
+      all_files.concat(@constants.keys)
+      all_files.concat(@macro_call_files)
+
+      all_files.each do |filename|
+        @file_signatures[filename] = FileTopLevelSignature.new(
+          type_declarations: @type_decls[filename]? || [] of TypeDeclarationSig,
+          method_signatures: @method_sigs[filename]? || [] of MethodSig,
+          mixins: @mixins[filename]? || [] of String,
+          constants: @constants[filename]? || [] of String,
+          has_top_level_macro_calls: @macro_call_files.includes?(filename),
+        )
+      end
+
+      @file_signatures
+    end
+
+    private def current_scope_prefix : String
+      @type_scope.empty? ? "" : @type_scope.join("::")
+    end
+
+    private def qualified_name(name : String) : String
+      prefix = current_scope_prefix
+      prefix.empty? ? name : "#{prefix}::#{name}"
+    end
+
+    private def filename_for(node : ASTNode) : String?
+      node.location.try(&.original_filename)
+    end
+
+    def visit(node : ClassDef)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return true unless filename
+
+      name = qualified_name(node.name.names.join("::"))
+      kind = node.struct? ? "struct" : "class"
+      parent = node.superclass.try(&.to_s)
+      generic_params = node.type_vars || [] of String
+
+      @type_decls[filename] << TypeDeclarationSig.new(
+        name: name,
+        kind: kind,
+        parent: parent,
+        generic_params: generic_params,
+      )
+
+      @type_scope.push(name)
+      node.body.accept(self)
+      @type_scope.pop
+
+      false
+    end
+
+    def visit(node : ModuleDef)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return true unless filename
+
+      name = qualified_name(node.name.names.join("::"))
+      generic_params = node.type_vars || [] of String
+
+      @type_decls[filename] << TypeDeclarationSig.new(
+        name: name,
+        kind: "module",
+        parent: nil,
+        generic_params: generic_params,
+      )
+
+      @type_scope.push(name)
+      node.body.accept(self)
+      @type_scope.pop
+
+      false
+    end
+
+    def visit(node : EnumDef)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return true unless filename
+
+      name = qualified_name(node.name.names.join("::"))
+      base = node.base_type.try(&.to_s)
+
+      @type_decls[filename] << TypeDeclarationSig.new(
+        name: name,
+        kind: "enum",
+        parent: base,
+        generic_params: [] of String,
+      )
+
+      # Enum members are constants -- extract member names as constants
+      node.members.each do |member|
+        if member.is_a?(Arg)
+          @constants[filename] << qualified_name("#{node.name.names.join("::")}::#{member.name}")
+        end
+      end
+
+      false
+    end
+
+    def visit(node : LibDef)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return true unless filename
+
+      name = qualified_name(node.name.names.join("::"))
+
+      @type_decls[filename] << TypeDeclarationSig.new(
+        name: name,
+        kind: "lib",
+        parent: nil,
+        generic_params: [] of String,
+      )
+
+      @type_scope.push(name)
+      node.body.accept(self)
+      @type_scope.pop
+
+      false
+    end
+
+    def visit(node : Alias)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return true unless filename
+
+      name = qualified_name(node.name.names.join("::"))
+      value_str = node.value.to_s
+
+      @type_decls[filename] << TypeDeclarationSig.new(
+        name: name,
+        kind: "alias",
+        parent: value_str,
+        generic_params: [] of String,
+      )
+
+      false
+    end
+
+    def visit(node : Def)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return false unless filename
+
+      receiver_prefix = if (recv = node.receiver)
+                          "#{recv.to_s}."
+                        else
+                          ""
+                        end
+
+      name = qualified_name("#{receiver_prefix}#{node.name}")
+
+      arg_names = node.args.map(&.external_name)
+      arg_restrictions = node.args.map { |arg| arg.restriction.try(&.to_s) }
+      return_restriction = node.return_type.try(&.to_s)
+
+      @method_sigs[filename] << MethodSig.new(
+        name: name,
+        arg_names: arg_names,
+        arg_restrictions: arg_restrictions,
+        return_restriction: return_restriction,
+        is_abstract: node.abstract?,
+      )
+
+      # Do NOT descend into def body -- we only care about the signature
+      false
+    end
+
+    def visit(node : Macro)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return false unless filename
+
+      name = qualified_name(node.name)
+
+      arg_names = node.args.map(&.external_name)
+      arg_restrictions = node.args.map { |arg| arg.restriction.try(&.to_s) }
+
+      @method_sigs[filename] << MethodSig.new(
+        name: name,
+        arg_names: arg_names,
+        arg_restrictions: arg_restrictions,
+        return_restriction: nil,
+        is_abstract: false,
+      )
+
+      # Do NOT descend into macro body
+      false
+    end
+
+    def visit(node : FunDef)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return false unless filename
+
+      name = qualified_name(node.real_name.empty? ? node.name : node.real_name)
+
+      arg_names = node.args.map(&.external_name)
+      arg_restrictions = node.args.map { |arg| arg.restriction.try(&.to_s) }
+      return_restriction = node.return_type.try(&.to_s)
+
+      @method_sigs[filename] << MethodSig.new(
+        name: name,
+        arg_names: arg_names,
+        arg_restrictions: arg_restrictions,
+        return_restriction: return_restriction,
+        is_abstract: false,
+      )
+
+      false
+    end
+
+    def visit(node : Include)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return false unless filename
+
+      @mixins[filename] << "include #{node.name}"
+
+      false
+    end
+
+    def visit(node : Extend)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return false unless filename
+
+      @mixins[filename] << "extend #{node.name}"
+
+      false
+    end
+
+    def visit(node : Assign)
+      return false if @inside_def > 0
+
+      # Only track constant assignments (target is a Path)
+      if node.target.is_a?(Path)
+        filename = filename_for(node)
+        if filename
+          target_path = node.target.as(Path)
+          name = qualified_name(target_path.names.join("::"))
+          @constants[filename] << name
+        end
+      end
+
+      false
+    end
+
+    def visit(node : Call)
+      return true if @inside_def > 0
+
+      # A Call at the top level (outside defs) is a macro call.
+      # Mark the file as having top-level macro calls.
+      filename = filename_for(node)
+      if filename
+        @macro_call_files.add(filename)
+      end
+
+      # Continue traversal -- macro calls can expand to more definitions
+      true
+    end
+
+    def visit(node : MacroExpression)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      if filename
+        @macro_call_files.add(filename)
+      end
+
+      false
+    end
+
+    def visit(node : MacroIf)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      if filename
+        @macro_call_files.add(filename)
+      end
+
+      # Visit both branches -- they might contain type/method defs
+      true
+    end
+
+    def visit(node : MacroFor)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      if filename
+        @macro_call_files.add(filename)
+      end
+
+      true
+    end
+
+    def visit(node : AnnotationDef)
+      return false if @inside_def > 0
+
+      filename = filename_for(node)
+      return false unless filename
+
+      name = qualified_name(node.name.names.join("::"))
+
+      @type_decls[filename] << TypeDeclarationSig.new(
+        name: name,
+        kind: "annotation",
+        parent: nil,
+        generic_params: [] of String,
+      )
+
+      false
+    end
+
+    def visit(node : VisibilityModifier)
+      # Delegate to the inner expression
+      node.exp.accept(self)
+      false
+    end
+
+    def visit(node : Expressions)
+      node.expressions.each(&.accept(self))
+      false
+    end
+
+    def visit(node : Require)
+      # Don't descend into requires -- they are handled separately
+      false
+    end
+
+    # Default: visit children
+    def visit(node : ASTNode)
+      true
+    end
+  end
+
+  # Compares two FileTopLevelSignature values and determines the kind of change.
+  enum SignatureChangeKind
+    # No change in signature -- body-only modification.
+    BodyOnly
+
+    # Structural change -- signature differs, dependent files need re-processing.
+    Structural
+  end
+
+  module IncrementalCache
+    # Compare old vs new FileTopLevelSignature for a single file.
+    # Returns BodyOnly if signatures are identical, Structural if they differ.
+    # Files with has_top_level_macro_calls always count as Structural.
+    def self.compare_signatures(old_sig : FileTopLevelSignature, new_sig : FileTopLevelSignature) : SignatureChangeKind
+      # Files with top-level macro calls always count as structural changes
+      # because macros can generate arbitrary types and methods.
+      if new_sig.has_top_level_macro_calls || old_sig.has_top_level_macro_calls
+        return SignatureChangeKind::Structural
+      end
+
+      # Compare all structural components
+      return SignatureChangeKind::Structural unless old_sig.type_declarations == new_sig.type_declarations
+      return SignatureChangeKind::Structural unless old_sig.method_signatures == new_sig.method_signatures
+      return SignatureChangeKind::Structural unless old_sig.mixins == new_sig.mixins
+      return SignatureChangeKind::Structural unless old_sig.constants == new_sig.constants
+
+      SignatureChangeKind::BodyOnly
+    end
+
+    # Classify all changed files into body-only vs structural changes.
+    # Returns a tuple of {body_only_files, structural_files}.
+    # Files not present in the old signatures are always classified as structural.
+    def self.classify_changes(
+      changed_files : Set(String),
+      old_signatures : Hash(String, FileTopLevelSignature)?,
+      new_signatures : Hash(String, FileTopLevelSignature)
+    ) : {Set(String), Set(String)}
+      body_only = Set(String).new
+      structural = Set(String).new
+
+      changed_files.each do |filename|
+        new_sig = new_signatures[filename]?
+        old_sig = old_signatures.try(&.[filename]?)
+
+        if old_sig && new_sig
+          case compare_signatures(old_sig, new_sig)
+          when .body_only?
+            body_only.add(filename)
+          when .structural?
+            structural.add(filename)
+          end
+        else
+          # New file or file removed from signatures -- always structural
+          structural.add(filename)
+        end
+      end
+
+      {body_only, structural}
     end
   end
 

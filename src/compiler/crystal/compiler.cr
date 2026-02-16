@@ -224,6 +224,11 @@ module Crystal
     # Total number of modules in the last compilation.
     @last_modules_total : Int32 = 0
 
+    # Phase 6: Signature tracking results from the last compilation.
+    @last_body_only_count : Int32 = 0
+    @last_structural_count : Int32 = 0
+    @last_file_signatures : Hash(String, FileTopLevelSignature)? = nil
+
     # Program that was created for the last compilation.
     property! program : Program
 
@@ -256,12 +261,16 @@ module Crystal
 
       units = codegen program, node, source, output_filename unless @no_codegen
 
-      save_incremental_cache(program, source) if @incremental
+      if @incremental
+        extract_and_compare_signatures(program, source)
+        save_incremental_cache(program, source)
+      end
 
       @progress_tracker.clear
       print_macro_run_stats(program)
       print_codegen_stats(units)
       print_parse_cache_stats
+      print_signature_stats
 
       Result.new program, node
     end
@@ -1044,6 +1053,99 @@ module Crystal
       puts " - hits: #{cache.hits}, misses: #{cache.misses} (#{sprintf("%.1f", cache.hit_rate)}% hit rate)"
     end
 
+    private def print_signature_stats
+      return unless @progress_tracker.stats?
+      return unless @incremental
+
+      body_only = @last_body_only_count
+      structural = @last_structural_count
+      return if body_only == 0 && structural == 0
+
+      puts
+      puts "Signature tracking:"
+      puts " - Files with body-only changes: #{body_only}"
+      puts " - Files with structural changes: #{structural}"
+    end
+
+    # Phase 6: Extract top-level signatures from all required files and
+    # compare with cached signatures to classify changes.
+    private def extract_and_compare_signatures(program, sources)
+      @last_body_only_count = 0
+      @last_structural_count = 0
+
+      new_signatures = extract_file_signatures(program)
+      @last_file_signatures = new_signatures
+
+      return if new_signatures.empty?
+
+      # Load old signatures from cache
+      output_dir = CacheDir.instance.directory_for(sources)
+      cached_data = IncrementalCache.load(
+        output_dir, Config.version, @codegen_target.to_s, @flags, @prelude
+      )
+      old_signatures = cached_data.try(&.file_signatures)
+
+      # Compute changed files
+      current_files = Set(String).new
+      program.requires.each { |f| current_files.add(f) }
+
+      if cached_data
+        changed = IncrementalCache.changed_files(cached_data, current_files)
+      else
+        # No cached data -- all files are "new" / structural
+        changed = current_files
+      end
+
+      return if changed.empty?
+
+      # Classify changes
+      body_only, structural = IncrementalCache.classify_changes(
+        changed, old_signatures, new_signatures
+      )
+
+      @last_body_only_count = body_only.size
+      @last_structural_count = structural.size
+    end
+
+    # Extract FileTopLevelSignature for each required file by parsing it
+    # and running the SignatureExtractor visitor.
+    private def extract_file_signatures(program) : Hash(String, FileTopLevelSignature)
+      all_signatures = {} of String => FileTopLevelSignature
+
+      program.requires.each do |filename|
+        begin
+          content = File.read(filename)
+          parser = Parser.new(content, program.string_pool)
+          parser.filename = filename
+          parsed = parser.parse
+
+          extractor = SignatureExtractor.new
+          parsed.accept(extractor)
+          file_sigs = extractor.build_signatures
+
+          # The extractor may produce signatures for the file and for other
+          # files referenced by location. We only take the one for this file.
+          if sig = file_sigs[filename]?
+            all_signatures[filename] = sig
+          else
+            # File had no top-level declarations -- store an empty signature
+            all_signatures[filename] = FileTopLevelSignature.new(
+              type_declarations: [] of TypeDeclarationSig,
+              method_signatures: [] of MethodSig,
+              mixins: [] of String,
+              constants: [] of String,
+              has_top_level_macro_calls: false,
+            )
+          end
+        rescue
+          # If a file can't be read/parsed, skip it.
+          # This is best-effort; the main compilation already succeeded.
+        end
+      end
+
+      all_signatures
+    end
+
     private def save_incremental_cache(program, sources)
       output_dir = CacheDir.instance.directory_for(sources)
 
@@ -1074,6 +1176,7 @@ module Crystal
         prelude: @prelude,
         file_fingerprints: fingerprints,
         module_file_mapping: module_mapping,
+        file_signatures: @last_file_signatures,
       )
 
       IncrementalCache.save(output_dir, data)
