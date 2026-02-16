@@ -857,7 +857,7 @@ class Socket
     # Creates an `UNIXSocket` from the internal OS representation.
     def self.from(sockaddr : LibC::Sockaddr*, addrlen) : UNIXAddress
       {% if flag?(:wasm32) %}
-        raise NotImplementedError.new "Socket::UNIXAddress.from"
+        raise NotImplementedError.new "Socket::UNIXAddress.from: UNIX sockets are not available on the WASM target. WASI does not support UNIX domain sockets."
       {% else %}
         new(sockaddr.as(LibC::SockaddrUn*), addrlen.to_i)
       {% end %}
@@ -866,7 +866,7 @@ class Socket
     # :ditto:
     def self.from(sockaddr : LibC::Sockaddr*) : UNIXAddress
       {% if flag?(:wasm32) %}
-        raise NotImplementedError.new "Socket::UNIXAddress.from"
+        raise NotImplementedError.new "Socket::UNIXAddress.from: UNIX sockets are not available on the WASM target. WASI does not support UNIX domain sockets."
       {% else %}
         sockaddr = sockaddr.as(LibC::SockaddrUn*)
 
@@ -902,7 +902,7 @@ class Socket
       raise Socket::Error.new("Invalid UNIX address: missing path") if unix_path.empty?
 
       {% if flag?(:wasm32) %}
-        raise NotImplementedError.new "Socket::UNIXAddress.parse"
+        raise NotImplementedError.new "Socket::UNIXAddress.parse: UNIX sockets are not available on the WASM target. WASI does not support UNIX domain sockets."
       {% else %}
         UNIXAddress.new(unix_path)
       {% end %}
@@ -929,7 +929,7 @@ class Socket
 
     def to_unsafe : LibC::Sockaddr*
       {% if flag?(:wasm32) %}
-        raise NotImplementedError.new "Socket::UNIXAddress#to_unsafe"
+        raise NotImplementedError.new "Socket::UNIXAddress#to_unsafe: UNIX sockets are not available on the WASM target. WASI does not support UNIX domain sockets."
       {% else %}
         sockaddr = Pointer(LibC::SockaddrUn).malloc
         sockaddr.value.sun_family = family

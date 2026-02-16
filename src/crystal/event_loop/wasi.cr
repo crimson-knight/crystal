@@ -318,7 +318,7 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   end
 
   def pipe(read_blocking : Bool?, write_blocking : Bool?) : {IO::FileDescriptor, IO::FileDescriptor}
-    raise NotImplementedError.new("Crystal::EventLoop::Wasi#pipe")
+    raise NotImplementedError.new("Crystal::EventLoop::Wasi#pipe: pipes are not available in the WASM sandbox. WASI does not support creating pipes.")
   end
 
   # Opens a file at *path* using WASI's `path_open` syscall.
@@ -460,7 +460,7 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   end
 
   def reopened(file_descriptor : Crystal::System::FileDescriptor) : Nil
-    raise NotImplementedError.new("Crystal::EventLoop#reopened(FileDescriptor)")
+    raise NotImplementedError.new("Crystal::EventLoop#reopened(FileDescriptor): reopening file descriptors is not available in the WASM sandbox.")
   end
 
   def shutdown(file_descriptor : Crystal::System::FileDescriptor) : Nil
@@ -472,11 +472,11 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   end
 
   def socket(family : ::Socket::Family, type : ::Socket::Type, protocol : ::Socket::Protocol, blocking : Bool?) : {::Socket::Handle, Bool}
-    raise NotImplementedError.new("Crystal::EventLoop::Wasi#socket")
+    raise NotImplementedError.new("Crystal::EventLoop::Wasi#socket: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2.")
   end
 
   def socketpair(type : ::Socket::Type, protocol : ::Socket::Protocol) : Tuple({::Socket::Handle, ::Socket::Handle}, Bool)
-    raise NotImplementedError.new("Crystal::EventLoop::Wasi#socketpair")
+    raise NotImplementedError.new("Crystal::EventLoop::Wasi#socketpair: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2.")
   end
 
   # NOTE: Socket evented I/O methods below also depend on Fiber.suspend
@@ -507,19 +507,19 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   end
 
   def receive_from(socket : ::Socket, slice : Bytes) : Tuple(Int32, ::Socket::Address)
-    raise NotImplementedError.new "Crystal::Wasi::EventLoop#receive_from"
+    raise NotImplementedError.new "Crystal::Wasi::EventLoop#receive_from: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   def send_to(socket : ::Socket, slice : Bytes, address : ::Socket::Address) : Int32
-    raise NotImplementedError.new "Crystal::Wasi::EventLoop#send_to"
+    raise NotImplementedError.new "Crystal::Wasi::EventLoop#send_to: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   def connect(socket : ::Socket, address : ::Socket::Addrinfo | ::Socket::Address, timeout : ::Time::Span | ::Nil) : IO::Error?
-    raise NotImplementedError.new "Crystal::Wasi::EventLoop#connect"
+    raise NotImplementedError.new "Crystal::Wasi::EventLoop#connect: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   def accept(socket : ::Socket) : {::Socket::Handle, Bool}?
-    raise NotImplementedError.new "Crystal::Wasi::EventLoop#accept"
+    raise NotImplementedError.new "Crystal::Wasi::EventLoop#accept: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   def shutdown(socket : ::Socket) : Nil

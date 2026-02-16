@@ -14,15 +14,15 @@ module Crystal::System::Socket
   # Tries to bind the socket to a local address.
   # Yields an `Socket::BindError` if the binding failed.
   private def system_bind(addr, addrstr, &)
-    raise NotImplementedError.new "Crystal::System::Socket#system_bind"
+    raise NotImplementedError.new "Crystal::System::Socket#system_bind: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_listen(backlog, &)
-    raise NotImplementedError.new "Crystal::System::Socket#system_listen"
+    raise NotImplementedError.new "Crystal::System::Socket#system_listen: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_accept : {Handle, Bool}?
-    raise NotImplementedError.new "Crystal::System::Socket#system_accept"
+    raise NotImplementedError.new "Crystal::System::Socket#system_accept: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_close_read
@@ -42,71 +42,71 @@ module Crystal::System::Socket
   end
 
   private def system_send_buffer_size : Int
-    raise NotImplementedError.new "Crystal::System::Socket#system_send_buffer_size"
+    raise NotImplementedError.new "Crystal::System::Socket#system_send_buffer_size: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_send_buffer_size=(val : Int)
-    raise NotImplementedError.new "Crystal::System::Socket#system_send_buffer_size="
+    raise NotImplementedError.new "Crystal::System::Socket#system_send_buffer_size=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_recv_buffer_size : Int
-    raise NotImplementedError.new "Crystal::System::Socket#system_recv_buffer_size"
+    raise NotImplementedError.new "Crystal::System::Socket#system_recv_buffer_size: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_recv_buffer_size=(val : Int)
-    raise NotImplementedError.new "Crystal::System::Socket#system_recv_buffer_size="
+    raise NotImplementedError.new "Crystal::System::Socket#system_recv_buffer_size=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_reuse_address? : Bool
-    raise NotImplementedError.new "Crystal::System::Socket#system_reuse_address?"
+    raise NotImplementedError.new "Crystal::System::Socket#system_reuse_address?: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_reuse_address=(val : Bool)
-    raise NotImplementedError.new "Crystal::System::Socket#system_reuse_address="
+    raise NotImplementedError.new "Crystal::System::Socket#system_reuse_address=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_reuse_port?
-    raise NotImplementedError.new "Crystal::System::Socket#system_reuse_port?"
+    raise NotImplementedError.new "Crystal::System::Socket#system_reuse_port?: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_reuse_port=(val : Bool)
-    raise NotImplementedError.new "Crystal::System::Socket#system_reuse_port="
+    raise NotImplementedError.new "Crystal::System::Socket#system_reuse_port=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_broadcast? : Bool
-    raise NotImplementedError.new "Crystal::System::Socket#system_broadcast?"
+    raise NotImplementedError.new "Crystal::System::Socket#system_broadcast?: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_broadcast=(val : Bool)
-    raise NotImplementedError.new "Crystal::System::Socket#system_broadcast="
+    raise NotImplementedError.new "Crystal::System::Socket#system_broadcast=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_keepalive? : Bool
-    raise NotImplementedError.new "Crystal::System::Socket#system_keepalive?"
+    raise NotImplementedError.new "Crystal::System::Socket#system_keepalive?: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_keepalive=(val : Bool)
-    raise NotImplementedError.new "Crystal::System::Socket#system_keepalive="
+    raise NotImplementedError.new "Crystal::System::Socket#system_keepalive=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_linger
-    raise NotImplementedError.new "Crystal::System::Socket#system_linger"
+    raise NotImplementedError.new "Crystal::System::Socket#system_linger: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_linger=(val)
-    raise NotImplementedError.new "Crystal::System::Socket#system_linge="
+    raise NotImplementedError.new "Crystal::System::Socket#system_linger=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_getsockopt(optname, optval, level = LibC::SOL_SOCKET, &)
-    raise NotImplementedError.new "Crystal::System::Socket#system_getsockopt"
+    raise NotImplementedError.new "Crystal::System::Socket#system_getsockopt: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_getsockopt(optname, optval, level = LibC::SOL_SOCKET)
-    raise NotImplementedError.new "Crystal::System::Socket#system_getsockopt"
+    raise NotImplementedError.new "Crystal::System::Socket#system_getsockopt: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_setsockopt(optname, optval, level = LibC::SOL_SOCKET)
-    raise NotImplementedError.new "Crystal::System::Socket#system_setsockopt"
+    raise NotImplementedError.new "Crystal::System::Socket#system_setsockopt: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_blocking?
@@ -183,34 +183,34 @@ module Crystal::System::Socket
   end
 
   private def system_local_address
-    raise NotImplementedError.new "Crystal::System::Socket#system_local_address"
+    raise NotImplementedError.new "Crystal::System::Socket#system_local_address: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_remote_address
-    raise NotImplementedError.new "Crystal::System::Socket#system_remote_address"
+    raise NotImplementedError.new "Crystal::System::Socket#system_remote_address: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   private def system_tcp_keepalive_idle
-    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_idle")
+    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_idle: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2.")
   end
 
   private def system_tcp_keepalive_idle=(val : Int)
-    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_idle=")
+    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_idle=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2.")
   end
 
   private def system_tcp_keepalive_interval
-    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_interval")
+    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_interval: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2.")
   end
 
   private def system_tcp_keepalive_interval=(val : Int)
-    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_interval=")
+    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_interval=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2.")
   end
 
   private def system_tcp_keepalive_count
-    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_count")
+    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_count: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2.")
   end
 
   private def system_tcp_keepalive_count=(val : Int)
-    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_count=")
+    raise NotImplementedError.new("Crystal::System::Socket#system_tcp_keepalive_count=: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2.")
   end
 end

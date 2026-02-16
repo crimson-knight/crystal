@@ -207,7 +207,7 @@ class Process::Status
         ExitReason::Signal
       end
     {% else %}
-      raise NotImplementedError.new("Process::Status#exit_reason")
+      raise NotImplementedError.new("Process::Status#exit_reason: process status inspection is not available on this platform.")
     {% end %}
   end
 
@@ -254,7 +254,7 @@ class Process::Status
     {% if flag?(:unix) && !flag?(:wasm32) %}
       Signal.new(signal_code)
     {% else %}
-      raise NotImplementedError.new("Process::Status#exit_signal")
+      raise NotImplementedError.new("Process::Status#exit_signal: signal information is not available on this platform. Use #exit_reason for a portable alternative.")
     {% end %}
   end
 

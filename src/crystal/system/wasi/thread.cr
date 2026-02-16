@@ -5,7 +5,7 @@ module Crystal::System::Thread
   end
 
   def self.new_handle(thread_obj : ::Thread) : Handle
-    raise NotImplementedError.new("Crystal::System::Thread.new_handle")
+    raise NotImplementedError.new("Crystal::System::Thread.new_handle: multi-threading is not available on the WASM target. Use fibers for concurrency.")
   end
 
   def self.current_handle : Handle
@@ -13,7 +13,7 @@ module Crystal::System::Thread
   end
 
   def self.yield_current : Nil
-    raise NotImplementedError.new("Crystal::System::Thread.yield_current")
+    raise NotImplementedError.new("Crystal::System::Thread.yield_current: multi-threading is not available on the WASM target. Use fibers for concurrency.")
   end
 
   def self.current_thread : ::Thread
@@ -40,7 +40,7 @@ module Crystal::System::Thread
   end
 
   private def system_join : Exception?
-    NotImplementedError.new("Crystal::System::Thread#system_join")
+    NotImplementedError.new("Crystal::System::Thread#system_join: multi-threading is not available on the WASM target. Use fibers for concurrency.")
   end
 
   private def system_close
@@ -55,14 +55,14 @@ module Crystal::System::Thread
   end
 
   private def system_suspend : Nil
-    raise NotImplementedError.new("Crystal::System::Thread.system_suspend")
+    raise NotImplementedError.new("Crystal::System::Thread.system_suspend: multi-threading is not available on the WASM target. Use fibers for concurrency.")
   end
 
   private def system_wait_suspended : Nil
-    raise NotImplementedError.new("Crystal::System::Thread.system_wait_suspended")
+    raise NotImplementedError.new("Crystal::System::Thread.system_wait_suspended: multi-threading is not available on the WASM target. Use fibers for concurrency.")
   end
 
   private def system_resume : Nil
-    raise NotImplementedError.new("Crystal::System::Thread.system_resume")
+    raise NotImplementedError.new("Crystal::System::Thread.system_resume: multi-threading is not available on the WASM target. Use fibers for concurrency.")
   end
 end
