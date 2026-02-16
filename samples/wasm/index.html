@@ -26,6 +26,7 @@
       width: 100%;
       max-width: 700px;
       min-height: 300px;
+      max-height: 600px;
       font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
       font-size: 14px;
       line-height: 1.6;
@@ -37,7 +38,12 @@
     .line.info { color: #58a6ff; }
     .line.warn { color: #d29922; }
     .line.error { color: #f85149; }
+    .line.header-gold { color: #ffd700; font-weight: bold; }
+    .line.header-cyan { color: #00d4ff; font-weight: bold; }
+    .line.combat { color: #f0883e; }
+    .line.loot { color: #a371f7; }
     .prompt { color: #8b949e; }
+    .buttons { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
     button {
       margin-top: 1rem;
       padding: 0.75rem 2rem;
@@ -50,6 +56,9 @@
     }
     button:hover { background: #2ea043; }
     button:disabled { background: #555; cursor: not-allowed; }
+    button.demo-btn { background: #8957e5; }
+    button.demo-btn:hover { background: #a371f7; }
+    button.demo-btn:disabled { background: #555; }
     .status { margin-top: 1rem; color: #8b949e; font-size: 13px; }
   </style>
 </head>
@@ -60,16 +69,19 @@
   <div id="terminal">
     <span class="prompt">$ crystal build hello.cr --target wasm32-wasi</span>
     <br>
-    <span class="prompt">$ ./hello.wasm</span>
+    <span class="prompt">Ready to run.</span>
     <br>
   </div>
 
-  <button id="runBtn" onclick="runWasm()">Run Crystal WASM</button>
-  <div class="status" id="status">Click "Run Crystal WASM" to start</div>
+  <div class="buttons">
+    <button id="runBtn" onclick="runWasmFile('hello.wasm', 'hello.wasm')">Run Crystal WASM</button>
+    <button id="demoBtn" class="demo-btn" onclick="runWasmFile('demo.wasm', 'demo.wasm')">Run Feature Demo</button>
+  </div>
+  <div class="status" id="status">Click a button to start</div>
 
 <script>
 // Minimal WASI Preview 1 shim for running Crystal WASM in the browser
-function createWasiShim(outputCallback) {
+function createWasiShim(outputCallback, programName) {
   let memory;
   let exitCode = null;
 
@@ -83,16 +95,16 @@ function createWasiShim(outputCallback) {
     return new TextDecoder().decode(getMemBytes().subarray(ptr, ptr + len));
   }
 
+  const argStr = programName + '\0';
+
   const wasi = {
     // args_get(argv: i32, argv_buf: i32) -> errno
     args_get(argv, argv_buf) {
-      // Provide a single arg: "hello.wasm"
-      const arg = "hello.wasm\0";
       const view = getMemView();
       const bytes = getMemBytes();
       view.setUint32(argv, argv_buf, true);
-      for (let i = 0; i < arg.length; i++) {
-        bytes[argv_buf + i] = arg.charCodeAt(i);
+      for (let i = 0; i < argStr.length; i++) {
+        bytes[argv_buf + i] = argStr.charCodeAt(i);
       }
       return 0;
     },
@@ -100,8 +112,8 @@ function createWasiShim(outputCallback) {
     // args_sizes_get(argc: i32, argv_buf_size: i32) -> errno
     args_sizes_get(argc_ptr, argv_buf_size_ptr) {
       const view = getMemView();
-      view.setUint32(argc_ptr, 1, true);       // 1 argument
-      view.setUint32(argv_buf_size_ptr, 11, true); // "hello.wasm\0"
+      view.setUint32(argc_ptr, 1, true);
+      view.setUint32(argv_buf_size_ptr, argStr.length, true);
       return 0;
     },
 
@@ -237,6 +249,25 @@ function appendLine(text, className) {
 
 let lineBuffer = '';
 
+function classifyLine(line, isStderr) {
+  if (isStderr) return 'error';
+  // Feature demo headers
+  if (line.startsWith('===')) return 'header-gold';
+  if (line.startsWith('---')) return 'header-cyan';
+  // Combat events
+  if (line.includes('[HIT]') || line.includes('[DEFEAT]')) return 'combat';
+  if (line.includes('Loot dropped') || line.includes('[Ambient]')) return 'loot';
+  // General classification
+  if (line.startsWith('Caught') || line.startsWith('  Caught')) return 'warn';
+  if (line.includes('CRITICAL HIT')) return 'combat';
+  if (line.startsWith('All systems') || line.includes('Complete') ||
+      line.includes('survived') || line.includes('match: true') ||
+      line.includes('features running')) return 'ok';
+  if (line.startsWith('Crystal') || line.startsWith('Target') ||
+      line.startsWith('  Hero:') || line.startsWith('Final Hero')) return 'info';
+  return '';
+}
+
 function handleOutput(text, isStderr) {
   lineBuffer += text;
   const lines = lineBuffer.split('\n');
@@ -245,28 +276,34 @@ function handleOutput(text, isStderr) {
 
   for (const line of lines) {
     if (line.length === 0) continue;
-    let cls = '';
-    if (line.startsWith('Caught')) cls = 'warn';
-    else if (line.startsWith('All systems') || line.includes('ok') || line.includes('survived')) cls = 'ok';
-    else if (line.startsWith('Crystal') || line.startsWith('Target')) cls = 'info';
-    if (isStderr) cls = 'error';
-    appendLine(line, cls);
+    appendLine(line, classifyLine(line, isStderr));
   }
 }
 
-async function runWasm() {
-  const btn = document.getElementById('runBtn');
-  btn.disabled = true;
-  statusEl.textContent = 'Loading WASM module...';
+function setButtonsDisabled(disabled) {
+  document.getElementById('runBtn').disabled = disabled;
+  document.getElementById('demoBtn').disabled = disabled;
+}
+
+async function runWasmFile(filename, programName) {
+  setButtonsDisabled(true);
+
+  // Clear terminal
+  terminal.innerHTML = '';
+  appendLine(`$ crystal build ${filename.replace('.wasm', '.cr')} --target wasm32-wasi`, 'prompt');
+  appendLine(`$ ./${filename}`, 'prompt');
+  lineBuffer = '';
+
+  statusEl.textContent = `Loading ${filename}...`;
 
   try {
-    const response = await fetch('hello.wasm');
-    if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
+    const response = await fetch(filename);
+    if (!response.ok) throw new Error(`Failed to fetch ${filename}: ${response.status}`);
 
     statusEl.textContent = 'Compiling WASM...';
     const wasmBytes = await response.arrayBuffer();
 
-    const { wasi, setMemory } = createWasiShim(handleOutput);
+    const { wasi, setMemory } = createWasiShim(handleOutput, programName);
 
     statusEl.textContent = 'Instantiating...';
 
@@ -278,7 +315,7 @@ async function runWasm() {
 
     setMemory(instance.exports.memory);
 
-    statusEl.textContent = 'Running Crystal WASM...';
+    statusEl.textContent = `Running ${filename}...`;
     appendLine('');
 
     try {
@@ -303,12 +340,12 @@ async function runWasm() {
       handleOutput('\n', false);
     }
 
-    statusEl.textContent = 'Done! Crystal WASM ran successfully in your browser.';
+    statusEl.textContent = `Done! ${filename} ran successfully in your browser.`;
 
   } catch (e) {
     if (e instanceof WasiExit && e.code === 0) {
       if (lineBuffer.length > 0) handleOutput('\n', false);
-      statusEl.textContent = 'Done! Crystal WASM ran successfully in your browser.';
+      statusEl.textContent = `Done! ${filename} ran successfully in your browser.`;
     } else {
       appendLine(`Error: ${e.message}`, 'error');
       statusEl.textContent = `Error: ${e.message}`;
@@ -316,8 +353,12 @@ async function runWasm() {
     }
   }
 
-  btn.disabled = false;
-  btn.textContent = 'Run Again';
+  setButtonsDisabled(false);
+}
+
+// Backwards compatibility: keep the old runWasm function
+function runWasm() {
+  runWasmFile('hello.wasm', 'hello.wasm');
 }
 </script>
 </body>
