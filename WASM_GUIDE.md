@@ -120,6 +120,37 @@ Boehm GC is compiled for WASM and runs automatically. `GC.collect` and `GC.stats
 work. The stack is placed first in linear memory (`--stack-first`) with 8MB to
 prevent silent heap corruption.
 
+**How GC scanning works on WASM**: Boehm GC performs conservative stack scanning
+over the linear memory stack. On native platforms, GC must also scan CPU registers
+for live pointers. On WASM, there are no directly accessible CPU registers --
+instead, values live in WASM locals (a virtual register file). However, LLVM
+naturally spills most values to the linear memory stack during compilation, so the
+conservative stack scan catches the majority of live pointers without special
+handling.
+
+**Why `--spill-pointers` is disabled**: Binaryen provides a `--spill-pointers`
+pass that forces all pointer-typed WASM locals onto the linear memory stack,
+ensuring GC can find every root. Crystal has this pass disabled because:
+
+1. It has known bugs (incorrect stack frame sizing, breaks at `-O1`)
+2. It is incompatible with Asyncify -- running both passes together produces
+   incorrect output (confirmed by the Binaryen maintainer in
+   emscripten/emscripten#18251)
+3. Crystal uses Asyncify for fiber switching, so the two cannot coexist
+
+**Recommended long-term fix**: Emscripten's approach uses `emscripten_scan_registers`,
+which triggers an Asyncify unwind to capture all live WASM locals into linear
+memory, then scans them. This is compatible with Asyncify because it uses the
+same mechanism rather than fighting it. Implementing an equivalent in Crystal's
+GC integration would guarantee all roots are visible to the collector.
+
+**When you might see GC issues**: In practice, GC works reliably because LLVM
+spills aggressively. A theoretical risk exists when a pointer is held only in a
+WASM local (never spilled to the linear memory stack) during a GC collection.
+This is rare -- it would require heavy allocation pressure where the sole
+reference to a live object exists only in a WASM local at the exact moment GC
+runs.
+
 ### Fibers and Channels
 
 Cooperative multitasking works via Binaryen's Asyncify transformation:
