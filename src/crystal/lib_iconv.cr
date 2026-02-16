@@ -7,6 +7,7 @@ require "c/stddef"
 # Supported library versions:
 #
 # * libiconv-gnu
+# * POSIX iconv (musl/wasi-libc on wasm32)
 #
 # See https://crystal-lang.org/reference/man/required_libraries.html#internationalization-conversion
 @[Link("iconv")]
@@ -20,7 +21,15 @@ lib LibIconv
   alias Char = LibC::Char
   alias SizeT = LibC::SizeT
 
-  fun iconv = libiconv(cd : IconvT, inbuf : Char**, inbytesleft : SizeT*, outbuf : Char**, outbytesleft : SizeT*) : SizeT
-  fun iconv_close = libiconv_close(cd : IconvT) : Int
-  fun iconv_open = libiconv_open(tocode : Char*, fromcode : Char*) : IconvT
+  {% if flag?(:wasm32) %}
+    # wasi-libc (musl-based) uses POSIX iconv symbol names
+    fun iconv(cd : IconvT, inbuf : Char**, inbytesleft : SizeT*, outbuf : Char**, outbytesleft : SizeT*) : SizeT
+    fun iconv_close(cd : IconvT) : Int
+    fun iconv_open(tocode : Char*, fromcode : Char*) : IconvT
+  {% else %}
+    # GNU libiconv uses "lib"-prefixed symbol names
+    fun iconv = libiconv(cd : IconvT, inbuf : Char**, inbytesleft : SizeT*, outbuf : Char**, outbytesleft : SizeT*) : SizeT
+    fun iconv_close = libiconv_close(cd : IconvT) : Int
+    fun iconv_open = libiconv_open(tocode : Char*, fromcode : Char*) : IconvT
+  {% end %}
 end
