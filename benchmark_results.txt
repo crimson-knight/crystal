@@ -1,0 +1,47 @@
+========================================================================
+   Crystal Incremental Compiler Benchmark Results
+========================================================================
+ Stock Crystal: Crystal 1.19.1 (2026-01-20)
+ Incremental:   Crystal 1.20.0-dev [0b87769ec] (2026-02-16)
+ Date:          2026-02-16 16:11:10
+ Repo Root:     /Users/crimsonknight/open_source_coding_projects/crystal
+========================================================================
+
+  Target                   Scenario              Stock(ms)   Incr(ms)    Stats
+  --------------------------------------------------------------------------
+  fibonacci.cr             Stock cold build            883          -  
+  fibonacci.cr             Stock cold + --release       3940          -  
+  fibonacci.cr             Incr cold build               -       1333  
+  fibonacci.cr             Incr cold + --release          -       4402  
+  fibonacci.cr             Incr warm (no change)          -        988  
+  fibonacci.cr             Incr warm (touched)           -        952  
+
+  sieve.cr                 Stock cold build            787          -  
+  sieve.cr                 Stock cold + --release       4017          -  
+  sieve.cr                 Incr cold build               -       1197  
+  sieve.cr                 Incr cold + --release          -       4496  
+  sieve.cr                 Incr warm (no change)          -        970  
+  sieve.cr                 Incr warm (touched)           -        954  
+
+  wordcount.cr             Stock cold build            882          -  
+  wordcount.cr             Stock cold + --release       4627          -  
+  wordcount.cr             Incr cold build               -       1282  
+  wordcount.cr             Incr cold + --release          -       5103  
+  wordcount.cr             Incr warm (no change)          -       1004  
+  wordcount.cr             Incr warm (touched)           -        950  
+
+  binary-trees.cr          Stock cold build            831          -  
+  binary-trees.cr          Stock cold + --release       4026          -  
+  binary-trees.cr          Incr cold build               -       1182  
+  binary-trees.cr          Incr cold + --release          -       4501  
+  binary-trees.cr          Incr warm (no change)          -        986  
+  binary-trees.cr          Incr warm (touched)           -        970  
+
+  havlak.cr                Stock cold build            896          -  
+  havlak.cr                Stock cold + --release       4345          -  
+  havlak.cr                Incr cold build               -       1273  
+  havlak.cr                Incr cold + --release          -       4837  
+  havlak.cr                Incr warm (no change)          -       1015  
+  havlak.cr                Incr warm (touched)           -        980  
+
+========================================================================

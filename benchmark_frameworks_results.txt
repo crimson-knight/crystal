@@ -1,0 +1,97 @@
+==================================================================
+            Crystal Web Framework Compilation Benchmark
+==================================================================
+
+  Date:                2026-02-16 16:07:31
+  Stock Crystal:       Crystal 1.19.1 (2026-01-20)
+  Incremental Crystal: Crystal 1.20.0-dev [0b87769ec] (2026-02-16)
+  Machine:             arm64 / macOS 26.2
+
+------------------------------------------------------------------
+
+  Framework: kemal
+
+    Stock debug build:                     7242 ms    (binary: 5.4 MB)
+    Stock release build:                  18272 ms    (binary: 1.7 MB)
+    Incremental debug build:               8169 ms    (binary: 5.4 MB)
+    Incremental release build:            19316 ms    (binary: 1.7 MB)
+    Warm incremental (no change):          2883 ms
+    Warm incremental (touched):            2081 ms
+    JSON health check:                 PASS
+    Speedup (debug):                   0.89x
+    Speedup (release):                 0.95x
+
+------------------------------------------------------------------
+
+  Framework: athena
+
+    Stock debug build:                     8336 ms    (binary: 7.6 MB)
+    Stock release build:                  23388 ms    (binary: 2.2 MB)
+    Incremental debug build:               9590 ms    (binary: 7.6 MB)
+    Incremental release build:            24742 ms    (binary: 2.2 MB)
+    Warm incremental (no change):          4054 ms
+    Warm incremental (touched):            3187 ms
+    JSON health check:                 PASS
+    Speedup (debug):                   0.87x
+    Speedup (release):                 0.95x
+
+------------------------------------------------------------------
+
+  Framework: spider-gazelle
+
+    Stock debug build:                     7179 ms    (binary: 4.8 MB)
+    Stock release build:                  16829 ms    (binary: 1.6 MB)
+    Incremental debug build:               7848 ms    (binary: 4.9 MB)
+    Incremental release build:            18549 ms    (binary: 1.6 MB)
+    Warm incremental (no change):          2725 ms
+    Warm incremental (touched):            2143 ms
+    JSON health check:                 PASS
+    Speedup (debug):                   0.91x
+    Speedup (release):                 0.91x
+
+------------------------------------------------------------------
+
+  Framework: lucky
+
+    Stock debug build:                     7252 ms    (binary: 5.2 MB)
+    Stock release build:                  18601 ms    (binary: 1.7 MB)
+    Incremental debug build:               8312 ms    (binary: 5.2 MB)
+    Incremental release build:            20120 ms    (binary: 1.7 MB)
+    Warm incremental (no change):          3194 ms
+    Warm incremental (touched):            2314 ms
+    JSON health check:                 FAIL
+    Speedup (debug):                   0.87x
+    Speedup (release):                 0.92x
+
+------------------------------------------------------------------
+
+  Framework: amber-v1
+
+    Stock debug build:                    12324 ms    (binary: 6.0 MB)
+    Stock release build:                  25133 ms    (binary: 2.0 MB)
+    Incremental debug build:              14104 ms    (binary: 6.0 MB)
+    Incremental release build:            27295 ms    (binary: 2.0 MB)
+    Warm incremental (no change):          3561 ms
+    Warm incremental (touched):            2424 ms
+    JSON health check:                 FAIL
+    Speedup (debug):                   0.87x
+    Speedup (release):                 0.92x
+
+------------------------------------------------------------------
+
+  Framework: amber-v2
+
+    Stock debug build:                    13350 ms    (binary: 6.9 MB)
+    Stock release build:                  28203 ms    (binary: 2.3 MB)
+    Incremental debug build:              15053 ms    (binary: 6.9 MB)
+    Incremental release build:            30420 ms    (binary: 2.3 MB)
+    Warm incremental (no change):          4067 ms
+    Warm incremental (touched):            2787 ms
+    JSON health check:                 FAIL
+    Speedup (debug):                   0.89x
+    Speedup (release):                 0.93x
+
+------------------------------------------------------------------
+
+==================================================================
+
