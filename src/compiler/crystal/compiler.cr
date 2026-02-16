@@ -232,6 +232,10 @@ module Crystal
     # Whether linking was skipped in the last compilation (all .o files reused).
     @link_skipped : Bool = false
 
+    # Whether the entire compilation (semantic + codegen) was skipped because
+    # no source files changed and the output binary already exists.
+    @compilation_skipped : Bool = false
+
     # Program that was created for the last compilation.
     property! program : Program
 
@@ -254,19 +258,68 @@ module Crystal
       source = [source] unless source.is_a?(Array)
       program = new_program(source)
       yield program
+
+      # Reset incremental state from previous compilation (watch mode)
+      @compilation_skipped = false
+      @link_skipped = false
+
       node = parse program, source
 
-      begin
-        node = program.semantic node, cleanup: !no_cleanup?
-      rescue ex : SkipMacroCodeCoverageException
-        program.macro_expansion_error_hook.try &.call(ex.cause)
+      # Incremental optimization: detect if any source files changed since
+      # the last compilation. If nothing changed and the output binary exists,
+      # skip semantic analysis and codegen entirely — they would produce
+      # identical results.
+      #
+      # We check the cached file list directly (not program.requires) because
+      # program.requires is only fully populated after semantic analysis.
+      compilation_skipped = false
+      if @incremental && !@no_codegen
+        output_dir = CacheDir.instance.directory_for(source)
+        cached_data = IncrementalCache.load(
+          output_dir, Config.version, @codegen_target.to_s, @flags, @prelude
+        )
+
+        if cached_data && !cached_data.file_fingerprints.empty?
+          any_changed = false
+
+          # Check every file from the previous compilation for changes
+          cached_data.file_fingerprints.each_value do |fp|
+            begin
+              info = File.info(fp.filename)
+              if info.modification_time.to_unix != fp.mtime_epoch || info.size != fp.byte_size
+                any_changed = true
+                break
+              end
+            rescue IO::Error
+              # File no longer exists — treat as changed
+              any_changed = true
+              break
+            end
+          end
+
+          unless any_changed
+            expanded_output = File.expand_path(output_filename)
+            if File.exists?(expanded_output)
+              compilation_skipped = true
+              @compilation_skipped = true
+            end
+          end
+        end
       end
 
-      units = codegen program, node, source, output_filename unless @no_codegen
+      unless compilation_skipped
+        begin
+          node = program.semantic node, cleanup: !no_cleanup?
+        rescue ex : SkipMacroCodeCoverageException
+          program.macro_expansion_error_hook.try &.call(ex.cause)
+        end
 
-      if @incremental
-        extract_and_compare_signatures(program, source)
-        save_incremental_cache(program, source)
+        units = codegen program, node, source, output_filename unless @no_codegen
+
+        if @incremental
+          extract_and_compare_signatures(program, source)
+          save_incremental_cache(program, source)
+        end
       end
 
       @progress_tracker.clear
@@ -274,6 +327,7 @@ module Crystal
       print_codegen_stats(units)
       print_parse_cache_stats
       print_signature_stats
+      print_compilation_skip_stats if compilation_skipped
 
       Result.new program, node
     end
@@ -1082,6 +1136,14 @@ module Crystal
       puts "Signature tracking:"
       puts " - Files with body-only changes: #{body_only}"
       puts " - Files with structural changes: #{structural}"
+    end
+
+    private def print_compilation_skip_stats
+      return unless @progress_tracker.stats?
+      puts
+      puts "Incremental compilation:"
+      puts " - No source changes detected, semantic + codegen skipped"
+      puts " - Output binary is unchanged"
     end
 
     # Phase 6: Extract top-level signatures from all required files and
