@@ -360,33 +360,33 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
 
     if is_read
       rights_base |= LibWasi::Rights::FdRead |
-        LibWasi::Rights::FdSeek |
-        LibWasi::Rights::FdTell |
-        LibWasi::Rights::FdFilestatGet |
-        LibWasi::Rights::FdReaddir |
-        LibWasi::Rights::PollFdReadwrite
+                     LibWasi::Rights::FdSeek |
+                     LibWasi::Rights::FdTell |
+                     LibWasi::Rights::FdFilestatGet |
+                     LibWasi::Rights::FdReaddir |
+                     LibWasi::Rights::PollFdReadwrite
     end
 
     if is_write
       rights_base |= LibWasi::Rights::FdWrite |
-        LibWasi::Rights::FdSeek |
-        LibWasi::Rights::FdTell |
-        LibWasi::Rights::FdFilestatGet |
-        LibWasi::Rights::FdDatasync |
-        LibWasi::Rights::FdSync |
-        LibWasi::Rights::FdAllocate |
-        LibWasi::Rights::FdFilestatSetSize |
-        LibWasi::Rights::FdFilestatSetTimes |
-        LibWasi::Rights::PollFdReadwrite
+                     LibWasi::Rights::FdSeek |
+                     LibWasi::Rights::FdTell |
+                     LibWasi::Rights::FdFilestatGet |
+                     LibWasi::Rights::FdDatasync |
+                     LibWasi::Rights::FdSync |
+                     LibWasi::Rights::FdAllocate |
+                     LibWasi::Rights::FdFilestatSetSize |
+                     LibWasi::Rights::FdFilestatSetTimes |
+                     LibWasi::Rights::PollFdReadwrite
     end
 
     # If neither read nor write flag is set, default to read rights.
     if !is_read && !is_write
       rights_base |= LibWasi::Rights::FdRead |
-        LibWasi::Rights::FdSeek |
-        LibWasi::Rights::FdTell |
-        LibWasi::Rights::FdFilestatGet |
-        LibWasi::Rights::PollFdReadwrite
+                     LibWasi::Rights::FdSeek |
+                     LibWasi::Rights::FdTell |
+                     LibWasi::Rights::FdFilestatGet |
+                     LibWasi::Rights::PollFdReadwrite
     end
 
     err = LibWasi.path_open(

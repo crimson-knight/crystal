@@ -47,6 +47,7 @@ standalone programs but works in the spec test harness.
    failure point (these use raw `LibC.write`, bypassing asyncify).
 
 4. Test with the standalone program:
+
    ```crystal
    spawn { puts "fiber ran!" }
    Fiber.yield
@@ -222,7 +223,7 @@ Low priority but worth tracking:
 | D2 (size opt) | Implementation | Yes | Nothing |
 | D3 (error msgs) | Implementation | Yes | Nothing |
 
-### Recommended execution order:
+### Recommended execution order
 
 1. **Immediately**: Phase A (fiber fix) -- blocks everything user-facing
 2. **Parallel with A**: B1-B4 (easy C libs), D2 (size opt), D3 (error msgs)

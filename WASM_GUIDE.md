@@ -361,6 +361,7 @@ A hello-world program compiles to roughly **1-6 MB** depending on optimization:
 - **Release mode** (~1-2 MB): `-Oz` applied by Binaryen, dead code eliminated
 
 The main contributors to binary size are:
+
 - Boehm GC library
 - PCRE2 library (loaded via prelude for Regex)
 - Asyncify instrumentation overhead (~50% increase)
@@ -371,6 +372,7 @@ The main contributors to binary size are:
 ### "exceptions feature required"
 
 Your WASI runtime needs exception handling enabled:
+
 ```bash
 wasmtime run -W exceptions=y program.wasm
 ```
@@ -378,6 +380,7 @@ wasmtime run -W exceptions=y program.wasm
 ### "wasm trap: call stack exhausted"
 
 The default WASM stack (8MB) was exceeded. This can happen with:
+
 - Very deep recursion
 - Fibers spawned inside standalone programs (a known issue with the asyncify
   unwind loop -- use the spec framework or simpler fiber patterns)
@@ -391,6 +394,7 @@ the required `.a` files (libgc.a, libpcre2-8.a at minimum).
 
 LLVM's WASM linker must be in your PATH. It's typically installed as
 `wasm-ld-18` and needs a symlink:
+
 ```bash
 sudo ln -s $(which wasm-ld-18) /usr/bin/wasm-ld
 ```

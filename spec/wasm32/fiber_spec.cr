@@ -55,7 +55,7 @@ describe "WASM Fiber/Concurrency" do
       counter = 0
 
       spawn do
-        counter += 1  # 1
+        counter += 1 # 1
         Fiber.yield
         counter += 10 # 11
         Fiber.yield

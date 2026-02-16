@@ -108,9 +108,9 @@ lib LibWasi
 
   # Clock subscription body
   struct SubscriptionClock
-    id : UInt64         # Clock ID (0 = CLOCK_REALTIME, 1 = CLOCK_MONOTONIC)
-    timeout : UInt64    # Timeout in nanoseconds
-    precision : UInt64  # Precision hint in nanoseconds
+    id : UInt64        # Clock ID (0 = CLOCK_REALTIME, 1 = CLOCK_MONOTONIC)
+    timeout : UInt64   # Timeout in nanoseconds
+    precision : UInt64 # Precision hint in nanoseconds
     flags : SubClockFlags
   end
 

@@ -3,6 +3,7 @@ flate = "flate"
 
 [default.extend-identifiers]
 ACCES = "ACCES"
+acces = "acces"
 ba = "ba"
 ba2 = "ba2"
 bui = "bui"
