@@ -1,0 +1,496 @@
+{
+  "nodes": [
+    {
+      "id": "group-pipeline",
+      "type": "group",
+      "x": -900,
+      "y": -500,
+      "width": 2400,
+      "height": 300,
+      "label": "Current Compiler Pipeline (14 Stages)",
+      "color": "0"
+    },
+    {
+      "id": "stage-parse",
+      "type": "text",
+      "x": -880,
+      "y": -460,
+      "width": 140,
+      "height": 60,
+      "text": "**Parse**\n~5% time",
+      "color": "4"
+    },
+    {
+      "id": "stage-toplevel",
+      "type": "text",
+      "x": -720,
+      "y": -460,
+      "width": 140,
+      "height": 60,
+      "text": "**TopLevel**\nSemantic 1/9",
+      "color": "3"
+    },
+    {
+      "id": "stage-new",
+      "type": "text",
+      "x": -560,
+      "y": -460,
+      "width": 120,
+      "height": 60,
+      "text": "**New**\nSemantic 2/9",
+      "color": "3"
+    },
+    {
+      "id": "stage-typedecl",
+      "type": "text",
+      "x": -420,
+      "y": -460,
+      "width": 140,
+      "height": 60,
+      "text": "**TypeDecls**\nSemantic 3/9",
+      "color": "3"
+    },
+    {
+      "id": "stage-abstract",
+      "type": "text",
+      "x": -260,
+      "y": -460,
+      "width": 150,
+      "height": 60,
+      "text": "**AbstractChk**\nSemantic 4/9",
+      "color": "3"
+    },
+    {
+      "id": "stage-restrict",
+      "type": "text",
+      "x": -720,
+      "y": -380,
+      "width": 150,
+      "height": 60,
+      "text": "**Restrictions**\nSemantic 5/9",
+      "color": "3"
+    },
+    {
+      "id": "stage-ivars",
+      "type": "text",
+      "x": -550,
+      "y": -380,
+      "width": 140,
+      "height": 60,
+      "text": "**IVars Init**\nSemantic 6/9",
+      "color": "3"
+    },
+    {
+      "id": "stage-cvars",
+      "type": "text",
+      "x": -390,
+      "y": -380,
+      "width": 140,
+      "height": 60,
+      "text": "**CVars Init**\nSemantic 7/9",
+      "color": "3"
+    },
+    {
+      "id": "stage-main",
+      "type": "text",
+      "x": -230,
+      "y": -380,
+      "width": 160,
+      "height": 60,
+      "text": "**MainVisitor**\nSemantic 8/9\n*BOTTLENECK*",
+      "color": "1"
+    },
+    {
+      "id": "stage-cleanup",
+      "type": "text",
+      "x": -50,
+      "y": -380,
+      "width": 140,
+      "height": 60,
+      "text": "**Cleanup**\nSemantic 9/9",
+      "color": "3"
+    },
+    {
+      "id": "stage-recursive",
+      "type": "text",
+      "x": 110,
+      "y": -380,
+      "width": 160,
+      "height": 60,
+      "text": "**RecursiveChk**\nPost-semantic",
+      "color": "3"
+    },
+    {
+      "id": "stage-codegen-ir",
+      "type": "text",
+      "x": 680,
+      "y": -460,
+      "width": 160,
+      "height": 60,
+      "text": "**Codegen IR**\n~15% time",
+      "color": "5"
+    },
+    {
+      "id": "stage-codegen-bc",
+      "type": "text",
+      "x": 860,
+      "y": -460,
+      "width": 180,
+      "height": 60,
+      "text": "**Codegen BC+OBJ**\n~10% (parallel!)",
+      "color": "6"
+    },
+    {
+      "id": "stage-linking",
+      "type": "text",
+      "x": 1060,
+      "y": -460,
+      "width": 140,
+      "height": 60,
+      "text": "**Linking**\n~5% time",
+      "color": "5"
+    },
+    {
+      "id": "group-phases",
+      "type": "group",
+      "x": -900,
+      "y": -100,
+      "width": 2400,
+      "height": 500,
+      "label": "Implementation Phases",
+      "color": "0"
+    },
+    {
+      "id": "phase-0",
+      "type": "file",
+      "x": -880,
+      "y": -50,
+      "width": 280,
+      "height": 120,
+      "file": "IC_PHASE_0_DOCS.md",
+      "color": "6"
+    },
+    {
+      "id": "phase-1",
+      "type": "file",
+      "x": -560,
+      "y": -50,
+      "width": 280,
+      "height": 120,
+      "file": "IC_PHASE_1_WATCH.md",
+      "color": "0"
+    },
+    {
+      "id": "phase-2",
+      "type": "file",
+      "x": -240,
+      "y": -50,
+      "width": 280,
+      "height": 120,
+      "file": "IC_PHASE_2_CACHE.md",
+      "color": "0"
+    },
+    {
+      "id": "phase-3",
+      "type": "file",
+      "x": 80,
+      "y": -50,
+      "width": 280,
+      "height": 120,
+      "file": "IC_PHASE_3_PARALLEL_PARSE.md",
+      "color": "0"
+    },
+    {
+      "id": "phase-4",
+      "type": "file",
+      "x": 80,
+      "y": 110,
+      "width": 280,
+      "height": 120,
+      "file": "IC_PHASE_4_CODEGEN_CACHE.md",
+      "color": "0"
+    },
+    {
+      "id": "phase-5",
+      "type": "file",
+      "x": 400,
+      "y": -50,
+      "width": 280,
+      "height": 120,
+      "file": "IC_PHASE_5_PARALLEL_CHECKS.md",
+      "color": "0"
+    },
+    {
+      "id": "phase-6",
+      "type": "file",
+      "x": 80,
+      "y": 270,
+      "width": 280,
+      "height": 120,
+      "file": "IC_PHASE_6_SIGNATURES.md",
+      "color": "0"
+    },
+    {
+      "id": "phase-7",
+      "type": "file",
+      "x": 400,
+      "y": 270,
+      "width": 280,
+      "height": 120,
+      "file": "IC_PHASE_7_SEMANTIC.md",
+      "color": "0"
+    },
+    {
+      "id": "legend",
+      "type": "text",
+      "x": 760,
+      "y": -50,
+      "width": 260,
+      "height": 200,
+      "text": "## Legend\n- **Green** = Complete\n- **Yellow** = In Progress\n- **Red** = Blocked\n- **Gray** = Not Started\n\n## Speedup Targets\n- Phases 1-5: ~15-30%\n- With Phase 6: ~25-45%\n- Phase 7: ~40-50%",
+      "color": "0"
+    },
+    {
+      "id": "master-plan",
+      "type": "file",
+      "x": 760,
+      "y": 180,
+      "width": 260,
+      "height": 100,
+      "file": "INCREMENTAL_PLAN.md",
+      "color": "4"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-pipe-1",
+      "fromNode": "stage-parse",
+      "toNode": "stage-toplevel",
+      "fromSide": "right",
+      "toSide": "left",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-2",
+      "fromNode": "stage-toplevel",
+      "toNode": "stage-new",
+      "fromSide": "right",
+      "toSide": "left",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-3",
+      "fromNode": "stage-new",
+      "toNode": "stage-typedecl",
+      "fromSide": "right",
+      "toSide": "left",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-4",
+      "fromNode": "stage-typedecl",
+      "toNode": "stage-abstract",
+      "fromSide": "right",
+      "toSide": "left",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-5",
+      "fromNode": "stage-abstract",
+      "toNode": "stage-restrict",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-6",
+      "fromNode": "stage-restrict",
+      "toNode": "stage-ivars",
+      "fromSide": "left",
+      "toSide": "right",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-7",
+      "fromNode": "stage-ivars",
+      "toNode": "stage-cvars",
+      "fromSide": "left",
+      "toSide": "right",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-8",
+      "fromNode": "stage-cvars",
+      "toNode": "stage-main",
+      "fromSide": "left",
+      "toSide": "right",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-9",
+      "fromNode": "stage-main",
+      "toNode": "stage-cleanup",
+      "fromSide": "right",
+      "toSide": "left",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-10",
+      "fromNode": "stage-cleanup",
+      "toNode": "stage-recursive",
+      "fromSide": "right",
+      "toSide": "left",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-11",
+      "fromNode": "stage-recursive",
+      "toNode": "stage-codegen-ir",
+      "fromSide": "right",
+      "toSide": "left",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-12",
+      "fromNode": "stage-codegen-ir",
+      "toNode": "stage-codegen-bc",
+      "fromSide": "right",
+      "toSide": "left",
+      "color": "0"
+    },
+    {
+      "id": "edge-pipe-13",
+      "fromNode": "stage-codegen-bc",
+      "toNode": "stage-linking",
+      "fromSide": "right",
+      "toSide": "left",
+      "color": "0"
+    },
+    {
+      "id": "dep-0-1",
+      "fromNode": "phase-0",
+      "toNode": "phase-1",
+      "fromSide": "right",
+      "toSide": "left",
+      "label": "then",
+      "color": "4"
+    },
+    {
+      "id": "dep-1-2",
+      "fromNode": "phase-1",
+      "toNode": "phase-2",
+      "fromSide": "right",
+      "toSide": "left",
+      "label": "then",
+      "color": "4"
+    },
+    {
+      "id": "dep-2-3",
+      "fromNode": "phase-2",
+      "toNode": "phase-3",
+      "fromSide": "right",
+      "toSide": "left",
+      "label": "then",
+      "color": "4"
+    },
+    {
+      "id": "dep-2-4",
+      "fromNode": "phase-2",
+      "toNode": "phase-4",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "label": "then",
+      "color": "4"
+    },
+    {
+      "id": "dep-2-6",
+      "fromNode": "phase-2",
+      "toNode": "phase-6",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "label": "then",
+      "color": "4"
+    },
+    {
+      "id": "dep-6-7",
+      "fromNode": "phase-6",
+      "toNode": "phase-7",
+      "fromSide": "right",
+      "toSide": "left",
+      "label": "informs",
+      "color": "1"
+    },
+    {
+      "id": "affects-1-parse",
+      "fromNode": "phase-1",
+      "toNode": "stage-parse",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "label": "watch loop",
+      "color": "2"
+    },
+    {
+      "id": "affects-2-parse",
+      "fromNode": "phase-2",
+      "toNode": "stage-parse",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "label": "cache ASTs",
+      "color": "2"
+    },
+    {
+      "id": "affects-3-parse",
+      "fromNode": "phase-3",
+      "toNode": "stage-parse",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "label": "parallelize",
+      "color": "2"
+    },
+    {
+      "id": "affects-4-codegen",
+      "fromNode": "phase-4",
+      "toNode": "stage-codegen-ir",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "label": "skip unchanged",
+      "color": "2"
+    },
+    {
+      "id": "affects-5-abstract",
+      "fromNode": "phase-5",
+      "toNode": "stage-abstract",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "label": "parallelize",
+      "color": "2"
+    },
+    {
+      "id": "affects-5-recursive",
+      "fromNode": "phase-5",
+      "toNode": "stage-recursive",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "label": "parallelize",
+      "color": "2"
+    },
+    {
+      "id": "affects-6-toplevel",
+      "fromNode": "phase-6",
+      "toNode": "stage-toplevel",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "label": "skip unchanged",
+      "color": "2"
+    },
+    {
+      "id": "affects-7-main",
+      "fromNode": "phase-7",
+      "toNode": "stage-main",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "label": "parallelize",
+      "color": "1"
+    }
+  ]
+}
