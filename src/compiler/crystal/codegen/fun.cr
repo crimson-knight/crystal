@@ -58,6 +58,21 @@ class Crystal::CodeGenVisitor
   end
 
   def codegen_fun(mangled_name, target_def, self_type, is_exported_fun = false, fun_module_info = type_module(self_type), is_fun_literal = false, is_closure = false)
+    # Track which source files contribute to each LLVM module (for incremental caching).
+    # Skip tracking in single-module mode since module-level caching doesn't apply there.
+    unless @single_module
+      if (location = target_def.location) && (filename = location.filename).is_a?(String)
+        mod_type = self_type.remove_typedef
+        mod_name = case mod_type
+                   when Nil, Program, LibType
+                     ""
+                   else
+                     mod_type.instance_type.to_s
+                   end
+        (@module_source_files[mod_name] ||= Set(String).new).add(filename)
+      end
+    end
+
     old_position = insert_block
     old_entry_block = @entry_block
     old_alloca_block = @alloca_block

@@ -214,6 +214,16 @@ module Crystal
     # file fingerprinting, parse caching, and cache persistence.
     property? incremental = false
 
+    # Module-to-source-file mapping from the last codegen pass.
+    # Used to save to the incremental cache for Phase 4 module skip optimization.
+    @last_module_source_files : Hash(String, Set(String))?
+
+    # Number of modules skipped in the last compilation (Phase 4).
+    @last_modules_skipped : Int32 = 0
+
+    # Total number of modules in the last compilation.
+    @last_modules_total : Int32 = 0
+
     # Program that was created for the last compilation.
     property! program : Program
 
@@ -450,21 +460,89 @@ module Crystal
         end
       {% end %}
 
-      llvm_modules = @progress_tracker.stage("Codegen (crystal)") do
+      is_single_module = @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
+
+      llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
         program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
+          single_module: is_single_module
       end
 
       output_dir = CacheDir.instance.directory_for(sources)
 
+      # Load cached data for module-level skip optimization (Phase 4).
+      # Only applicable in multi-module mode with incremental compilation enabled.
+      cached_data = nil
+      cached_module_mapping = nil
+      if @incremental && !is_single_module
+        cached_data = IncrementalCache.load(
+          output_dir, Config.version, @codegen_target.to_s, @flags, @prelude
+        )
+        cached_module_mapping = cached_data.try(&.module_file_mapping)
+      end
+
+      # Compute set of changed files from fingerprints (for module skip checks).
+      changed_files = if cached_data && cached_module_mapping
+                        current_files = Set(String).new
+                        program.requires.each { |f| current_files.add(f) }
+                        IncrementalCache.changed_files(cached_data, current_files)
+                      else
+                        nil
+                      end
+
       bc_flags_changed = bc_flags_changed? output_dir
       target_triple = target_machine.triple
+
+      modules_skipped = 0
 
       units = llvm_modules.map do |type_name, info|
         llvm_mod = info.mod
         llvm_mod.target = target_triple
-        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed)
+
+        # Phase 4: Check if we can skip IR generation entirely for this module.
+        # A module can be skipped if:
+        #   1. Incremental caching is enabled and we have a cached module mapping
+        #   2. ALL source files contributing to this module are unchanged
+        #   3. The cached .o file exists and bc flags haven't changed
+        #   4. We're not in single-module mode
+        skip_codegen = false
+        if cached_module_mapping && changed_files && !bc_flags_changed
+          # Determine the compilation unit name for cache directory lookup
+          unit_name = type_name.empty? ? "_main" : type_name
+          safe_name = String.build do |str|
+            unit_name.each_char do |char|
+              case char
+              when 'a'..'z', '0'..'9', '_'
+                str << char
+              when 'A'..'Z'
+                str << char << '-'
+              else
+                str << char.ord
+              end
+            end
+          end
+          if safe_name.size > 50
+            safe_name = "#{safe_name[0..16]}-#{Crystal::Digest::MD5.hexdigest(safe_name)}"
+          end
+          safe_name = "#{safe_name}#{optimization_mode.suffix}"
+          object_ext = @codegen_target.object_extension
+          cached_obj_path = File.join(output_dir, "#{safe_name}#{object_ext}")
+
+          if (source_files = cached_module_mapping[type_name]?)
+            all_unchanged = source_files.all? { |f| !changed_files.includes?(f) }
+            if all_unchanged && File.exists?(cached_obj_path) && File.size(cached_obj_path) > 0
+              skip_codegen = true
+              modules_skipped += 1
+            end
+          end
+        end
+
+        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, skip_codegen)
       end
+
+      # Store module source files for later saving to incremental cache
+      @last_module_source_files = codegen_module_source_files unless is_single_module
+      @last_modules_skipped = modules_skipped
+      @last_modules_total = units.size
 
       {% if LibLLVM::IS_LT_170 %}
         # initialize the legacy pass manager once in the main thread/process
@@ -944,6 +1022,13 @@ module Crystal
           puts " - #{unit.original_name} (#{unit.name}.bc)"
         end
       end
+
+      # Phase 4: Report modules skipped via source-file-level caching
+      skipped = @last_modules_skipped
+      total = @last_modules_total
+      if skipped > 0
+        puts " - Modules skipped: #{skipped} of #{total} (cached)"
+      end
     end
 
     private def print_parse_cache_stats
@@ -971,12 +1056,24 @@ module Crystal
         end
       end
 
+      # Convert module_source_files (Set) to Array for JSON serialization
+      module_mapping = if msf = @last_module_source_files
+                         result = {} of String => Array(String)
+                         msf.each do |mod_name, file_set|
+                           result[mod_name] = file_set.to_a.sort
+                         end
+                         result
+                       else
+                         nil
+                       end
+
       data = IncrementalCacheData.new(
         compiler_version: Config.version,
         codegen_target: @codegen_target.to_s,
         flags: @flags.dup,
         prelude: @prelude,
         file_fingerprints: fingerprints,
+        module_file_mapping: module_mapping,
       )
 
       IncrementalCache.save(output_dir, data)
@@ -1214,13 +1311,17 @@ module Crystal
       getter original_name
       getter llvm_mod
       property? reused_previous_compilation = false
+      # True if this module was skipped entirely (no IR gen, no bitcode, no obj compile)
+      # because all contributing source files were unchanged from the previous compilation.
+      getter? skipped_via_module_cache : Bool
       getter object_extension : String
       @memory_buffer : LLVM::MemoryBuffer?
       @object_name : String?
       @bc_name : String?
 
       def initialize(@compiler : Compiler, program : Program, @name : String,
-                     @llvm_mod : LLVM::Module, @output_dir : String, @bc_flags_changed : Bool)
+                     @llvm_mod : LLVM::Module, @output_dir : String, @bc_flags_changed : Bool,
+                     @skipped_via_module_cache : Bool = false)
         @name = "_main" if @name == ""
         @original_name = @name
         @name = String.build do |str|
@@ -1247,7 +1348,8 @@ module Crystal
         @object_extension = compiler.codegen_target.object_extension
       end
 
-      def generate_bitcode
+      def generate_bitcode : LLVM::MemoryBuffer?
+        return nil if @skipped_via_module_cache
         @memory_buffer ||= llvm_mod.write_bitcode_to_memory_buffer
       end
 
@@ -1269,6 +1371,13 @@ module Crystal
       # corrupted file that later would cause compilation issues. Moving a file
       # is an atomic operation so no corrupted `.o` file should be generated.
       def compile(isolate_context = false)
+        # Phase 4: If all contributing source files are unchanged and a cached
+        # .o file exists, skip IR generation, bitcode, and compilation entirely.
+        if @skipped_via_module_cache
+          @reused_previous_compilation = true
+          return
+        end
+
         if must_compile?
           isolate_module_context if isolate_context
           update_bitcode_cache
@@ -1281,6 +1390,11 @@ module Crystal
 
       private def must_compile?
         memory_buffer = generate_bitcode
+
+        # generate_bitcode returns nil only when skipped_via_module_cache is true,
+        # in which case compile() returns early and never calls must_compile?.
+        # This check satisfies the type checker.
+        return true unless memory_buffer
 
         return true unless compiler.emit_targets.none?
         return true if @bc_flags_changed

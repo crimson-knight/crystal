@@ -160,7 +160,7 @@ module Crystal
       visitor.process_finished_hooks
       visitor.finish
 
-      visitor.modules
+      {visitor.modules, visitor.module_source_files}
     end
 
     def llvm_id
@@ -275,6 +275,12 @@ module Crystal
     @raise_cast_failed_fun : LLVMTypedFunction?
     @c_malloc_fun : LLVMTypedFunction?
     @c_realloc_fun : LLVMTypedFunction?
+
+    # Tracks which source files contribute methods/defs to each LLVM module.
+    # Module name => set of source filenames. Used for incremental compilation:
+    # if all contributing files are unchanged, the module's cached .o can be reused
+    # without regenerating LLVM IR.
+    getter module_source_files = Hash(String, Set(String)).new
 
     def initialize(@program : Program, @node : ASTNode,
                    @single_module : Bool = false,

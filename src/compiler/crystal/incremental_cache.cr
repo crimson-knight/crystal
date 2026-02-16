@@ -14,13 +14,29 @@ module Crystal
   # Serializable cache data written to disk between compilations.
   # Tracks compiler version, target, flags, and per-file fingerprints
   # so the cache can be invalidated when any of these change.
-  record IncrementalCacheData,
-    compiler_version : String,
-    codegen_target : String,
-    flags : Array(String),
-    prelude : String,
-    file_fingerprints : Hash(String, FileFingerprint) do
+  # Also stores the module-to-file mapping from codegen so that unchanged
+  # modules can skip LLVM IR generation entirely on the next build.
+  class IncrementalCacheData
     include JSON::Serializable
+
+    getter compiler_version : String
+    getter codegen_target : String
+    getter flags : Array(String)
+    getter prelude : String
+    getter file_fingerprints : Hash(String, FileFingerprint)
+
+    # Maps LLVM module name => array of source filenames that contributed
+    # methods/defs to that module. Used by Phase 4 codegen caching to
+    # determine if a module can be skipped (all contributing files unchanged).
+    # Nil when not available (e.g. single-module mode, or old cache format).
+    @[JSON::Field(emit_null: false)]
+    getter module_file_mapping : Hash(String, Array(String))? = nil
+
+    def initialize(@compiler_version : String, @codegen_target : String,
+                   @flags : Array(String), @prelude : String,
+                   @file_fingerprints : Hash(String, FileFingerprint),
+                   @module_file_mapping : Hash(String, Array(String))? = nil)
+    end
   end
 
   # Manages file fingerprint cache data on disk for incremental compilation.
