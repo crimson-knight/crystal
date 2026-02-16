@@ -7,12 +7,19 @@ require "./semantic/*"
 # - top level: declare classes, modules, macros, defs and other top-level stuff
 # - new methods: create `new` methods for every `initialize` method
 # - type declarations: process type declarations like `@x : Int32`
-# - check abstract defs: check that abstract defs are implemented
-# - class_vars_initializers (ClassVarsInitializerVisitor): process initializers like `@@x = 1`
+# - check abstract defs: check that abstract defs are implemented (PARALLEL under preview_mt)
+# - restrictions augmenter: augment method type restrictions
 # - instance_vars_initializers (InstanceVarsInitializerVisitor): process initializers like `@x = 1`
+# - class_vars_initializers (ClassVarsInitializerVisitor): process initializers like `@@x = 1`
 # - main: process "main" code, calls and method bodies (the whole program).
 # - cleanup: remove dead code and other simplifications
-# - check recursive structs (RecursiveStructChecker): check that structs are not recursive (impossible to codegen)
+# - check recursive structs (RecursiveStructChecker): check that structs are not recursive (PARALLEL under preview_mt)
+#
+# Parallelism status: AbstractDefChecker and RecursiveStructChecker are parallelized
+# under `preview_mt` (Phase 5). All other sub-phases are sequential. The MainVisitor
+# (sub-phase 8) is the primary bottleneck (~40-50% of compile time) and requires
+# research-grade architectural changes to parallelize (see IC_PHASE_7_SEMANTIC.md).
+# See `SemanticPhaseCoordinator` for detailed parallelism analysis of each sub-phase.
 
 class Crystal::Program
   # Runs semantic analysis on the given node, returning a node

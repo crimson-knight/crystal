@@ -63,6 +63,32 @@ module Crystal
   # be of type `Foo`. These simplifications are needed because the codegen would have no
   # idea on how to generate code for unreachable branches, because they have no type,
   # and for now the codegen only deals with typed nodes.
+  #
+  # ## Parallelism Analysis
+  #
+  # The CleanupTransformer cannot be easily parallelized due to shared mutable state:
+  #
+  # 1. **`@transformed` (Set(Def))**: Tracks which Def bodies have been transformed.
+  #    When processing a Call, the transformer recursively transforms each target_def's
+  #    body. The `@transformed.add?` check prevents re-processing. If multiple
+  #    transformers ran in parallel with separate @transformed sets, the same Def body
+  #    would be transformed multiple times concurrently -- a data race on the AST.
+  #
+  # 2. **In-place AST mutation**: `target_def.body = target_def.body.transform(self)`
+  #    modifies shared Def objects. Two threads transforming different Call nodes could
+  #    both reach the same target Def, causing concurrent writes.
+  #
+  # 3. **`cleanup_types`**: Iterates `after_inference_types` and transforms instance
+  #    var initializer values. While each type's initializers are independent, the
+  #    initializer values can contain Calls that reach into shared Defs (see point 2).
+  #
+  # A future parallelization would need either:
+  # - A shared concurrent `@transformed` set with atomic add-or-skip semantics, plus
+  #   a lock or CAS on each Def body during transformation, OR
+  # - A two-phase approach: first collect all reachable Defs, then partition them into
+  #   independent groups with no shared Call targets.
+  #
+  # See `SemanticPhaseCoordinator` for the full parallelism analysis.
   class CleanupTransformer < Transformer
     @transformed : Set(Def)
 

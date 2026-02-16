@@ -35,6 +35,57 @@ module Crystal
   # to it (in @meta_vars).
   #
   # Call resolution logic is in `Call#recalculate`, where method lookup is done.
+  #
+  # ## Shared Mutable State Barriers (Parallelism Analysis)
+  #
+  # This visitor is the single largest bottleneck in the compiler (~40-50% of compile
+  # time) but cannot be parallelized without fundamental architectural changes. The
+  # following shared mutable state patterns create data dependencies that prevent
+  # independent parallel execution:
+  #
+  # ### 1. DefInstanceContainer.@def_instances (types.cr:892)
+  # Global cache mapping (Def, argument types) -> instantiated Def. When a Call is
+  # resolved, the matching Def is looked up or instantiated and cached here. Multiple
+  # MainVisitors (created for each method body) read and write this cache. A thread-safe
+  # version would need atomic lookup-or-claim semantics to avoid duplicate instantiation.
+  #
+  # ### 2. ASTNode.@observers / .dependencies (semantic/bindings.cr)
+  # Type propagation binding graph. When a variable's type changes, all observers are
+  # notified and may update their types, which cascades further. This forms an implicit
+  # shared dependency graph that is mutated during type inference. Parallelizing this
+  # would require either message-passing (observers as channels) or a transactional
+  # update model.
+  #
+  # ### 3. Program.unions (program.cr:88)
+  # Cache of union types indexed by sorted opaque IDs. Multiple visitors create union
+  # types concurrently (e.g., when a variable can be Int32 | String). Would need a
+  # concurrent hash map, potentially sharded by key hash to reduce contention.
+  #
+  # ### 4. Program.types (inherited from ModuleType)
+  # The global type hierarchy. While mostly populated during TopLevel, some types
+  # are created during Main (e.g., generic instantiations, virtual types). Concurrent
+  # type creation would need serialization.
+  #
+  # ### 5. Call.@target_defs
+  # Method resolution cache on Call nodes. Populated during `Call#recalculate`.
+  # Since the same Call node is visited by one visitor at a time, this is not
+  # inherently racy, but the lookup into type method tables IS shared state.
+  #
+  # ### 6. Cascading Type Changes
+  # The most fundamental barrier. When method A's return type changes from Int32
+  # to (Int32 | String), every caller of A must be re-checked, their types may
+  # change, and THEIR callers must be re-checked, recursively. This global
+  # wavefront of type updates cannot be partitioned without a dependency graph
+  # that Crystal's whole-program inference does not maintain explicitly.
+  #
+  # ### 7. No Module Boundaries
+  # Crystal has no concept of "compilation units" or "module interfaces" in the
+  # semantic sense. Any type can reference any other type. Any method call can
+  # resolve to any method in the program. This means there are no natural
+  # partition boundaries for distributing work across threads.
+  #
+  # See `SemanticPhaseCoordinator` for the full parallelism status of all
+  # semantic sub-phases and `IC_PHASE_7_SEMANTIC.md` for research approaches.
   class MainVisitor < SemanticVisitor
     ValidGlobalAnnotations   = %w(ThreadLocal)
     ValidClassVarAnnotations = %w(ThreadLocal)

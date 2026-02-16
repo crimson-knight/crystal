@@ -29,6 +29,22 @@ require "./semantic_visitor"
 # Now that we know the whole hierarchy, when someone types Foo, we know whether Foo has
 # subclasses or not and we can tag it as "virtual" (having subclasses), but that concept
 # might disappear in the future and we'll make consider everything as "maybe virtual".
+#
+# ## Parallelism Analysis
+#
+# TopLevelVisitor cannot be parallelized at the file level because:
+# 1. It mutates `Program.types` -- the shared global type hierarchy
+# 2. Macro expansion happens here, creating new types and methods as side effects
+# 3. `include`/`extend` modify type ancestor chains (shared state)
+# 4. File processing order matters: `require` ordering determines type visibility
+# 5. Class reopening (defining methods on an existing class) requires prior
+#    class definition to exist
+#
+# A partial pre-processing step could extract type declarations from files in
+# parallel (this is what Phase 3 parallel parsing and Phase 6 signature extraction
+# do), but the actual type registration must remain sequential.
+#
+# See `SemanticPhaseCoordinator` for the full parallelism analysis.
 class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
   # These are `new` methods (values) that was created from `initialize` methods (keys)
   getter new_expansions : Hash(Def, Def) = ({} of Def => Def).compare_by_identity
