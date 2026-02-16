@@ -229,6 +229,9 @@ module Crystal
     @last_structural_count : Int32 = 0
     @last_file_signatures : Hash(String, FileTopLevelSignature)? = nil
 
+    # Whether linking was skipped in the last compilation (all .o files reused).
+    @link_skipped : Bool = false
+
     # Program that was created for the last compilation.
     property! program : Program
 
@@ -567,7 +570,7 @@ module Crystal
         end
 
         {% if flag?(:darwin) %}
-          run_dsymutil(output_filename) unless debug.none?
+          run_dsymutil(output_filename) unless debug.none? || @link_skipped
         {% end %}
 
         {% if flag?(:msvc) %}
@@ -808,12 +811,22 @@ module Crystal
 
       output_filename = File.expand_path(output_filename)
 
-      @progress_tracker.stage("Codegen (linking)") do
-        # Save source directory before changing to output_dir so CRYSTAL_PATH
-        # relative entries (e.g. "src:lib") resolve correctly in linker_command
-        src_dir = Dir.current
-        Dir.cd(output_dir) do
-          run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true, source_dir: src_dir)
+      # Incremental optimization: skip linking when all .o files were reused
+      # from cache and the output binary already exists. The linker inputs are
+      # identical, so the output would be byte-for-byte the same.
+      all_reused = units.all?(&.reused_previous_compilation?)
+      @link_skipped = all_reused && File.exists?(output_filename)
+
+      if @link_skipped
+        @progress_tracker.stage("Codegen (linking)") { }
+      else
+        @progress_tracker.stage("Codegen (linking)") do
+          # Save source directory before changing to output_dir so CRYSTAL_PATH
+          # relative entries (e.g. "src:lib") resolve correctly in linker_command
+          src_dir = Dir.current
+          Dir.cd(output_dir) do
+            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true, source_dir: src_dir)
+          end
         end
       end
 
@@ -1037,6 +1050,10 @@ module Crystal
       total = @last_modules_total
       if skipped > 0
         puts " - Modules skipped: #{skipped} of #{total} (cached)"
+      end
+
+      if @link_skipped
+        puts " - Linking skipped (all .o files reused, binary unchanged)"
       end
     end
 
