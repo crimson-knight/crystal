@@ -28,6 +28,7 @@ class Crystal::Command
         run (default)            build and run program
         spec                     build and run specs (in spec directory)
         tool                     run a tool
+        watch                    watch files and recompile on changes
         help, --help, -h         show this help
         version, --version, -v   show version
 
@@ -120,6 +121,9 @@ class Crystal::Command
     when command == "clear_cache"
       options.shift
       clear_cache
+    when command == "watch"
+      options.shift
+      watch
     when "help".starts_with?(command), "--help" == command, "-h" == command
       puts USAGE
       exit
