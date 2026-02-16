@@ -3,6 +3,7 @@ require "file_utils"
 require "colorize"
 require "crystal/digest/md5"
 require "./incremental_cache"
+require "./tools/require_graph_discoverer"
 {% if flag?(:msvc) %}
   require "./loader"
 {% end %}
@@ -322,6 +323,23 @@ module Crystal
         location = Location.new(program.filename, 1, 1)
         nodes = Expressions.new([Require.new(prelude).at(location), nodes] of ASTNode)
 
+        # Discover require graph and parse files in parallel if enabled
+        if parallel_parse?
+          begin
+            discoverer = RequireGraphDiscoverer.new(program)
+            discovered_files = discoverer.discover(nodes, prelude)
+
+            unless discovered_files.empty?
+              pre_parsed = parallel_parse_files(program, discovered_files)
+              program.pre_parsed_files = pre_parsed unless pre_parsed.empty?
+            end
+          rescue ex
+            # If discovery or parallel parse fails, fall through to sequential.
+            # The semantic phase will parse files normally.
+            program.pre_parsed_files = nil
+          end
+        end
+
         # And normalize
         program.normalize(nodes)
       end
@@ -337,6 +355,79 @@ module Crystal
       stderr.print colorize("file '#{Crystal.relative_filename(source.filename)}' is not a valid Crystal source file: ").bold
       stderr.puts ex.message
       exit 1
+    end
+
+    # Returns true if parallel parsing is enabled.
+    # Disabled by setting CRYSTAL_PARALLEL_PARSE=0.
+    private def parallel_parse? : Bool
+      ENV["CRYSTAL_PARALLEL_PARSE"]? != "0"
+    end
+
+    # Parse an array of filenames in parallel (under preview_mt) or
+    # sequentially. Each thread gets its own StringPool since StringPool
+    # is not thread-safe. Returns a Hash mapping filename to parsed AST.
+    private def parallel_parse_files(program, filenames : Array(String)) : Hash(String, ASTNode)
+      result = {} of String => ASTNode
+
+      {% if flag?(:preview_mt) %}
+        n = {n_threads, filenames.size}.min
+
+        if n > 1
+          mutex = Mutex.new
+          channel = Channel(String).new(n * 2)
+          wg = WaitGroup.new
+
+          n.times do
+            wg.spawn do
+              local_pool = StringPool.new
+              while filename = channel.receive?
+                begin
+                  content = File.read(filename)
+                  parser = Parser.new(content, local_pool)
+                  parser.filename = filename
+                  parser.wants_doc = wants_doc?
+                  parsed = parser.parse
+                  mutex.synchronize { result[filename] = parsed }
+                rescue
+                  # Skip files that fail to parse -- semantic phase handles errors
+                end
+              end
+            end
+          end
+
+          filenames.each { |f| channel.send(f) }
+          channel.close
+          wg.wait
+        else
+          # Single thread -- parse sequentially
+          filenames.each do |filename|
+            begin
+              content = File.read(filename)
+              parser = program.new_parser(content)
+              parser.filename = filename
+              parser.wants_doc = wants_doc?
+              result[filename] = parser.parse
+            rescue
+              # Skip files that fail to parse
+            end
+          end
+        end
+      {% else %}
+        # Sequential fallback without preview_mt
+        filenames.each do |filename|
+          begin
+            content = File.read(filename)
+            parser = program.new_parser(content)
+            parser.filename = filename
+            parser.wants_doc = wants_doc?
+            result[filename] = parser.parse
+          rescue
+            # Skip files that fail to parse
+          end
+        end
+      {% end %}
+
+      result
     end
 
     private def bc_flags_changed?(output_dir)

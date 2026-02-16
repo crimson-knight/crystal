@@ -72,6 +72,12 @@ module Crystal
     # files loaded by `require` nodes are only processed once.
     getter requires = Set(String).new
 
+    # Pre-parsed ASTs from parallel file parsing (Phase 3).
+    # Maps absolute filename to parsed (but not yet normalized) AST.
+    # Used by require_file in semantic_visitor.cr to skip re-parsing
+    # files that were already parsed during the parallel parse phase.
+    property pre_parsed_files : Hash(String, ASTNode)? = nil
+
     # All created unions in a program, indexed by an array of opaque
     # ids of each type in the union. The array (the key) is sorted
     # by this opaque id.

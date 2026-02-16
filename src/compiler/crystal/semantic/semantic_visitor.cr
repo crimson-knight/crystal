@@ -85,6 +85,21 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   end
 
   private def require_file(node : Require, filename : String)
+    # Check pre-parsed files first (from parallel parsing, Phase 3).
+    # These were parsed during the Parse stage and stored on the program.
+    if pre_parsed = @program.pre_parsed_files.try(&.[filename]?)
+      begin
+        parsed_nodes = pre_parsed.clone # MUST clone - semantic mutates AST
+        parsed_nodes = @program.normalize(parsed_nodes, inside_exp: inside_exp?)
+        parsed_nodes.accept self
+        return FileNode.new(parsed_nodes, filename)
+      rescue ex : CodeError
+        node.raise "while requiring \"#{node.string}\"", ex
+      rescue ex
+        raise Error.new "while requiring \"#{node.string}\"", ex
+      end
+    end
+
     if (compiler = @program.compiler) && compiler.incremental?
       parse_cache = compiler.parse_cache
       content = File.read(filename)
