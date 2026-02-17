@@ -262,7 +262,28 @@ class Crystal::Codegen::Target
     end
 
     target = LLVM::Target.from_triple(self.to_s)
-    machine = target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
+
+    machine = {% unless LibLLVM::IS_LT_220 %}
+      # LLVM 22+: Use TargetMachineOptions API which properly sets
+      # ExceptionModel before target machine construction.
+      begin
+        options = LibLLVM.create_target_machine_options
+        LibLLVM.target_machine_options_set_cpu(options, cpu)
+        LibLLVM.target_machine_options_set_features(options, features)
+        LibLLVM.target_machine_options_set_code_gen_opt_level(options, opt_level)
+        LibLLVM.target_machine_options_set_reloc_mode(options, reloc)
+        LibLLVM.target_machine_options_set_code_model(options, code_model)
+        if @architecture == "wasm32"
+          LibLLVM.target_machine_options_set_exception_model(options, LLVM::ExceptionModel::Wasm)
+        end
+        m = LLVM::TargetMachine.new(LibLLVM.create_target_machine_with_options(target.to_unsafe, self.to_s, options))
+        LibLLVM.dispose_target_machine_options(options)
+        m
+      end
+    {% else %}
+      target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
+    {% end %}
+
     # FIXME: We need to disable global isel until https://reviews.llvm.org/D80898 is released,
     # or we fixed generating values for 0 sized types.
     # When removing this, also remove it from the ABI specs and jit compiler.
@@ -270,10 +291,11 @@ class Crystal::Codegen::Target
     # for background info
     machine.enable_global_isel = false
 
-    # For WASM targets, set the exception model to Wasm on the target machine.
-    # The LLVM C API does not expose TargetOptions.ExceptionModel, so we use
-    # a C++ helper that also fixes MCAsmInfo.ExceptionsType (which the C API
-    # constructor fails to propagate from TargetOptions).
+    # For WASM targets, enable WASM exception handling on the target machine.
+    # On LLVM 22+, ExceptionModel is already set via TargetMachineOptions above,
+    # but we still need the C++ helper to set cl::opt flags (WasmEnableEH,
+    # WasmUseLegacyEH) and, on older LLVM, to set TargetOptions.ExceptionModel
+    # and fix MCAsmInfo.ExceptionsType.
     if @architecture == "wasm32"
       machine.enable_wasm_eh
     end
