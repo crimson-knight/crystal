@@ -91,6 +91,12 @@ module Crystal
     # This pool is passed to the parser, macro expander, etc.
     property string_pool = StringPool.new
 
+    # File-level dependency graph for incremental compilation.
+    # Maps user_file => Set(provider_files): which files each file depends on
+    # for type definitions and method calls. Populated during semantic analysis
+    # when Call#instantiate resolves method calls across file boundaries.
+    getter file_dependencies = Hash(String, Set(String)).new { |h, k| h[k] = Set(String).new }
+
     record ConstSliceInfo, name : String, element_type : NumberKind, args : Array(ASTNode) do
       def to_bytes : Bytes
         element_size = element_type.bytesize // 8

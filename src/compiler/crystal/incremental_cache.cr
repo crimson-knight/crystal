@@ -104,12 +104,22 @@ module Crystal
     @[JSON::Field(emit_null: false)]
     getter allocation_hints : AllocationHints? = nil
 
+    # File-level dependency graph from the previous compilation.
+    # Maps user_file => Array(provider_files): which files each file depends on
+    # for method calls and type definitions. Used for smarter invalidation:
+    # body-only changes in files with no dependents can be safely skipped.
+    # Uses Array(String) instead of Set(String) for JSON serialization.
+    # Nil when not available (old cache format or first compilation).
+    @[JSON::Field(emit_null: false)]
+    getter file_dependencies : Hash(String, Array(String))? = nil
+
     def initialize(@compiler_version : String, @codegen_target : String,
                    @flags : Array(String), @prelude : String,
                    @file_fingerprints : Hash(String, FileFingerprint),
                    @module_file_mapping : Hash(String, Array(String))? = nil,
                    @file_signatures : Hash(String, FileTopLevelSignature)? = nil,
-                   @allocation_hints : AllocationHints? = nil)
+                   @allocation_hints : AllocationHints? = nil,
+                   @file_dependencies : Hash(String, Array(String))? = nil)
     end
   end
 

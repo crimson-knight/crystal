@@ -395,6 +395,16 @@ class Crystal::Call
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
 
+        # Record file-level dependency for incremental compilation.
+        # If a call in file A resolves to a def in file B, then A depends on B.
+        if (call_loc = self.location) && (def_loc = match.def.location)
+          call_file = call_loc.original_filename
+          def_file = def_loc.original_filename
+          if call_file && def_file && call_file != def_file
+            program.file_dependencies[call_file].add(def_file)
+          end
+        end
+
         if typed_def_return_type = typed_def.return_type
           check_return_type(typed_def, typed_def_return_type, match, match_owner)
         end

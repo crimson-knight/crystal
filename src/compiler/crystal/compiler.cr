@@ -227,6 +227,7 @@ module Crystal
     # Phase 6: Signature tracking results from the last compilation.
     @last_body_only_count : Int32 = 0
     @last_structural_count : Int32 = 0
+    @last_isolated_body_only_count : Int32 = 0
     @last_file_signatures : Hash(String, FileTopLevelSignature)? = nil
 
     # Whether linking was skipped in the last compilation (all .o files reused).
@@ -1144,12 +1145,16 @@ module Crystal
 
       body_only = @last_body_only_count
       structural = @last_structural_count
+      isolated = @last_isolated_body_only_count
       return if body_only == 0 && structural == 0
 
       puts
       puts "Signature tracking:"
       puts " - Files with body-only changes: #{body_only}"
       puts " - Files with structural changes: #{structural}"
+      if isolated > 0
+        puts " - Body-only changes with no dependents (safe to skip): #{isolated}"
+      end
     end
 
     private def print_compilation_skip_stats
@@ -1165,6 +1170,7 @@ module Crystal
     private def extract_and_compare_signatures(program, sources)
       @last_body_only_count = 0
       @last_structural_count = 0
+      @last_isolated_body_only_count = 0
 
       new_signatures = extract_file_signatures(program)
       @last_file_signatures = new_signatures
@@ -1196,8 +1202,32 @@ module Crystal
         changed, old_signatures, new_signatures
       )
 
-      @last_body_only_count = body_only.size
-      @last_structural_count = structural.size
+      # Use file dependency graph from previous build for smarter invalidation.
+      # Body-only changes in files with no dependents are truly isolated:
+      # no other file calls into them, so semantic analysis results are unchanged.
+      if (deps = cached_data.try(&.file_dependencies))
+        # Build reverse dependency map: provider_file => [user_files that depend on it]
+        reverse_deps = Hash(String, Array(String)).new { |h, k| h[k] = [] of String }
+        deps.each do |user_file, provider_files|
+          provider_files.each { |p| reverse_deps[p] << user_file }
+        end
+
+        # Separate body-only changes into those with and without dependents
+        isolated_body_only = Set(String).new
+        body_only.each do |file|
+          if reverse_deps[file]?.nil? || reverse_deps[file].empty?
+            isolated_body_only.add(file)
+          end
+        end
+
+        @last_body_only_count = body_only.size
+        @last_structural_count = structural.size
+        @last_isolated_body_only_count = isolated_body_only.size
+      else
+        @last_body_only_count = body_only.size
+        @last_structural_count = structural.size
+        @last_isolated_body_only_count = 0
+      end
     end
 
     # Extract FileTopLevelSignature for each required file by parsing it
@@ -1271,6 +1301,15 @@ module Crystal
         module_count: @last_modules_total || 1,
       )
 
+      # Capture file-level dependencies (convert Set to sorted Array for JSON)
+      file_deps = unless program.file_dependencies.empty?
+                    result = {} of String => Array(String)
+                    program.file_dependencies.each do |user_file, provider_set|
+                      result[user_file] = provider_set.to_a.sort
+                    end
+                    result
+                  end
+
       data = IncrementalCacheData.new(
         compiler_version: Config.version,
         codegen_target: @codegen_target.to_s,
@@ -1280,6 +1319,7 @@ module Crystal
         module_file_mapping: module_mapping,
         file_signatures: @last_file_signatures,
         allocation_hints: hints,
+        file_dependencies: file_deps,
       )
 
       IncrementalCache.save(output_dir, data)

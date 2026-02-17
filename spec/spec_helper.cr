@@ -225,7 +225,7 @@ end
 
 def codegen(code, *, inject_primitives = true, single_module = false, debug = Crystal::Debug::None, filename = __FILE__)
   result = semantic code, inject_primitives: inject_primitives, filename: filename
-  result.program.codegen(result.node, single_module: single_module, debug: debug)[""].mod
+  result.program.codegen(result.node, single_module: single_module, debug: debug)[0][""].mod
 end
 
 private def new_program
