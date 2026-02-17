@@ -24,6 +24,8 @@ class Crystal::Command
       "CRYSTAL_VERSION"      => Config.version || "",
       "CRYSTAL_LIBRARY_PATH" => CrystalLibraryPath.default_path,
       "CRYSTAL_OPTS"         => ENV.fetch("CRYSTAL_OPTS", ""),
+      "CRYSTAL_WASM_LIBS"    => ENV.fetch("CRYSTAL_WASM_LIBS", ""),
+      "WASI_SDK_PATH"        => ENV.fetch("WASI_SDK_PATH", ""),
     }
 
     if var_names.empty?

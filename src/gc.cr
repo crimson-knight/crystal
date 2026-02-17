@@ -136,7 +136,7 @@ module GC
   end
 end
 
-{% if flag?(:gc_none) || flag?(:wasm32) %}
+{% if flag?(:gc_none) %}
   require "gc/none"
 {% else %}
   require "gc/boehm"

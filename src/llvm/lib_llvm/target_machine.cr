@@ -25,4 +25,23 @@ lib LibLLVM
   fun get_default_target_triple = LLVMGetDefaultTargetTriple : Char*
   fun normalize_target_triple = LLVMNormalizeTargetTriple(triple : Char*) : Char*
   fun get_host_cpu_name = LLVMGetHostCPUName : Char*
+
+  {% unless LibLLVM::IS_LT_180 %}
+    # TargetMachineOptions API (LLVM 18+)
+    type TargetMachineOptionsRef = Void*
+    fun create_target_machine_options = LLVMCreateTargetMachineOptions : TargetMachineOptionsRef
+    fun dispose_target_machine_options = LLVMDisposeTargetMachineOptions(options : TargetMachineOptionsRef)
+    fun target_machine_options_set_cpu = LLVMTargetMachineOptionsSetCPU(options : TargetMachineOptionsRef, cpu : Char*)
+    fun target_machine_options_set_features = LLVMTargetMachineOptionsSetFeatures(options : TargetMachineOptionsRef, features : Char*)
+    fun target_machine_options_set_abi = LLVMTargetMachineOptionsSetABI(options : TargetMachineOptionsRef, abi : Char*)
+    fun target_machine_options_set_code_gen_opt_level = LLVMTargetMachineOptionsSetCodeGenOptLevel(options : TargetMachineOptionsRef, level : LLVM::CodeGenOptLevel)
+    fun target_machine_options_set_reloc_mode = LLVMTargetMachineOptionsSetRelocMode(options : TargetMachineOptionsRef, reloc : LLVM::RelocMode)
+    fun target_machine_options_set_code_model = LLVMTargetMachineOptionsSetCodeModel(options : TargetMachineOptionsRef, code_model : LLVM::CodeModel)
+    fun create_target_machine_with_options = LLVMCreateTargetMachineWithOptions(t : TargetRef, triple : Char*, options : TargetMachineOptionsRef) : TargetMachineRef
+  {% end %}
+
+  {% unless LibLLVM::IS_LT_220 %}
+    # Exception model setter for TargetMachineOptions (LLVM 22+)
+    fun target_machine_options_set_exception_model = LLVMTargetMachineOptionsSetExceptionModel(options : TargetMachineOptionsRef, model : LLVM::ExceptionModel)
+  {% end %}
 end

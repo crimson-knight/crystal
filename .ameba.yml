@@ -79,6 +79,7 @@ Lint/SpecFilename:
   - spec/debug/**/*
   - spec/llvm-ir/**/*
   - spec/std/float_printer/ryu_printf_test_cases.cr
+  - spec/wasm32/standalone_fiber_test.cr
 
 # BUG: https://github.com/crystal-ameba/ameba/issues/612
 Lint/TopLevelOperatorDefinition:

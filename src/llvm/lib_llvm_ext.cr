@@ -33,4 +33,5 @@ lib LibLLVMExt
                                                                                name : Char*) : LibLLVM::ValueRef
 
   fun set_target_machine_global_isel = LLVMExtSetTargetMachineGlobalISel(t : LibLLVM::TargetMachineRef, enable : LibLLVM::Bool)
+  fun set_wasm_exception_handling = LLVMExtSetWasmExceptionHandling(t : LibLLVM::TargetMachineRef)
 end

@@ -5,6 +5,8 @@ class Crystal::Codegen::Target
   class Error < Crystal::Error
   end
 
+  @@wasm_eh_initialized = false
+
   getter architecture : String
   getter vendor : String
   getter environment : String
@@ -31,6 +33,14 @@ class Crystal::Codegen::Target
       @architecture = "arm"
     else
       # no need to tweak the architecture
+    end
+
+    # Normalize WASI Preview 1 target name: "wasip1" -> "wasi"
+    # Rust removed wasm32-wasi in January 2025, replacing it with
+    # wasm32-wasip1 to be explicit about WASI Preview 1. We accept
+    # both names and normalize to "wasi" for the LLVM target triple.
+    if @environment == "wasip1"
+      @environment = "wasi"
     end
 
     if linux? && environment_parts.size == 1
@@ -221,6 +231,19 @@ class Crystal::Codegen::Target
       end
     when "wasm32"
       LLVM.init_webassembly
+      features += "+exception-handling,+bulk-memory,+mutable-globals,+sign-ext,+nontrapping-fptoint,+multivalue,+reference-types"
+      # Enable WASM exception handling in the LLVM backend.
+      # -wasm-enable-eh: master switch for WASM exception handling
+      # -wasm-use-legacy-eh=true: emit legacy try/catch format (not new try_table/exnref)
+      #   We use legacy EH because Binaryen's Asyncify pass (needed for fiber
+      #   context switching) does not support the new try_table instructions.
+      #   After Asyncify, we run --translate-to-exnref to convert to the new format.
+      # -exception-model=wasm: sets the exception handling model
+      # We use @@wasm_eh_initialized to ensure this is only called once.
+      unless @@wasm_eh_initialized
+        @@wasm_eh_initialized = true
+        LLVM.parse_command_line_options({"", "-wasm-enable-eh", "-wasm-use-legacy-eh=true", "-exception-model=wasm"})
+      end
     else
       raise Target::Error.new("Unsupported architecture for target triple: #{self}")
     end
@@ -239,13 +262,44 @@ class Crystal::Codegen::Target
     end
 
     target = LLVM::Target.from_triple(self.to_s)
-    machine = target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
+
+    machine = {% unless LibLLVM::IS_LT_220 %}
+      # LLVM 22+: Use TargetMachineOptions API which properly sets
+      # ExceptionModel before target machine construction.
+      begin
+        options = LibLLVM.create_target_machine_options
+        LibLLVM.target_machine_options_set_cpu(options, cpu)
+        LibLLVM.target_machine_options_set_features(options, features)
+        LibLLVM.target_machine_options_set_code_gen_opt_level(options, opt_level)
+        LibLLVM.target_machine_options_set_reloc_mode(options, reloc)
+        LibLLVM.target_machine_options_set_code_model(options, code_model)
+        if @architecture == "wasm32"
+          LibLLVM.target_machine_options_set_exception_model(options, LLVM::ExceptionModel::Wasm)
+        end
+        m = LLVM::TargetMachine.new(LibLLVM.create_target_machine_with_options(target.to_unsafe, self.to_s, options))
+        LibLLVM.dispose_target_machine_options(options)
+        m
+      end
+    {% else %}
+      target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
+    {% end %}
+
     # FIXME: We need to disable global isel until https://reviews.llvm.org/D80898 is released,
     # or we fixed generating values for 0 sized types.
     # When removing this, also remove it from the ABI specs and jit compiler.
     # See https://github.com/crystal-lang/crystal/issues/9297#issuecomment-636512270
     # for background info
     machine.enable_global_isel = false
+
+    # For WASM targets, enable WASM exception handling on the target machine.
+    # On LLVM 22+, ExceptionModel is already set via TargetMachineOptions above,
+    # but we still need the C++ helper to set cl::opt flags (WasmEnableEH,
+    # WasmUseLegacyEH) and, on older LLVM, to set TargetOptions.ExceptionModel
+    # and fix MCAsmInfo.ExceptionsType.
+    if @architecture == "wasm32"
+      machine.enable_wasm_eh
+    end
+
     machine
   end
 

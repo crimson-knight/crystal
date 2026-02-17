@@ -47,6 +47,7 @@ lib LibLLVM
   {% else %}
     fun get_inline_asm = LLVMGetInlineAsm(t : TypeRef, asm_string : Char*, asm_string_size : SizeT, constraints : Char*, constraints_size : SizeT, has_side_effects : Bool, is_align_stack : Bool, dialect : LLVM::InlineAsmDialect) : ValueRef
   {% end %}
+  fun append_module_inline_asm = LLVMAppendModuleInlineAsm(m : ModuleRef, asm : Char*, len : SizeT)
   fun get_module_context = LLVMGetModuleContext(m : ModuleRef) : ContextRef
 
   fun add_function = LLVMAddFunction(m : ModuleRef, name : Char*, function_ty : TypeRef) : ValueRef
@@ -103,6 +104,7 @@ lib LibLLVM
   fun get_vector_size = LLVMGetVectorSize(vector_ty : TypeRef) : UInt
 
   fun void_type_in_context = LLVMVoidTypeInContext(c : ContextRef) : TypeRef
+  fun token_type_in_context = LLVMTokenTypeInContext(c : ContextRef) : TypeRef
 
   fun type_of = LLVMTypeOf(val : ValueRef) : TypeRef
   fun get_value_kind = LLVMGetValueKind(val : ValueRef) : LLVM::Value::Kind

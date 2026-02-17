@@ -3,6 +3,23 @@
 {% end %}
 require "crystal/tracing"
 
+# Override bdwgc's GC_clear_stack for WASM targets.
+#
+# On native platforms, GC_clear_stack_inner recursively allocates an 852-byte
+# volatile array on the stack to zero old stack frames (reducing false GC root
+# retention). On WASM, the compiler optimizes this array down to ~16 bytes,
+# causing hundreds of thousands of recursive calls to reach the target depth.
+# The WASM runtime's call stack limit (~6500 frames) is exhausted first.
+#
+# Stack clearing is a best-effort optimization and is safe to skip. On WASM,
+# --spill-pointers ensures GC roots are visible in linear memory, making
+# stack clearing largely irrelevant.
+{% if flag?(:wasm32) %}
+  fun gc_clear_stack = GC_clear_stack(p : Void*) : Void*
+    p
+  end
+{% end %}
+
 # MUSL: On musl systems, libpthread is empty. The entire library is already included in libc.
 # The empty library is only available for POSIX compatibility. We don't need to link it.
 #
@@ -16,11 +33,14 @@ require "crystal/tracing"
 #
 # OTHERS: On other systems, we add the linker annotation here to make sure libpthread is loaded
 # before libgc which looks up symbols from libpthread.
-{% unless flag?(:win32) || flag?(:musl) || flag?(:darwin) || flag?(:android) || (flag?(:interpreted) && flag?(:gnu)) %}
+{% unless flag?(:win32) || flag?(:musl) || flag?(:darwin) || flag?(:android) || flag?(:wasm32) || (flag?(:interpreted) && flag?(:gnu)) %}
   @[Link("pthread")]
 {% end %}
 
-{% if flag?(:freebsd) || flag?(:dragonfly) %}
+{% if flag?(:wasm32) %}
+  # WASM: libgc compiled for wasm32-wasi without threads or pkg-config
+  @[Link("gc")]
+{% elsif flag?(:freebsd) || flag?(:dragonfly) %}
   {% if flag?(:interpreted) %}
     # FIXME: We're not using the pkg-config name here because that would resolve the
     # lib flags for libgc including `-lpthread` which the interpreter is not able
@@ -49,7 +69,10 @@ require "crystal/tracing"
   @[Link(dll: "gc.dll")]
 {% end %}
 lib LibGC
-  {% unless flag?(:win32) %}
+  {% if flag?(:wasm32) %}
+    # WASM: pkg-config is not available for cross-compiled libraries
+    VERSION = "8.2.2"
+  {% elsif !flag?(:win32) %}
     {% pkg_config_name = ((ann = LibGC.annotations(Link).find(&.["pkg_config"])) && ann["pkg_config"]) || ((ann = LibGC.annotations(Link).find(&.[0])) && ann[0]) %}
     VERSION = {{ `pkg-config #{pkg_config_name} --silence-errors --modversion || printf "0.0.0"`.chomp.stringify }}
   {% end %}
@@ -123,7 +146,12 @@ lib LibGC
 
   {% if flag?(:preview_mt) || flag?(:win32) || compare_versions(VERSION, "8.2.0") >= 0 %}
     fun get_my_stackbottom = GC_get_my_stackbottom(sb : StackBase*) : ThreadHandle
-    fun set_stackbottom = GC_set_stackbottom(th : ThreadHandle, sb : StackBase*) : ThreadHandle
+    {% if flag?(:wasm32) %}
+      # bdwgc 8.2.2 declares GC_set_stackbottom as returning void
+      fun set_stackbottom = GC_set_stackbottom(th : ThreadHandle, sb : StackBase*)
+    {% else %}
+      fun set_stackbottom = GC_set_stackbottom(th : ThreadHandle, sb : StackBase*) : ThreadHandle
+    {% end %}
   {% else %}
     $stackbottom = GC_stackbottom : Void*
   {% end %}
@@ -151,9 +179,11 @@ lib LibGC
   fun set_on_collection_event = GC_set_on_collection_event(cb : OnCollectionEventProc)
   fun get_on_collection_event = GC_get_on_collection_event : OnCollectionEventProc
 
-  alias OnThreadEventProc = EventType, Void* ->
-  fun set_on_thread_event = GC_set_on_thread_event(cb : OnThreadEventProc)
-  fun get_on_thread_event = GC_get_on_thread_event : OnThreadEventProc
+  {% unless flag?(:wasm32) %}
+    alias OnThreadEventProc = EventType, Void* ->
+    fun set_on_thread_event = GC_set_on_thread_event(cb : OnThreadEventProc)
+    fun get_on_thread_event = GC_get_on_thread_event : OnThreadEventProc
+  {% end %}
 
   $gc_no = GC_gc_no : Word
   $bytes_found = GC_bytes_found : SignedWord
@@ -176,10 +206,12 @@ lib LibGC
   fun set_warn_proc = GC_set_warn_proc(WarnProc)
   $warn_proc = GC_current_warn_proc : WarnProc
 
-  fun stop_world_external = GC_stop_world_external
-  fun start_world_external = GC_start_world_external
-  fun get_suspend_signal = GC_get_suspend_signal : Int
-  fun get_thr_restart_signal = GC_get_thr_restart_signal : Int
+  {% unless flag?(:wasm32) %}
+    fun stop_world_external = GC_stop_world_external
+    fun start_world_external = GC_start_world_external
+    fun get_suspend_signal = GC_get_suspend_signal : Int
+    fun get_thr_restart_signal = GC_get_thr_restart_signal : Int
+  {% end %}
 end
 
 module GC
@@ -209,7 +241,7 @@ module GC
   end
 
   def self.init : Nil
-    {% unless flag?(:win32) %}
+    {% unless flag?(:win32) || flag?(:wasm32) %}
       LibGC.set_handle_fork(1)
     {% end %}
     LibGC.init
@@ -397,7 +429,7 @@ module GC
       raise RuntimeError.from_errno("GC_beginthreadex") if ret.null?
       ret.as(LibC::HANDLE)
     end
-  {% else %}
+  {% elsif !flag?(:wasm32) %}
     # :nodoc:
     def self.pthread_create(thread : LibC::PthreadT*, attr : LibC::PthreadAttrT*, start : Void* -> Void*, arg : Void*)
       LibGC.pthread_create(thread, attr, start, arg)
@@ -496,12 +528,16 @@ module GC
 
   # :nodoc:
   def self.stop_world : Nil
-    LibGC.stop_world_external
+    {% unless flag?(:wasm32) %}
+      LibGC.stop_world_external
+    {% end %}
   end
 
   # :nodoc:
   def self.start_world : Nil
-    LibGC.start_world_external
+    {% unless flag?(:wasm32) %}
+      LibGC.start_world_external
+    {% end %}
   end
 
   {% if flag?(:unix) %}

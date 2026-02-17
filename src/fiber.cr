@@ -150,6 +150,10 @@ class Fiber
     thread.gc_thread_handler, stack_bottom = GC.current_thread_stack_bottom
     @stack = Stack.new(stack, stack_bottom)
 
+    {% if flag?(:wasm32) %}
+      @context.init_main_fiber_asyncify
+    {% end %}
+
     @name = "main"
 
     {% if flag?(:preview_mt) && !flag?(:execution_context) %}
@@ -336,8 +340,11 @@ class Fiber
   def self.yield : Nil
     Crystal.trace :sched, "yield"
 
-    # TODO: Fiber switching and evloop for wasm32
-    {% unless flag?(:wasi) %}
+    {% if flag?(:wasi) %}
+      # On WASI, yield by enqueueing current fiber and rescheduling
+      Crystal::Scheduler.enqueue(Fiber.current)
+      Crystal::Scheduler.reschedule
+    {% else %}
       Crystal::EventLoop.current.sleep(0.seconds)
     {% end %}
   end

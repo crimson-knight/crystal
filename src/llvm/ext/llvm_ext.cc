@@ -1,5 +1,8 @@
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/MC/MCAsmInfo.h>
+#include <llvm/Support/CodeGen.h>
+#include <llvm/Support/CommandLine.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm-c/TargetMachine.h>
 
@@ -20,6 +23,15 @@ using namespace llvm;
 typedef struct LLVMOpaqueOperandBundle *LLVMOperandBundleRef;
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(OperandBundleDef, LLVMOperandBundleRef)
 #endif
+
+// Forward declarations of WebAssembly backend cl::opt flags.
+// WasmEnableEH: master switch for WASM exception handling.
+// WasmUseLegacyEH: when false, emits new try_table/exnref format instead of
+//   legacy try/catch. Defaults to true in LLVM, we set it to false.
+namespace llvm { namespace WebAssembly {
+  extern cl::opt<bool> WasmEnableEH;
+  extern cl::opt<bool> WasmUseLegacyEH;
+}}
 
 extern "C" {
 
@@ -88,5 +100,39 @@ void LLVMExtSetTargetMachineGlobalISel(LLVMTargetMachineRef T, LLVMBool Enable) 
   unwrap(T)->setGlobalISel(Enable);
 }
 #endif
+
+// Enable WASM exception handling on a target machine.
+//
+// On LLVM < 22, this function does four things:
+// 1. Sets TargetOptions.ExceptionModel to Wasm (used by the new pass manager
+//    and by getExceptionModel())
+// 2. Sets MCAsmInfo.ExceptionsType to Wasm (used by the MC layer to emit
+//    exception tables). The LLVM C API constructor fails to propagate this.
+// 3. Sets the WasmEnableEH cl::opt flag to true (used by the legacy pass
+//    manager's addIRPasses() to decide whether to add WasmEHPrepare or
+//    LowerInvoke). Without this, invoke instructions are stripped to calls.
+// 4. Sets the WasmUseLegacyEH cl::opt flag to true to emit legacy try/catch
+//    format instead of new try_table/exnref instructions.
+//
+// On LLVM 22+, steps 1-2 are handled by LLVMTargetMachineOptionsSetExceptionModel
+// in the C API, so this function only sets the cl::opt flags (steps 3-4).
+//
+// We use legacy EH (try/catch) instead of new EH (try_table/exnref) because
+// Binaryen's Asyncify pass does not support the new try_table instructions.
+// After Asyncify, we run --translate-to-exnref to convert to the new format.
+void LLVMExtSetWasmExceptionHandling(LLVMTargetMachineRef T) {
+#if !LLVM_VERSION_GE(22, 0)
+  // Pre-LLVM 22: Must set ExceptionModel manually since the C API doesn't
+  // expose LLVMTargetMachineOptionsSetExceptionModel.
+  auto *TM = reinterpret_cast<TargetMachine *>(T);
+  TM->Options.ExceptionModel = ExceptionHandling::Wasm;
+  const_cast<MCAsmInfo *>(TM->getMCAsmInfo())
+      ->setExceptionsType(ExceptionHandling::Wasm);
+#endif
+  // cl::opt flags are still needed for the WebAssembly backend regardless
+  // of LLVM version.
+  llvm::WebAssembly::WasmEnableEH = true;
+  llvm::WebAssembly::WasmUseLegacyEH = true;
+}
 
 } // extern "C"

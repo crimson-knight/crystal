@@ -37,6 +37,10 @@ class LLVM::TargetMachine
     enable
   end
 
+  def enable_wasm_eh
+    LibLLVMExt.set_wasm_exception_handling(self)
+  end
+
   private def emit_to_file(llvm_mod, filename, type)
     status = LibLLVM.target_machine_emit_to_file(self, llvm_mod, filename, type, out error_msg)
     unless status == 0

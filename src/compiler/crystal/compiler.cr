@@ -346,7 +346,7 @@ module Crystal
 
       llvm_modules = @progress_tracker.stage("Codegen (crystal)") do
         program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: @single_module || @cross_compile || !@emit_targets.none?
+          single_module: @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
       end
 
       output_dir = CacheDir.instance.directory_for(sources)
@@ -445,7 +445,7 @@ module Crystal
       stdout.puts command.sub(%("${@}"), args && Process.quote(args))
     end
 
-    private def linker_command(program : Program, object_names, output_filename, output_dir, expand = false)
+    private def linker_command(program : Program, object_names, output_filename, output_dir, expand = false, source_dir : String? = nil)
       if program.has_flag? "msvc"
         lib_flags = program.lib_flags(@cross_compile)
         lib_flags = expand_lib_flags(lib_flags) if expand
@@ -492,7 +492,20 @@ module Crystal
         {linker, cmd, nil}
       elsif program.has_flag? "wasm32"
         link_flags = @link_flags || ""
-        {"wasm-ld", %(wasm-ld "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} -lc #{program.lib_flags(@cross_compile)}), object_names}
+        link_flags += " --stack-first -z stack-size=8388608"
+
+        link_flags += " --allow-undefined --allow-multiple-definition"
+
+        # WASM exception handling support:
+        # - __wasm_lpad_context is emitted directly by codegen (see initialize_wasm_exception_context)
+        # - __cpp_exception tag is auto-imported by LLVM (no object file needed)
+        # Note: asyncify_helper.wasm is merged AFTER the asyncify pass via
+        # wasm-merge (see run_wasm_opt) to avoid name collisions.
+
+        # NOTE: wasm-ld does not support --sysroot. WASI SDK sysroot library
+        # paths are added via -L flags in lib_flags_wasm (link.cr).
+
+        {"wasm-ld", %(wasm-ld "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} -lc -lwasi-emulated-mman -lwasi-emulated-process-clocks #{program.lib_flags(@cross_compile)}), object_names}
       elsif program.has_flag? "avr"
         link_flags = @link_flags || ""
         link_flags += " --target=avr-unknown-unknown -mmcu=#{@mcpu} -Wl,--gc-sections"
@@ -587,8 +600,17 @@ module Crystal
       output_filename = File.expand_path(output_filename)
 
       @progress_tracker.stage("Codegen (linking)") do
+        # Save source directory before changing to output_dir so CRYSTAL_PATH
+        # relative entries (e.g. "src:lib") resolve correctly in linker_command
+        src_dir = Dir.current
         Dir.cd(output_dir) do
-          run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+          run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true, source_dir: src_dir)
+        end
+      end
+
+      if program.has_flag?("wasm32")
+        @progress_tracker.stage("Codegen (wasm-opt)") do
+          run_wasm_opt(output_filename, release?)
         end
       end
 
@@ -909,6 +931,103 @@ module Crystal
           exit_code = 1
         end
         error "execution of command failed with exit status #{status}: #{command}", exit_code: exit_code
+      end
+    end
+
+    private def run_wasm_opt(output_filename, optimize)
+      quoted = Process.quote_posix(output_filename)
+
+      # WASM post-link pipeline order matters:
+      #
+      # 1. --asyncify: Instrument functions for stack unwinding/rewinding
+      #    (required for fiber context switching). Must run on legacy EH
+      #    format (try/catch) — does not support new try_table instructions.
+      #    crystal_asyncify_switch is declared as an async import so callers
+      #    get proper save/restore instrumentation.
+      #
+      # 2. wasm-merge: Merge asyncify_helper.wasm to provide crystal_* wrapper
+      #    functions. Must run after asyncify to avoid name collisions between
+      #    the helper's asyncify_* imports and the pass's generated definitions.
+      #
+      # 3. --translate-to-exnref: Convert legacy EH (try/catch) to new EH
+      #    format (try_table/exnref). Must run after asyncify.
+      #
+      # 4. --spill-pointers: Spill pointer-typed locals to C stack at every
+      #    call site for Boehm GC conservative stack scanning. Must run after
+      #    asyncify (which modifies function structure).
+      #
+      # 5. -Oz (release only): Size optimization pass.
+
+      # Step 1: Asyncify for fiber support
+      # - Remove _start from instrumentation (it serves as the asyncify boundary)
+      # - Mark crystal_asyncify_switch as an async import so callers get
+      #   save/restore instrumentation around calls to it
+      run_wasm_opt_pass(quoted,
+        "--asyncify" \
+        " --pass-arg=asyncify-removelist@_start" \
+        " --pass-arg=asyncify-imports@env.crystal_asyncify_switch",
+        "asyncify")
+
+      # Step 2: Merge asyncify helper module
+      # asyncify_helper.wasm provides crystal_* wrapper functions that call
+      # the asyncify_* functions created by the asyncify pass. wasm-merge
+      # resolves: main's crystal_* imports → helper's exports, and
+      # helper's asyncify_* imports → main's exports.
+      run_wasm_merge(output_filename)
+
+      # Step 3: Translate legacy EH to new EH format
+      run_wasm_opt_pass(quoted, "--translate-to-exnref", "translate-to-exnref")
+
+      # Step 4: Spill pointers for GC
+      # TODO: Re-enable after verifying compatibility with asyncify
+      # run_wasm_opt_pass(quoted, "--spill-pointers", "spill-pointers")
+
+      if optimize
+        # Step 5: Size optimization in release mode
+        run_wasm_opt_pass(quoted, "-Oz", "optimization")
+      end
+    end
+
+    private def run_wasm_merge(output_filename)
+      # Find asyncify_helper.wasm in CRYSTAL_PATH
+      helper_path = find_asyncify_helper
+      unless helper_path
+        error "asyncify_helper.wasm not found in CRYSTAL_PATH. " \
+              "This file is required for WASM fiber support."
+      end
+
+      quoted_output = Process.quote_posix(output_filename)
+      quoted_helper = Process.quote_posix(helper_path)
+
+      # wasm-merge combines two modules:
+      #   - main module (named "crystal_main" so helper's imports resolve)
+      #   - helper module (named "env" so main's crystal_* imports resolve)
+      # Remaining unresolved imports stay as imports in the output.
+      cmd = "wasm-merge #{quoted_output} crystal_main #{quoted_helper} env" \
+            " -o #{quoted_output} --all-features"
+      print_command(cmd, nil) if verbose?
+      status = Process.run(cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+      unless status.success?
+        error "wasm-merge failed with exit status #{status}: #{cmd}"
+      end
+    end
+
+    private def find_asyncify_helper : String?
+      crystal_path = ENV["CRYSTAL_PATH"]? || Crystal::Config.path
+      crystal_path.split(Process::PATH_DELIMITER, remove_empty: true).each do |path|
+        resolved = path.starts_with?('/') ? path : File.expand_path(path)
+        helper = File.join(resolved, "crystal", "asyncify_helper.wasm")
+        return helper if File.exists?(helper)
+      end
+      nil
+    end
+
+    private def run_wasm_opt_pass(quoted_filename, pass_flag, pass_name)
+      cmd = "wasm-opt #{quoted_filename} -o #{quoted_filename} #{pass_flag} --all-features"
+      print_command(cmd, nil) if verbose?
+      status = Process.run(cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+      unless status.success?
+        error "wasm-opt #{pass_name} pass failed with exit status #{status}: #{cmd}"
       end
     end
 
