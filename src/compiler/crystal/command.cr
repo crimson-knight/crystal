@@ -390,6 +390,9 @@ class Crystal::Command
           opts.on("--cross-compile", "cross-compile") do |cross_compile|
             compiler.cross_compile = true
           end
+          opts.on("--shared", "Generate a shared library (.so/.dylib)") do
+            compiler.shared = true
+          end
         end
         opts.on("-d", "--debug", "Add full symbolic debug info") do
           compiler.debug = Crystal::Debug::All

@@ -89,6 +89,8 @@ class Crystal::Codegen::Target
     case self
     when .macos?
       "darwin"
+    when .ios?
+      "ios"
     when .freebsd?
       "freebsd"
     when .dragonfly?
@@ -150,6 +152,18 @@ class Crystal::Codegen::Target
     @environment.starts_with?("netbsd")
   end
 
+  def ios?
+    @environment.starts_with?("ios")
+  end
+
+  def ios_simulator?
+    ios? && environment_parts.any?(&.starts_with?("simulator"))
+  end
+
+  def apple?
+    macos? || ios?
+  end
+
   def android?
     environment_parts.any? &.starts_with?("android")
   end
@@ -171,7 +185,7 @@ class Crystal::Codegen::Target
   end
 
   def unix?
-    macos? || bsd? || linux? || wasi? || solaris?
+    macos? || ios? || bsd? || linux? || wasi? || solaris?
   end
 
   def gnu?

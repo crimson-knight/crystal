@@ -205,6 +205,9 @@ module Crystal
         end
       end
 
+      # Android: add logging library (Bionic bundles pthread, so no -lpthread needed)
+      flags << "-llog" if has_flag?("android")
+
       flags.join(" ")
     end
 

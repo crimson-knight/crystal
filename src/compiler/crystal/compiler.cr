@@ -50,6 +50,11 @@ module Crystal
     # it in the target machine.
     property? cross_compile = false
 
+    # If `true`, generates a shared library (.so/.dylib) instead
+    # of an executable. Passes `-shared -fPIC` to the linker and
+    # skips the `main` entry point.
+    property? shared = false
+
     # Compiler flags. These will be true when checked in macro
     # code by the `flag?(...)` macro method.
     property flags = [] of String
@@ -376,6 +381,7 @@ module Crystal
       program.flags << "release" if release?
       program.flags << "debug" unless debug.none?
       program.flags << "static" if static?
+      program.flags << "shared" if shared?
       program.flags.concat @flags
       program.wants_doc = wants_doc?
       program.color = color?
@@ -798,9 +804,39 @@ module Crystal
         end
 
         {DEFAULT_LINKER, cmd, nil}
+      elsif program.has_flag? "ios"
+        link_flags = @link_flags || ""
+        link_flags += " -shared -fPIC" if shared?
+        sdk = program.codegen_target.ios_simulator? ? "iphonesimulator" : "iphoneos"
+        target_triple = program.codegen_target.to_s
+        link_flags += " -isysroot $(xcrun --sdk #{sdk} --show-sdk-path) -target #{target_triple}"
+
+        linker = "xcrun --sdk #{sdk} clang"
+        {linker, %(#{linker} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{program.lib_flags(@cross_compile)}), object_names}
+      elsif program.has_flag? "android"
+        link_flags = @link_flags || ""
+        link_flags += " -shared -fPIC" if shared?
+        target_triple = program.codegen_target.to_s
+        # Extract API level from environment (e.g. "linux-android31" -> "31")
+        api_level = program.codegen_target.environment.scan(/android(\d+)/)[0]?.try(&.[1]) || "21"
+        ndk_arch_triple = "#{program.codegen_target.architecture}-linux-android#{api_level}"
+        link_flags += " --target=#{ndk_arch_triple}"
+
+        # Find NDK clang from ANDROID_NDK_HOME
+        ndk_home = ENV["ANDROID_NDK_HOME"]? || ENV["NDK_HOME"]? || ""
+        if ndk_home.empty?
+          linker = "clang"
+        else
+          # NDK prebuilt bin directory
+          prebuilt_glob = File.join(ndk_home, "toolchains", "llvm", "prebuilt", "*", "bin", "clang")
+          prebuilt_matches = Dir.glob(prebuilt_glob)
+          linker = prebuilt_matches.first? || "clang"
+        end
+
+        {linker, %(#{Process.quote_posix(linker)} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{program.lib_flags(@cross_compile)}), object_names}
       else
         link_flags = @link_flags || ""
-        link_flags += " -rdynamic"
+        link_flags += shared? ? " -shared -fPIC" : " -rdynamic"
 
         if program.has_flag?("freebsd") || program.has_flag?("openbsd")
           # pkgs are installed to usr/local/lib but it's not in LIBRARY_PATH by
