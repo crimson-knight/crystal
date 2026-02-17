@@ -89,7 +89,7 @@ module Crystal
 
     # A String pool to avoid creating the same strings over and over.
     # This pool is passed to the parser, macro expander, etc.
-    getter string_pool = StringPool.new
+    property string_pool = StringPool.new
 
     record ConstSliceInfo, name : String, element_type : NumberKind, args : Array(ASTNode) do
       def to_bytes : Bytes

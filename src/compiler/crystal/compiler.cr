@@ -382,6 +382,20 @@ module Crystal
       program.show_error_trace = show_error_trace?
       program.progress_tracker = @progress_tracker
       program.warnings = @warnings
+
+      # Apply allocation hints from previous compilation
+      if @incremental
+        output_dir = CacheDir.instance.directory_for(sources)
+        cached = IncrementalCache.load(output_dir, Config.version, @codegen_target.to_s, @flags, @prelude)
+        if hints = cached.try(&.allocation_hints)
+          # Pre-size the string pool (add 25% headroom)
+          if hints.string_pool_capacity > 8
+            capacity = (hints.string_pool_capacity * 5 // 4).clamp(8, 1_000_000)
+            program.string_pool = StringPool.new(capacity)
+          end
+        end
+      end
+
       program
     end
 
@@ -1248,6 +1262,15 @@ module Crystal
                          nil
                        end
 
+      # Capture allocation sizing hints from the current compilation
+      hints = AllocationHints.new(
+        string_pool_capacity: program.string_pool.size,
+        unions_capacity: program.unions.size,
+        total_types_count: count_all_types(program),
+        total_defs_count: count_all_defs(program),
+        module_count: @last_modules_total || 1,
+      )
+
       data = IncrementalCacheData.new(
         compiler_version: Config.version,
         codegen_target: @codegen_target.to_s,
@@ -1256,9 +1279,26 @@ module Crystal
         file_fingerprints: fingerprints,
         module_file_mapping: module_mapping,
         file_signatures: @last_file_signatures,
+        allocation_hints: hints,
       )
 
       IncrementalCache.save(output_dir, data)
+    end
+
+    private def count_all_types(program : Program) : Int32
+      count = 0
+      program.types.each_value { |_| count += 1 }
+      count
+    end
+
+    private def count_all_defs(program : Program) : Int32
+      count = 0
+      program.types.each_value do |type|
+        if type.responds_to?(:def_instances)
+          count += type.def_instances.size
+        end
+      end
+      count
     end
 
     getter(target_machine : LLVM::TargetMachine) do

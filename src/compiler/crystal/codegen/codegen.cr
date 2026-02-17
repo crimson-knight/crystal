@@ -2402,7 +2402,11 @@ module Crystal
     end
 
     def crystal_raise_overflow_fun
-      @raise_overflow_fun ||= typed_fun?(@main_mod, RAISE_OVERFLOW_NAME)
+      @raise_overflow_fun ||= begin
+        fun_ref = typed_fun?(@main_mod, RAISE_OVERFLOW_NAME)
+        fun_ref.try &.func.add_attribute(LLVM::Attribute::Cold)
+        fun_ref
+      end
       if raise_overflow_fun = @raise_overflow_fun
         check_main_fun RAISE_OVERFLOW_NAME, raise_overflow_fun
       else
@@ -2411,7 +2415,11 @@ module Crystal
     end
 
     def crystal_raise_cast_failed_fun
-      @raise_cast_failed_fun ||= typed_fun?(@main_mod, RAISE_CAST_FAILED_NAME)
+      @raise_cast_failed_fun ||= begin
+        fun_ref = typed_fun?(@main_mod, RAISE_CAST_FAILED_NAME)
+        fun_ref.try &.func.add_attribute(LLVM::Attribute::Cold)
+        fun_ref
+      end
       if raise_cast_failed_fun = @raise_cast_failed_fun
         check_main_fun RAISE_CAST_FAILED_NAME, raise_cast_failed_fun
       else

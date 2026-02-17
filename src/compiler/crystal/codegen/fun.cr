@@ -359,6 +359,16 @@ class Crystal::CodeGenVisitor
     args.each_with_index do |arg, i|
       param = context.fun.params[i + offset]
       param.name = arg.name
+
+      # Mark self parameter as nonnull for reference types.
+      # In Crystal, calling a method on a reference type guarantees self is
+      # a valid heap pointer (never null). We exclude nilable types since
+      # those can legitimately be null.
+      if i == 0 && !is_fun_literal && self_type.passed_as_self? &&
+         self_type.reference_like? && !self_type.is_a?(NilType) &&
+         !self_type.is_a?(NilableType) && !self_type.is_a?(NilableReferenceUnionType)
+        context.fun.add_attribute(LLVM::Attribute::NonNull, i + offset + 1)
+      end
     end
 
     args

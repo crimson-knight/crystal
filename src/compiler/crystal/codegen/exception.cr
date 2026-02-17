@@ -310,6 +310,7 @@ class Crystal::CodeGenVisitor
     else
       # Both Itanium and WASM use __crystal_raise to re-raise
       raise_fun = main_fun(RAISE_NAME)
+      raise_fun.func.add_attribute(LLVM::Attribute::Cold)
       raise_fun_arg_type = raise_fun.func.params.first.type # Void* or LibUnwind::Exception*
       raise_fun_arg = pointer_cast(unwind_ex_obj.not_nil!, raise_fun_arg_type)
       codegen_call_or_invoke(node, nil, nil, raise_fun, [raise_fun_arg], true, @program.no_return)

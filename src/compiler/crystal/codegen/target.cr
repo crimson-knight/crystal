@@ -208,6 +208,24 @@ class Crystal::Codegen::Target
 
   def to_target_machine(cpu = "", features = "", optimization_mode = Compiler::OptimizationMode::O0,
                         code_model = LLVM::CodeModel::Default) : LLVM::TargetMachine
+    # Auto-detect host CPU when building for the same architecture and no
+    # explicit CPU was requested. This allows LLVM to use native instruction
+    # scheduling and feature detection for the host machine.
+    if cpu.empty?
+      host_triple = LLVM.default_target_triple
+      host_arch = host_triple.split('-', 2).first
+      # Normalize host architecture the same way we normalize @architecture
+      host_arch = case host_arch
+                  when "i486", "i586", "i686" then "i386"
+                  when "amd64"                then "x86_64"
+                  when "arm64"                then "aarch64"
+                  else                             host_arch
+                  end
+      if host_arch == @architecture
+        cpu = LLVM.host_cpu_name
+      end
+    end
+
     case @architecture
     when "i386", "x86_64"
       LLVM.init_x86

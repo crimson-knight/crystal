@@ -46,6 +46,18 @@ module Crystal
     include JSON::Serializable
   end
 
+  # Pre-allocation sizing hints captured after a compilation.
+  # Stored in the incremental cache so that subsequent compilations can
+  # pre-size hash tables and string pools, reducing rehash overhead.
+  record AllocationHints,
+    string_pool_capacity : Int32 = 0,
+    unions_capacity : Int32 = 0,
+    total_types_count : Int32 = 0,
+    total_defs_count : Int32 = 0,
+    module_count : Int32 = 0 do
+    include JSON::Serializable
+  end
+
   # Fingerprint of a single source file for incremental compilation tracking.
   # Includes mtime, content hash, and byte size for fast change detection.
   record FileFingerprint,
@@ -85,11 +97,19 @@ module Crystal
     @[JSON::Field(emit_null: false)]
     getter file_signatures : Hash(String, FileTopLevelSignature)? = nil
 
+    # Pre-allocation sizing hints from the previous compilation.
+    # Used to pre-size data structures (string pools, hash tables) on the
+    # next build, reducing rehash overhead. Nil when not available (old
+    # cache format or first compilation).
+    @[JSON::Field(emit_null: false)]
+    getter allocation_hints : AllocationHints? = nil
+
     def initialize(@compiler_version : String, @codegen_target : String,
                    @flags : Array(String), @prelude : String,
                    @file_fingerprints : Hash(String, FileFingerprint),
                    @module_file_mapping : Hash(String, Array(String))? = nil,
-                   @file_signatures : Hash(String, FileTopLevelSignature)? = nil)
+                   @file_signatures : Hash(String, FileTopLevelSignature)? = nil,
+                   @allocation_hints : AllocationHints? = nil)
     end
   end
 
