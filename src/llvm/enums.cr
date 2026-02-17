@@ -301,6 +301,19 @@ module LLVM
     Large
   end
 
+  # Exception handling model for a target machine.
+  # Maps to LLVMExceptionModel (LLVM 22+).
+  enum ExceptionModel
+    Default  # Use target default (maps to ExceptionHandling::None)
+    DwarfCFI
+    SjLj
+    ARM
+    WinEH
+    Wasm
+    AIX
+    ZOS
+  end
+
   enum VerifierFailureAction
     AbortProcessAction # verifier will print to stderr and abort()
     PrintMessageAction # verifier will print to stderr and return 1

@@ -382,6 +382,10 @@ module Crystal
       once_init
       initialize_simple_constants
 
+      if @program.has_flag?("wasm32")
+        initialize_wasm_exception_context
+      end
+
       alloca_vars @program.vars, @program
 
       emit_vars_debug_info(@program.vars) if @debug.variables?
@@ -427,6 +431,38 @@ module Crystal
 
         initialize_simple_const(initializer)
       end
+    end
+
+    # Emit WASM exception handling symbols directly in LLVM IR, replacing the
+    # pre-compiled object files (wasm_eh_tag.o and wasm_eh_lpad.o).
+    #
+    # __cpp_exception: WASM tag with signature (i32) used by throw/catch
+    #   instructions. Emitted as module-level inline assembly (.tagtype directive)
+    #   so the tag is defined in the binary rather than imported.
+    #
+    # __wasm_lpad_context: Global struct {i32, ptr, i32} used by LLVM's
+    #   WasmEHPrepare pass to communicate landing-pad index, LSDA pointer, and
+    #   type-selector between catch sites and the personality function.
+    #   Layout must match LibWasmEH::WasmLpadContext in src/exception/lib_unwind.cr.
+    private def initialize_wasm_exception_context
+      name = "__wasm_lpad_context"
+      return if @main_mod.globals[name]?
+
+      # Emit __cpp_exception tag definition as module-level inline assembly.
+      # This replaces the pre-compiled wasm_eh_tag.o file.
+      @main_mod.append_inline_asm(".tagtype __cpp_exception i32\n.globl __cpp_exception\n__cpp_exception:\n")
+
+      # Emit __wasm_lpad_context global. This replaces the pre-compiled wasm_eh_lpad.o file.
+      int32 = @main_llvm_context.int32
+      ptr = @main_llvm_context.void_pointer
+      struct_type = @main_llvm_context.struct([int32, ptr, int32])
+
+      global = @main_mod.globals.add(struct_type, name)
+      global.initializer = @main_llvm_context.const_struct([
+        int32.const_int(0),
+        ptr.null,
+        int32.const_int(0),
+      ])
     end
 
     def wrap_builder(builder)

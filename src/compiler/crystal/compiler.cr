@@ -761,32 +761,16 @@ module Crystal
 
         link_flags += " --allow-undefined --allow-multiple-definition"
 
-        # Link WASM exception handling support objects.
-        # wasm_eh_tag.o defines the __cpp_exception tag used by try_table/catch.
-        # wasm_eh_lpad.o defines __wasm_lpad_context used by WasmEHPrepare.
+        # WASM exception handling support:
+        # - __wasm_lpad_context is emitted directly by codegen (see initialize_wasm_exception_context)
+        # - __cpp_exception tag is auto-imported by LLVM (no object file needed)
         # Note: asyncify_helper.wasm is merged AFTER the asyncify pass via
         # wasm-merge (see run_wasm_opt) to avoid name collisions.
-        wasm_eh_objs = ""
-        crystal_path = ENV["CRYSTAL_PATH"]? || Crystal::Config.path
-        crystal_path.split(Process::PATH_DELIMITER, remove_empty: true).each do |path|
-          # Resolve relative paths — linker may run from output_dir, not the source dir
-          resolved = path.starts_with?('/') ? path : File.join(source_dir || Dir.current, path)
-
-          ext_dir = File.join(resolved, "llvm", "ext")
-          if Dir.exists?(ext_dir)
-            {"wasm_eh_tag.o", "wasm_eh_lpad.o"}.each do |eh_file|
-              eh_path = File.join(ext_dir, eh_file)
-              if File.exists?(eh_path)
-                wasm_eh_objs += " #{Process.quote_posix(eh_path)}"
-              end
-            end
-          end
-        end
 
         # NOTE: wasm-ld does not support --sysroot. WASI SDK sysroot library
         # paths are added via -L flags in lib_flags_wasm (link.cr).
 
-        {"wasm-ld", %(wasm-ld "${@}"#{wasm_eh_objs} -o #{Process.quote_posix(output_filename)} #{link_flags} -lc -lwasi-emulated-mman -lwasi-emulated-process-clocks #{program.lib_flags(@cross_compile)}), object_names}
+        {"wasm-ld", %(wasm-ld "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} -lc -lwasi-emulated-mman -lwasi-emulated-process-clocks #{program.lib_flags(@cross_compile)}), object_names}
       elsif program.has_flag? "avr"
         link_flags = @link_flags || ""
         link_flags += " --target=avr-unknown-unknown -mmcu=#{@mcpu} -Wl,--gc-sections"
