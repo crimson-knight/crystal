@@ -1,0 +1,50 @@
+{
+"kemal": {
+  "stock_crystal": {"runs": [5787,5372,5486], "median": 5486, "min": 5372, "max": 5787},
+  "one_shot": {"runs": [5614,5584,5612], "median": 5612, "min": 5584, "max": 5614},
+  "incremental_cold": {"runs": [6062,6171,6173], "median": 6171, "min": 6062, "max": 6173},
+  "incremental_warm": {"runs": [1380,1422,1404], "median": 1404, "min": 1380, "max": 1422},
+  "watch_recompile": {"runs": [1462,1408,1433], "median": 1433, "min": 1408, "max": 1462},
+  "lib_files": 101,
+  "shards": 4
+}
+,
+"lucky": {
+  "stock_crystal": {"runs": [5543,5432,5524], "median": 5524, "min": 5432, "max": 5543},
+  "one_shot": {"runs": [5835,5635,5869], "median": 5835, "min": 5635, "max": 5869},
+  "incremental_cold": {"runs": [5975,6068,6015], "median": 6015, "min": 5975, "max": 6068},
+  "incremental_warm": {"runs": [1589,1484,1584], "median": 1584, "min": 1484, "max": 1589},
+  "watch_recompile": {"runs": [1564,1554,1596], "median": 1564, "min": 1554, "max": 1596},
+  "lib_files": 363,
+  "shards": 14
+}
+,
+"athena": {
+  "stock_crystal": {"runs": [5737,5641,5813], "median": 5737, "min": 5641, "max": 5813},
+  "one_shot": {"runs": [5925,5912,5922], "median": 5922, "min": 5912, "max": 5925},
+  "incremental_cold": {"runs": [6390,6493,6402], "median": 6402, "min": 6390, "max": 6493},
+  "incremental_warm": {"runs": [1885,1744,1770], "median": 1770, "min": 1744, "max": 1885},
+  "watch_recompile": {"runs": [1851,1890,1932], "median": 1890, "min": 1851, "max": 1932},
+  "lib_files": 888,
+  "shards": 12
+}
+,
+"amber": {
+  "stock_crystal": {"runs": [11479,11482,11511], "median": 11482, "min": 11479, "max": 11511},
+  "one_shot": {"runs": [11587,11761,11707], "median": 11707, "min": 11587, "max": 11761},
+  "incremental_cold": {"runs": [12963,12608,12538], "median": 12608, "min": 12538, "max": 12963},
+  "incremental_warm": {"runs": [2221,2287,2187], "median": 2221, "min": 2187, "max": 2287},
+  "watch_recompile": {"runs": [2174,2154,2203], "median": 2174, "min": 2154, "max": 2203},
+  "lib_files": 2446,
+  "shards": 21
+}
+,
+"metadata": {
+  "date": "2026-02-18",
+  "compiler": "Crystal 1.20.0-dev (incremental-compilation branch, release build)",
+  "baseline": "Crystal 1.19.1 (Homebrew, release build)",
+  "mode": "--no-codegen (semantic only)",
+  "runs_per_scenario": 3,
+  "platform": "macOS (Apple Silicon), LLVM 21.1.8"
+}
+}

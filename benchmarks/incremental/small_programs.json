@@ -1,0 +1,95 @@
+{
+  "hello_world": {
+    "stock_crystal": {
+      "runs": [
+        869,
+        747,
+        788
+      ],
+      "median": 788
+    },
+    "one_shot": {
+      "runs": [
+        862,
+        761,
+        801
+      ],
+      "median": 801
+    },
+    "incremental_cold": {
+      "runs": [
+        1163,
+        1149,
+        1166
+      ],
+      "median": 1163
+    },
+    "incremental_warm": {
+      "runs": [
+        205,
+        214,
+        203
+      ],
+      "median": 205
+    },
+    "watch_recompile": {
+      "runs": [
+        742,
+        750,
+        747
+      ],
+      "median": 747
+    }
+  },
+  "http_server": {
+    "stock_crystal": {
+      "runs": [
+        1343,
+        1243,
+        1241
+      ],
+      "median": 1243
+    },
+    "one_shot": {
+      "runs": [
+        1288,
+        1323,
+        1273
+      ],
+      "median": 1288
+    },
+    "incremental_cold": {
+      "runs": [
+        1706,
+        1691,
+        1722
+      ],
+      "median": 1706
+    },
+    "incremental_warm": {
+      "runs": [
+        248,
+        253,
+        253
+      ],
+      "median": 253
+    },
+    "watch_recompile": {
+      "runs": [
+        1332,
+        1340,
+        1429
+      ],
+      "median": 1340
+    }
+  },
+  "metadata": {
+    "date": "2026-02-18",
+    "note": "Both release-built. Includes GC crash fix + one-shot overhead fix.",
+    "fixes": [
+      "GC crash: disabled parallel AbstractDefChecker/RecursiveStructChecker",
+      "One-shot overhead: gated parallel_parse behind @incremental",
+      "Link-skip gated behind @incremental"
+    ]
+  }
+}

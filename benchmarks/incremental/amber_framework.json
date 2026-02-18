@@ -1,0 +1,32 @@
+{
+  "amber_framework": {
+    "stock_crystal": {
+      "runs": [12606, 12264, 11980],
+      "median": 12264
+    },
+    "one_shot": {
+      "runs": [11587, 11346, 11311],
+      "median": 11346
+    },
+    "incremental_cold": {
+      "runs": [12307, 12516, 12326],
+      "median": 12326
+    },
+    "incremental_warm": {
+      "runs": [2141, 2125, 2174],
+      "median": 2141
+    },
+    "watch_recompile": {
+      "runs": [2158, 2204, 2147],
+      "median": 2158
+    }
+  },
+  "metadata": {
+    "date": "2026-02-18",
+    "app": "agentc_app_template_oss (Amber framework)",
+    "app_files": 30,
+    "lib_files": 2446,
+    "shards": 44,
+    "note": "Release-built compiler. --no-codegen mode (semantic only). All M1-M8 optimizations + GC fix + overhead fix."
+  }
+}
