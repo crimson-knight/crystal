@@ -173,6 +173,19 @@ module Crystal
       )
     end
 
+    # Fast fingerprint using only stat info (mtime + size). Skips reading
+    # file content and computing MD5 hash. Used on cold builds where no
+    # prior fingerprint exists to compare against.
+    def self.fingerprint_fast(filename : String) : FileFingerprint
+      info = File.info(filename)
+      FileFingerprint.new(
+        filename: filename,
+        mtime_epoch: info.modification_time.to_unix,
+        content_hash: "",
+        byte_size: info.size,
+      )
+    end
+
     # Compare old fingerprints against a current set of files.
     # Returns the set of filenames that have changed (new, modified, or removed).
     def self.changed_files(old_data : IncrementalCacheData, current_files : Set(String)) : Set(String)

@@ -31,11 +31,19 @@ class Crystal::AbstractDefChecker
   end
 
   def run
-    {% if flag?(:preview_mt) %}
-      parallel_run
-    {% else %}
-      sequential_run
-    {% end %}
+    # NOTE: parallel_run is disabled because the type graph (parents,
+    # ancestors, implements?, Def#clone) uses lazy initialization
+    # patterns (`@parents ||= ...`) and heavy GC allocation that are
+    # not thread-safe. Under -Dpreview_mt / -Dexecution_context,
+    # multiple fibers run on real OS threads and trigger data races
+    # in GC_malloc_kind_global, causing ~40% SIGSEGV on large programs
+    # (e.g. HTTP::Server). See: "Duplicate large block deallocation"
+    # and SIGSEGV in GenericInstanceType#parents -> Type#implements?.
+    #
+    # TODO: Re-enable parallel_run once the type graph has proper
+    # thread-safety (e.g. Atomic for lazy @parents, or pre-computing
+    # parents before parallel dispatch).
+    sequential_run
   end
 
   # Collects all types in the program that need checking into a flat array.

@@ -570,6 +570,9 @@ class Crystal::Command
         opts.on("--incremental", "Enable incremental compilation (file fingerprinting and parse cache)") do
           compiler.incremental = true
         end
+        opts.on("--no-cache", "Disable all compilation caching (force full rebuild)") do
+          compiler.no_cache = true
+        end
       end
 
       opts.on("--stdin-filename ", "Source file name to be read from STDIN") do |stdin_filename|
@@ -631,12 +634,23 @@ class Crystal::Command
       end
     end
 
+    # CRYSTAL_NO_CACHE env var (command-line flags take precedence)
+    if !compiler.incremental? && !compiler.no_cache?
+      if ENV["CRYSTAL_NO_CACHE"]? == "1"
+        compiler.no_cache = true
+      end
+    end
+
     output_format ||= allowed_formats[0]
     unless output_format.in?(allowed_formats)
       error "You have input an invalid format: #{output_format}. Supported formats: #{allowed_formats.join(", ")}"
     end
 
     error "maximum number of threads cannot be lower than 1" if compiler.n_threads < 1
+
+    if compiler.no_cache? && compiler.incremental?
+      error "--no-cache and --incremental are mutually exclusive"
+    end
 
     if !compiler.no_codegen? && !run && Dir.exists?(output_filename)
       error "can't use `#{output_filename}` as output filename because it's a directory"
@@ -709,6 +723,9 @@ class Crystal::Command
     end
     opts.on("--incremental", "Enable incremental compilation (file fingerprinting and parse cache)") do
       compiler.incremental = true
+    end
+    opts.on("--no-cache", "Disable all compilation caching (force full rebuild)") do
+      compiler.no_cache = true
     end
     target_specific_opts(opts, compiler)
     setup_compiler_warning_options(opts, compiler)

@@ -19,11 +19,11 @@ class Crystal::RecursiveStructChecker
   end
 
   def run
-    {% if flag?(:preview_mt) %}
-      parallel_run
-    {% else %}
-      sequential_run
-    {% end %}
+    # NOTE: parallel_run is disabled for the same reason as in
+    # AbstractDefChecker: the type graph uses lazy initialization
+    # and GC allocation patterns that are not thread-safe under
+    # -Dpreview_mt / -Dexecution_context. See abstract_def_checker.cr.
+    sequential_run
   end
 
   # Collects all types (including generic instances) that need checking

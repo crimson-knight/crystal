@@ -397,7 +397,8 @@ class Crystal::Call
 
         # Record file-level dependency for incremental compilation.
         # If a call in file A resolves to a def in file B, then A depends on B.
-        if (call_loc = self.location) && (def_loc = match.def.location)
+        if program.compiler.try(&.incremental?) &&
+           (call_loc = self.location) && (def_loc = match.def.location)
           call_file = call_loc.original_filename
           def_file = def_loc.original_filename
           if call_file && def_file && call_file != def_file

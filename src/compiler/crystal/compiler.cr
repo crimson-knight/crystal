@@ -219,6 +219,14 @@ module Crystal
     # file fingerprinting, parse caching, and cache persistence.
     property? incremental = false
 
+    # If `true`, cache files are never read during compilation (forces recompile of
+    # every module), but are still written. Mutually exclusive with `--incremental`.
+    property? no_cache = false
+
+    # Cached incremental data for the current compilation, loaded once.
+    # Nil when incremental is disabled, no_cache is set, or no prior cache exists.
+    @current_cached_data : IncrementalCacheData? = nil
+
     # Module-to-source-file mapping from the last codegen pass.
     # Used to save to the incremental cache for Phase 4 module skip optimization.
     @last_module_source_files : Hash(String, Set(String))?
@@ -234,6 +242,9 @@ module Crystal
     @last_structural_count : Int32 = 0
     @last_isolated_body_only_count : Int32 = 0
     @last_file_signatures : Hash(String, FileTopLevelSignature)? = nil
+    # File contents read during signature extraction, shared with save_incremental_cache
+    # to avoid double file reads. Cleared after cache save completes.
+    @last_file_contents : Hash(String, String)? = nil
 
     # Whether linking was skipped in the last compilation (all .o files reused).
     @link_skipped : Bool = false
@@ -271,6 +282,16 @@ module Crystal
 
       node = parse program, source
 
+      # Load incremental cache data once for the entire compilation
+      if @incremental && !@no_cache
+        output_dir_for_cache = CacheDir.instance.directory_for(source)
+        @current_cached_data = IncrementalCache.load(
+          output_dir_for_cache, Config.version, @codegen_target.to_s, @flags, @prelude
+        )
+      else
+        @current_cached_data = nil
+      end
+
       # Incremental optimization: detect if any source files changed since
       # the last compilation. If nothing changed and the output binary exists,
       # skip semantic analysis and codegen entirely — they would produce
@@ -280,10 +301,7 @@ module Crystal
       # program.requires is only fully populated after semantic analysis.
       compilation_skipped = false
       if @incremental && !@no_codegen
-        output_dir = CacheDir.instance.directory_for(source)
-        cached_data = IncrementalCache.load(
-          output_dir, Config.version, @codegen_target.to_s, @flags, @prelude
-        )
+        cached_data = @current_cached_data
 
         if cached_data && !cached_data.file_fingerprints.empty?
           any_changed = false
@@ -323,8 +341,12 @@ module Crystal
         units = codegen program, node, source, output_filename unless @no_codegen
 
         if @incremental
-          extract_and_compare_signatures(program, source)
-          save_incremental_cache(program, source)
+          @progress_tracker.stage("Signatures") do
+            extract_and_compare_signatures(program, source)
+          end
+          @progress_tracker.stage("Cache save") do
+            save_incremental_cache(program, source)
+          end
         end
       end
 
@@ -334,6 +356,8 @@ module Crystal
       print_parse_cache_stats
       print_signature_stats
       print_compilation_skip_stats if compilation_skipped
+
+      @current_cached_data = nil
 
       Result.new program, node
     end
@@ -392,9 +416,7 @@ module Crystal
 
       # Apply allocation hints from previous compilation
       if @incremental
-        output_dir = CacheDir.instance.directory_for(sources)
-        cached = IncrementalCache.load(output_dir, Config.version, @codegen_target.to_s, @flags, @prelude)
-        if hints = cached.try(&.allocation_hints)
+        if hints = @current_cached_data.try(&.allocation_hints)
           # Pre-size the string pool (add 25% headroom)
           if hints.string_pool_capacity > 8
             capacity = (hints.string_pool_capacity * 5 // 4).clamp(8, 1_000_000)
@@ -420,8 +442,10 @@ module Crystal
         location = Location.new(program.filename, 1, 1)
         nodes = Expressions.new([Require.new(prelude).at(location), nodes] of ASTNode)
 
-        # Discover require graph and parse files in parallel if enabled
-        if parallel_parse?
+        # Discover require graph and parse files in parallel if enabled.
+        # Only runs in incremental mode — this double-parses the entire program
+        # to pre-populate the parse cache, which is wasteful for one-shot builds.
+        if @incremental && parallel_parse?
           begin
             discoverer = RequireGraphDiscoverer.new(program)
             discovered_files = discoverer.discover(nodes, prelude)
@@ -558,14 +582,8 @@ module Crystal
 
       # Load cached data for module-level skip optimization (Phase 4).
       # Only applicable in multi-module mode with incremental compilation enabled.
-      cached_data = nil
-      cached_module_mapping = nil
-      if @incremental && !is_single_module
-        cached_data = IncrementalCache.load(
-          output_dir, Config.version, @codegen_target.to_s, @flags, @prelude
-        )
-        cached_module_mapping = cached_data.try(&.module_file_mapping)
-      end
+      cached_data = (@incremental && !is_single_module) ? @current_cached_data : nil
+      cached_module_mapping = cached_data.try(&.module_file_mapping)
 
       # Compute set of changed files from fingerprints (for module skip checks).
       changed_files = if cached_data && cached_module_mapping
@@ -903,7 +921,7 @@ module Crystal
       # Incremental optimization: skip linking when all .o files were reused
       # from cache and the output binary already exists. The linker inputs are
       # identical, so the output would be byte-for-byte the same.
-      all_reused = units.all?(&.reused_previous_compilation?)
+      all_reused = @incremental && !@no_cache && units.all?(&.reused_previous_compilation?)
       @link_skipped = all_reused && File.exists?(output_filename)
 
       if @link_skipped
@@ -1192,16 +1210,14 @@ module Crystal
       @last_structural_count = 0
       @last_isolated_body_only_count = 0
 
-      new_signatures = extract_file_signatures(program)
+      new_signatures, file_contents = extract_file_signatures(program)
       @last_file_signatures = new_signatures
+      @last_file_contents = file_contents
 
       return if new_signatures.empty?
 
       # Load old signatures from cache
-      output_dir = CacheDir.instance.directory_for(sources)
-      cached_data = IncrementalCache.load(
-        output_dir, Config.version, @codegen_target.to_s, @flags, @prelude
-      )
+      cached_data = @current_cached_data
       old_signatures = cached_data.try(&.file_signatures)
 
       # Compute changed files
@@ -1252,15 +1268,24 @@ module Crystal
 
     # Extract FileTopLevelSignature for each required file by parsing it
     # and running the SignatureExtractor visitor.
-    private def extract_file_signatures(program) : Hash(String, FileTopLevelSignature)
+    private def extract_file_signatures(program) : {Hash(String, FileTopLevelSignature), Hash(String, String)}
       all_signatures = {} of String => FileTopLevelSignature
+      all_contents = {} of String => String
 
       program.requires.each do |filename|
         begin
           content = File.read(filename)
-          parser = Parser.new(content, program.string_pool)
-          parser.filename = filename
-          parsed = parser.parse
+          all_contents[filename] = content
+          content_hash = Crystal::Digest::MD5.hexdigest(content)
+
+          # Reuse cached AST from the parse stage if available (avoids re-parsing)
+          parsed = if @incremental && (cached_ast = @parse_cache.get(filename, content_hash))
+                     cached_ast
+                   else
+                     parser = Parser.new(content, program.string_pool)
+                     parser.filename = filename
+                     parser.parse
+                   end
 
           extractor = SignatureExtractor.new
           parsed.accept(extractor)
@@ -1286,16 +1311,32 @@ module Crystal
         end
       end
 
-      all_signatures
+      {all_signatures, all_contents}
     end
 
     private def save_incremental_cache(program, sources)
       output_dir = CacheDir.instance.directory_for(sources)
 
       fingerprints = {} of String => FileFingerprint
+      cold_build = @current_cached_data.nil?
+      pre_read = @last_file_contents
       program.requires.each do |filename|
         begin
-          fingerprints[filename] = IncrementalCache.fingerprint(filename)
+          if !cold_build && pre_read && (content = pre_read[filename]?)
+            # Reuse content already read during signature extraction
+            info = File.info(filename)
+            content_hash = Crystal::Digest::MD5.hexdigest(content)
+            fingerprints[filename] = FileFingerprint.new(
+              filename: filename,
+              mtime_epoch: info.modification_time.to_unix,
+              content_hash: content_hash,
+              byte_size: info.size,
+            )
+          elsif cold_build
+            fingerprints[filename] = IncrementalCache.fingerprint_fast(filename)
+          else
+            fingerprints[filename] = IncrementalCache.fingerprint(filename)
+          end
         rescue IO::Error
           # File may have been deleted between compilation and cache save
         end
@@ -1343,6 +1384,7 @@ module Crystal
       )
 
       IncrementalCache.save(output_dir, data)
+      @last_file_contents = nil
     end
 
     private def count_all_types(program : Program) : Int32
@@ -1671,6 +1713,8 @@ module Crystal
       end
 
       private def must_compile?
+        return true if compiler.no_cache?
+
         memory_buffer = generate_bitcode
 
         # generate_bitcode returns nil only when skipped_via_module_cache is true,
