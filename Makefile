@@ -116,11 +116,6 @@ else
 endif
 
 DEPS = $(LLVM_EXT_OBJ)
-ifneq ($(LLVM_VERSION),)
-  ifeq ($(shell test $(firstword $(subst ., ,$(LLVM_VERSION))) -ge 18; echo $$?),0)
-    DEPS =
-  endif
-endif
 
 check_llvm_config = $(eval \
 	check_llvm_config := $(if $(LLVM_VERSION),\

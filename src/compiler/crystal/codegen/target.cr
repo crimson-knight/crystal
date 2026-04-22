@@ -295,9 +295,8 @@ class Crystal::Codegen::Target
 
     target = LLVM::Target.from_triple(self.to_s)
 
-    machine = {% unless LibLLVM::IS_LT_220 %}
-      # LLVM 22+: Use TargetMachineOptions API which properly sets
-      # ExceptionModel before target machine construction.
+    machine = {% unless LibLLVM::IS_LT_180 %}
+      # LLVM 18+: Use TargetMachineOptions API for target machine construction.
       begin
         options = LibLLVM.create_target_machine_options
         LibLLVM.target_machine_options_set_cpu(options, cpu)
@@ -305,9 +304,11 @@ class Crystal::Codegen::Target
         LibLLVM.target_machine_options_set_code_gen_opt_level(options, opt_level)
         LibLLVM.target_machine_options_set_reloc_mode(options, reloc)
         LibLLVM.target_machine_options_set_code_model(options, code_model)
+        {% unless LibLLVM::IS_LT_230 %}
         if @architecture == "wasm32"
           LibLLVM.target_machine_options_set_exception_model(options, LLVM::ExceptionModel::Wasm)
         end
+        {% end %}
         m = LLVM::TargetMachine.new(LibLLVM.create_target_machine_with_options(target.to_unsafe, self.to_s, options))
         LibLLVM.dispose_target_machine_options(options)
         m
@@ -324,7 +325,7 @@ class Crystal::Codegen::Target
     machine.enable_global_isel = false
 
     # For WASM targets, enable WASM exception handling on the target machine.
-    # On LLVM 22+, ExceptionModel is already set via TargetMachineOptions above,
+    # On LLVM 23+, ExceptionModel is already set via TargetMachineOptions above,
     # but we still need the C++ helper to set cl::opt flags (WasmEnableEH,
     # WasmUseLegacyEH) and, on older LLVM, to set TargetOptions.ExceptionModel
     # and fix MCAsmInfo.ExceptionsType.

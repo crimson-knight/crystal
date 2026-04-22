@@ -114,15 +114,15 @@ void LLVMExtSetTargetMachineGlobalISel(LLVMTargetMachineRef T, LLVMBool Enable) 
 // 4. Sets the WasmUseLegacyEH cl::opt flag to true to emit legacy try/catch
 //    format instead of new try_table/exnref instructions.
 //
-// On LLVM 22+, steps 1-2 are handled by LLVMTargetMachineOptionsSetExceptionModel
+// On LLVM 23+, steps 1-2 are handled by LLVMTargetMachineOptionsSetExceptionModel
 // in the C API, so this function only sets the cl::opt flags (steps 3-4).
 //
 // We use legacy EH (try/catch) instead of new EH (try_table/exnref) because
 // Binaryen's Asyncify pass does not support the new try_table instructions.
 // After Asyncify, we run --translate-to-exnref to convert to the new format.
 void LLVMExtSetWasmExceptionHandling(LLVMTargetMachineRef T) {
-#if !LLVM_VERSION_GE(22, 0)
-  // Pre-LLVM 22: Must set ExceptionModel manually since the C API doesn't
+#if !LLVM_VERSION_GE(23, 0)
+  // Pre-LLVM 23: Must set ExceptionModel manually since the C API doesn't
   // expose LLVMTargetMachineOptionsSetExceptionModel.
   auto *TM = reinterpret_cast<TargetMachine *>(T);
   TM->Options.ExceptionModel = ExceptionHandling::Wasm;

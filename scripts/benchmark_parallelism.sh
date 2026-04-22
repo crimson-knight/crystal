@@ -41,7 +41,32 @@ BENCH_DIR="/tmp/crystal-bench-frameworks"
 RESULTS_DIR="/tmp/crystal-bench-parallelism"
 RESULTS_FILE="${REPO_ROOT}/benchmark_parallelism_results.txt"
 
-INCR_CRYSTAL="/opt/homebrew/bin/crystal-alpha"
+find_incremental_crystal() {
+    local candidate
+    for candidate in /opt/homebrew/bin/acrystal /opt/homebrew/bin/agent-crystal /opt/homebrew/bin/crystal-alpha acrystal agent-crystal crystal-alpha; do
+        if [ -x "${candidate}" ]; then
+            echo "${candidate}"
+            return 0
+        fi
+        if command -v "${candidate}" >/dev/null 2>&1; then
+            command -v "${candidate}"
+            return 0
+        fi
+    done
+
+    if [ -x "${REPO_ROOT}/.build/crystal" ]; then
+        echo "${REPO_ROOT}/.build/crystal"
+        return 0
+    fi
+
+    return 1
+}
+
+INCR_CRYSTAL="${INCR_CRYSTAL:-$(find_incremental_crystal || true)}"
+if [ -z "${INCR_CRYSTAL}" ]; then
+    echo "Could not find Agent Crystal (tried acrystal, agent-crystal, crystal-alpha, and .build/crystal)." >&2
+    exit 1
+fi
 
 # Parallelism dimensions
 THREAD_COUNTS="1 2 4 8"

@@ -1,0 +1,93 @@
+name: Agent Crystal Compatibility
+
+on:
+  push:
+    branches:
+      - master
+      - incremental-compilation
+      - wasm-support
+    paths:
+      - .github/workflows/agent-crystal-compatibility.yml
+      - bin/ci
+      - scripts/compatibility_release_gate.sh
+      - scripts/crystal_toolchain.sh
+      - samples/fibonacci.cr
+      - samples/wordcount.cr
+      - src/**
+      - spec/**
+      - Makefile
+  pull_request:
+    paths:
+      - .github/workflows/agent-crystal-compatibility.yml
+      - bin/ci
+      - scripts/compatibility_release_gate.sh
+      - scripts/crystal_toolchain.sh
+      - samples/fibonacci.cr
+      - samples/wordcount.cr
+      - src/**
+      - spec/**
+      - Makefile
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  compatibility-smoke:
+    name: "${{ matrix.name }}"
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-latest
+            runs_on: ubuntu-latest
+            travis_os_name: linux
+            arch: x86_64
+            arch_cmd: linux64
+            ci_nix_shell: ""
+          - name: macos-14
+            runs_on: macos-14
+            travis_os_name: ""
+            arch: ""
+            arch_cmd: ""
+            ci_nix_shell: "true"
+
+    env:
+      SPEC_SPLIT_DOTS: 160
+      TRAVIS_OS_NAME: ${{ matrix.travis_os_name }}
+      ARCH: ${{ matrix.arch }}
+      ARCH_CMD: ${{ matrix.arch_cmd }}
+      CI_NIX_SHELL: ${{ matrix.ci_nix_shell }}
+
+    steps:
+      - name: Download Crystal source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        if: ${{ matrix.ci_nix_shell == 'true' }}
+        uses: cachix/install-nix-action@4e002c8ec80594ecd40e759629461e26c8abed15 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command
+
+      - name: Prepare System
+        run: bin/ci prepare_system
+
+      - name: Prepare Build
+        run: bin/ci prepare_build
+
+      - name: Build Agent Crystal fork
+        run: bin/ci with_build_env 'make llvm_ext crystal release=true FLAGS=--no-debug threads=1'
+
+      - name: Run compatibility release gate
+        env:
+          CRYSTAL_TOOLCHAIN_FORK: ${{ github.workspace }}/.build/crystal
+        run: ./scripts/compatibility_release_gate.sh 1.19.1 1.20.0 fork

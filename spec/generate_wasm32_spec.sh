@@ -22,6 +22,8 @@ set +x
 #
 # $ spec/generate_wasm32_spec.sh > spec/wasm32_std_spec.cr
 
+WASM_LIBS_VERSION="${WASM_LIBS_VERSION:-0.0.3}"
+
 WORK_DIR=$(mktemp -d)
 function cleanup {
   rm -rf "$WORK_DIR"
@@ -29,7 +31,7 @@ function cleanup {
 trap cleanup EXIT
 
 mkdir "$WORK_DIR"/wasm32-wasi-libs
-curl -L https://github.com/lbguilherme/wasm-libs/releases/download/0.0.2/wasm32-wasi-libs.tar.gz | tar -C "$WORK_DIR"/wasm32-wasi-libs -xz
+curl -L "https://github.com/lbguilherme/wasm-libs/releases/download/${WASM_LIBS_VERSION}/wasm32-wasi-libs.tar.gz" | tar -C "$WORK_DIR"/wasm32-wasi-libs -xz
 export CRYSTAL_LIBRARY_PATH="$WORK_DIR"/wasm32-wasi-libs
 
 command="$0 $*"

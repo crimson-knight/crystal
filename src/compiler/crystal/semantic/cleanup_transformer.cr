@@ -1090,6 +1090,7 @@ module Crystal
       # at not invoked block.). This assignment is for it.
       node.program = @program
       node.update
+      node.validate_splats!
 
       node
     end

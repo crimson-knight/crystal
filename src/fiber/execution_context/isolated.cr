@@ -18,7 +18,7 @@ module Fiber::ExecutionContext
   # which defaults to `Fiber::ExecutionContext.default`.
   #
   # Isolated fibers can normally communicate with other fibers running in other
-  # execution contexts using `Channel`, `WaitGroup` or `Mutex` for example. They
+  # execution contexts using `Channel`, `WaitGroup` or `Sync` for example. They
   # can also execute `IO` operations or `sleep` just like any other fiber.
   #
   # Calls that result in waiting (e.g. sleep, or socket read/write) will block
@@ -90,6 +90,10 @@ module Fiber::ExecutionContext
       self
     end
 
+    protected def each_scheduler(& : Scheduler ->) : Nil
+      yield self
+    end
+
     # :nodoc:
     def stack_pool : Fiber::StackPool
       raise RuntimeError.new("No stack pool for isolated contexts")
@@ -111,6 +115,15 @@ module Fiber::ExecutionContext
 
     # :nodoc:
     def enqueue(fiber : Fiber) : Nil
+      enqueue_impl(fiber)
+    end
+
+    # :nodoc:
+    def external_enqueue(fiber : Fiber) : Nil
+      enqueue_impl(fiber)
+    end
+
+    private def enqueue_impl(fiber)
       Crystal.trace :sched, "enqueue", fiber: fiber, context: self
 
       unless fiber == @main_fiber
@@ -275,11 +288,30 @@ module Fiber::ExecutionContext
     def status : String
       if @waiting
         "event-loop"
+      elsif @syscall == SYSCALL_FLAG
+        "syscall"
       elsif @running
         "running"
       else
         "shutdown"
       end
+    end
+
+    # :nodoc:
+    #
+    # An isolated fiber is locked to its system thread and we expect blocking
+    # syscalls to block the fiber and the thread.
+    def syscall(& : -> U) : U forall U
+      yield
+    end
+
+    protected def enter_syscall : UInt32
+      @syscall.lazy_set(SYSCALL_FLAG)
+    end
+
+    protected def leave_syscall?(value : UInt32) : Bool
+      @syscall.lazy_set(0_u32)
+      true
     end
   end
 end

@@ -40,8 +40,8 @@ lib LibLLVM
     fun create_target_machine_with_options = LLVMCreateTargetMachineWithOptions(t : TargetRef, triple : Char*, options : TargetMachineOptionsRef) : TargetMachineRef
   {% end %}
 
-  {% unless LibLLVM::IS_LT_220 %}
-    # Exception model setter for TargetMachineOptions (LLVM 22+)
+  {% unless LibLLVM::IS_LT_230 %}
+    # Exception model setter for TargetMachineOptions (LLVM 23+)
     fun target_machine_options_set_exception_model = LLVMTargetMachineOptionsSetExceptionModel(options : TargetMachineOptionsRef, model : LLVM::ExceptionModel)
   {% end %}
 end
