@@ -637,7 +637,7 @@ main() {
       echo -e "${BOLD}${MAGENTA}── Tier 4: Heavy (Self-Compilation) ───────────────────────────${RESET}"
       echo ""
 
-      local self_compile_flags="-Dwithout_interpreter -Dwithout_libxml2 -Dwithout_openssl -Dwithout_zlib -Duse_pcre2"
+      local self_compile_flags="-Di_know_what_im_doing -Dwithout_interpreter -Dwithout_libxml2 -Dwithout_openssl -Dwithout_zlib -Duse_pcre2"
 
       benchmark_target "crystal.cr (self)" \
         "$REPO_ROOT/src/compiler/crystal.cr" \

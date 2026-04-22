@@ -26,6 +26,8 @@ jobs:
 
       - name: Install wasmtime
         run: |
+          apt-get update
+          apt-get install -y curl
           curl -sSf https://wasmtime.dev/install.sh | bash -s -- --version v29.0.1
           echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
 

@@ -24,14 +24,33 @@ typedef struct LLVMOpaqueOperandBundle *LLVMOperandBundleRef;
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(OperandBundleDef, LLVMOperandBundleRef)
 #endif
 
-// Forward declarations of WebAssembly backend cl::opt flags.
-// WasmEnableEH: master switch for WASM exception handling.
-// WasmUseLegacyEH: when false, emits new try_table/exnref format instead of
-//   legacy try/catch. Defaults to true in LLVM, we set it to false.
-namespace llvm { namespace WebAssembly {
-  extern cl::opt<bool> WasmEnableEH;
-  extern cl::opt<bool> WasmUseLegacyEH;
-}}
+namespace {
+
+void LLVMExtSetCommandLineOptionIfPresent(const char *name,
+                                          const char *value = nullptr) {
+  auto &options = cl::getRegisteredOptions();
+  auto it = options.find(name);
+  if (it == options.end())
+    return;
+
+  auto *option = it->second;
+  StringRef arg_name = option->ArgStr;
+  StringRef arg_value = value ? StringRef(value) : StringRef();
+  (void)option->addOccurrence(0, arg_name, arg_value);
+}
+
+void LLVMExtEnableLegacyWasmExceptionHandlingOptions() {
+  LLVMExtSetCommandLineOptionIfPresent("wasm-enable-eh");
+
+  auto &options = cl::getRegisteredOptions();
+  if (options.find("wasm-use-legacy-eh") != options.end()) {
+    LLVMExtSetCommandLineOptionIfPresent("wasm-use-legacy-eh");
+  } else if (options.find("wasm-enable-exnref") != options.end()) {
+    LLVMExtSetCommandLineOptionIfPresent("wasm-enable-exnref", "false");
+  }
+}
+
+} // namespace
 
 extern "C" {
 
@@ -108,11 +127,11 @@ void LLVMExtSetTargetMachineGlobalISel(LLVMTargetMachineRef T, LLVMBool Enable) 
 //    and by getExceptionModel())
 // 2. Sets MCAsmInfo.ExceptionsType to Wasm (used by the MC layer to emit
 //    exception tables). The LLVM C API constructor fails to propagate this.
-// 3. Sets the WasmEnableEH cl::opt flag to true (used by the legacy pass
-//    manager's addIRPasses() to decide whether to add WasmEHPrepare or
-//    LowerInvoke). Without this, invoke instructions are stripped to calls.
-// 4. Sets the WasmUseLegacyEH cl::opt flag to true to emit legacy try/catch
-//    format instead of new try_table/exnref instructions.
+// 3. Enables the WebAssembly backend EH flags through LLVM's registered
+//    command-line option table. This avoids directly linking against backend
+//    globals that are not exported by some shared LLVM packages.
+// 4. Prefers legacy try/catch emission when the backend exposes a switch for
+//    that mode.
 //
 // On LLVM 23+, steps 1-2 are handled by LLVMTargetMachineOptionsSetExceptionModel
 // in the C API, so this function only sets the cl::opt flags (steps 3-4).
@@ -129,10 +148,7 @@ void LLVMExtSetWasmExceptionHandling(LLVMTargetMachineRef T) {
   const_cast<MCAsmInfo *>(TM->getMCAsmInfo())
       ->setExceptionsType(ExceptionHandling::Wasm);
 #endif
-  // cl::opt flags are still needed for the WebAssembly backend regardless
-  // of LLVM version.
-  llvm::WebAssembly::WasmEnableEH = true;
-  llvm::WebAssembly::WasmUseLegacyEH = true;
+  LLVMExtEnableLegacyWasmExceptionHandlingOptions();
 }
 
 } // extern "C"

@@ -85,7 +85,9 @@
           # Poll for events with a 1-second sleep between attempts
           loop do
             begin
-              @inotify_io.wait_readable(timeout: 1.second)
+              @inotify_io.evented_wait_readable(timeout: 1.second, raise_if_closed: false) do
+                raise IO::TimeoutError.new
+              end
             rescue IO::TimeoutError
               next
             end
