@@ -43,6 +43,7 @@
             raise RuntimeError.from_errno("inotify_init1")
           end
           @inotify_io = IO::FileDescriptor.new(@inotify_fd, blocking: false)
+          @inotify_io.read_timeout = 1.second
         end
 
         def watch(files : Set(String)) : Nil
@@ -85,9 +86,7 @@
           # Poll for events with a 1-second sleep between attempts
           loop do
             begin
-              @inotify_io.evented_wait_readable(timeout: 1.second, raise_if_closed: false) do
-                raise IO::TimeoutError.new
-              end
+              Crystal::EventLoop.current.wait_readable(@inotify_io)
             rescue IO::TimeoutError
               next
             end

@@ -28,8 +28,10 @@ jobs:
         run: |
           apt-get update
           apt-get install -y curl
-          curl -sSf https://wasmtime.dev/install.sh | bash -s -- --version v29.0.1
-          echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
+          curl -sSfL -o wasmtime-v29.0.1-x86_64-linux.tar.xz "https://github.com/bytecodealliance/wasmtime/releases/download/v29.0.1/wasmtime-v29.0.1-x86_64-linux.tar.xz"
+          tar -xf wasmtime-v29.0.1-x86_64-linux.tar.xz
+          install -m 755 wasmtime-v29.0.1-x86_64-linux/wasmtime /usr/local/bin/wasmtime
+          rm -rf wasmtime-v29.0.1-x86_64-linux wasmtime-v29.0.1-x86_64-linux.tar.xz
 
       - name: Verify wasmtime version
         run: wasmtime --version
