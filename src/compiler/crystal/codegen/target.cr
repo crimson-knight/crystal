@@ -91,6 +91,10 @@ class Crystal::Codegen::Target
       "darwin"
     when .ios?
       "ios"
+    when .watchos_simulator?
+      "watchos-simulator"
+    when .watchos?
+      "watchos"
     when .freebsd?
       "freebsd"
     when .dragonfly?
@@ -160,8 +164,16 @@ class Crystal::Codegen::Target
     ios? && environment_parts.any?(&.starts_with?("simulator"))
   end
 
+  def watchos?
+    @environment.starts_with?("watchos")
+  end
+
+  def watchos_simulator?
+    watchos? && environment_parts.any?(&.starts_with?("simulator"))
+  end
+
   def apple?
-    macos? || ios?
+    macos? || ios? || watchos?
   end
 
   def android?
@@ -185,7 +197,7 @@ class Crystal::Codegen::Target
   end
 
   def unix?
-    macos? || ios? || bsd? || linux? || wasi? || solaris?
+    macos? || ios? || watchos? || bsd? || linux? || wasi? || solaris?
   end
 
   def gnu?
