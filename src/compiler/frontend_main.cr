@@ -61,6 +61,7 @@ module Crystal
       error_format = "text"
       color = true
       stats = false
+      defines = [] of String
       filenames = [] of String
 
       parser = OptionParser.new do |opts|
@@ -68,6 +69,7 @@ module Crystal
         opts.on("--target TRIPLE", "Target triple to analyze for (default: #{Config.host_target})") { |t| target = t }
         opts.on("--prelude NAME", "Prelude to use (default: prelude)") { |p| prelude = p }
         opts.on("--error-format FORMAT", "Error output format: text|json (default: text)") { |f| error_format = f }
+        opts.on("-D FLAG", "--define FLAG", "Define a compile-time flag for the analyzed program") { |f| defines << f }
         opts.on("--no-color", "Disable colored output") { color = false }
         opts.on("--stats", "Print elapsed time of each phase") { stats = true }
         opts.on("--version", "Show version") do
@@ -97,7 +99,7 @@ module Crystal
       source_code = File.read(filename)
 
       begin
-        analyze(filename, source_code, target, prelude, error_format, color, stats)
+        analyze(filename, source_code, target, prelude, error_format, color, stats, defines)
       rescue ex : Crystal::CodeError
         ex.color = color
         if error_format == "json"
@@ -117,7 +119,7 @@ module Crystal
       end
     end
 
-    def self.analyze(filename, source_code, target, prelude, error_format, color, stats) : Nil
+    def self.analyze(filename, source_code, target, prelude, error_format, color, stats, defines = [] of String) : Nil
       progress_tracker = ProgressTracker.new
       progress_tracker.stats = stats
 
@@ -127,6 +129,7 @@ module Crystal
       program.codegen_target = Codegen::Target.new(target_triple || Config.host_target.to_s)
       program.color = color
       program.progress_tracker = progress_tracker
+      program.flags.concat(defines)
 
       node = progress_tracker.stage("Parse") do
         program.requires.add filename
