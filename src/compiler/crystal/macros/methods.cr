@@ -245,31 +245,40 @@ module Crystal
       raise SkipMacroException.new(@str.to_s, macro_expansion_pragmas)
     end
 
-    def interpret_system(node)
-      cmd = node.args.map do |arg|
-        arg.accept self
-        @last.to_macro_id
+    {% if flag?(:wasm32) %}
+      # WASI has no subprocesses: macro `system`/backticks cannot work.
+      # Raise a proper macro error instead of referencing backticks/`$?`
+      # (Process::Status#to_s needs Signal, which doesn't exist on wasm32).
+      def interpret_system(node)
+        node.raise "macro `system` (backticks) is not supported on WASI: the platform has no subprocesses"
       end
-      cmd = cmd.join " "
+    {% else %}
+      def interpret_system(node)
+        cmd = node.args.map do |arg|
+          arg.accept self
+          @last.to_macro_id
+        end
+        cmd = cmd.join " "
 
-      begin
-        result = `#{cmd}`
-      rescue exc : File::Error | IO::Error
-        # Taking the os_error message to avoid duplicating the "error executing process: "
-        # prefix of the error message and ensure uniqueness between all error messages.
-        node.raise "error executing command: #{cmd}: #{exc.os_error.try(&.message) || exc.message}"
-      rescue exc
-        node.raise "error executing command: #{cmd}: #{exc.message}"
-      end
+        begin
+          result = `#{cmd}`
+        rescue exc : File::Error | IO::Error
+          # Taking the os_error message to avoid duplicating the "error executing process: "
+          # prefix of the error message and ensure uniqueness between all error messages.
+          node.raise "error executing command: #{cmd}: #{exc.os_error.try(&.message) || exc.message}"
+        rescue exc
+          node.raise "error executing command: #{cmd}: #{exc.message}"
+        end
 
-      if $?.success?
-        @last = MacroId.new(result)
-      elsif result.empty?
-        node.raise "error executing command: #{cmd}, got exit status #{$?}"
-      else
-        node.raise "error executing command: #{cmd}, got exit status #{$?}:\n\n#{result}\n"
+        if $?.success?
+          @last = MacroId.new(result)
+        elsif result.empty?
+          node.raise "error executing command: #{cmd}, got exit status #{$?}"
+        else
+          node.raise "error executing command: #{cmd}, got exit status #{$?}:\n\n#{result}\n"
+        end
       end
-    end
+    {% end %}
 
     def interpret_raise(node)
       macro_raise(node, node.args, self, Crystal::TopLevelMacroRaiseException)
