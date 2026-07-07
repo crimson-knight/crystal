@@ -67,20 +67,30 @@ class Crystal::Program
 
   record MacroRunResult, stdout : String, stderr : String, status : Process::Status
 
-  def macro_run(filename, args)
-    compiled_macro_run = @compiled_macros_cache[filename] ||= macro_compile(filename)
-    compiled_file = compiled_macro_run.filename
+  {% if flag?(:without_llvm) %}
+    # `{{ "{{ run(...) }}".id }}` requires compiling and executing a full
+    # program, which needs the LLVM backend (and, under WASI, subprocesses):
+    # not available in a frontend-only build.
+    def macro_run(filename, args)
+      raise "macro `run` is not supported in a frontend-only (without_llvm) compiler build"
+    end
+  {% else %}
+    def macro_run(filename, args)
+      compiled_macro_run = @compiled_macros_cache[filename] ||= macro_compile(filename)
+      compiled_file = compiled_macro_run.filename
 
-    out_io = IO::Memory.new
-    err_io = IO::Memory.new
-    Process.run(compiled_file, args: args, output: out_io, error: err_io)
-    MacroRunResult.new(out_io.to_s, err_io.to_s, $?)
-  end
+      out_io = IO::Memory.new
+      err_io = IO::Memory.new
+      Process.run(compiled_file, args: args, output: out_io, error: err_io)
+      MacroRunResult.new(out_io.to_s, err_io.to_s, $?)
+    end
+  {% end %}
 
   record RequireWithTimestamp, filename : String, epoch : Int64 do
     include JSON::Serializable
   end
 
+  {% unless flag?(:without_llvm) %}
   def macro_compile(filename)
     time = Time.instant
 
@@ -173,6 +183,7 @@ class Crystal::Program
       host_compiler.debug = Crystal::Debug::None
     end
   end
+  {% end %}
 
   private def can_reuse_previous_compilation?(filename, executable_path, recorded_requires_path, requires_path)
     return false unless File.exists?(executable_path)

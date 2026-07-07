@@ -165,7 +165,15 @@ module Crystal
 
     getter predefined_constants = Array(Const).new
 
-    property compiler : Compiler?
+    {% if flag?(:without_llvm) %}
+      # Frontend-only builds have no Compiler instance (that class needs the
+      # LLVM backend); incremental-compilation checks treat this as disabled.
+      def compiler : Nil
+        nil
+      end
+    {% else %}
+      property compiler : Compiler?
+    {% end %}
 
     def initialize
       super(self, self, "main")
@@ -359,7 +367,7 @@ module Crystal
       define_crystal_string_constant "VERSION", Crystal::Config.version, <<-MD
         The version of the Crystal compiler.
         MD
-      define_crystal_string_constant "LLVM_VERSION", LLVM.version, <<-MD
+      define_crystal_string_constant "LLVM_VERSION", Crystal::Config.llvm_version, <<-MD
         The version of LLVM used by the Crystal compiler.
         MD
       define_crystal_string_constant "HOST_TRIPLE", Crystal::Config.host_target.to_s, <<-MD
@@ -387,7 +395,9 @@ module Crystal
       const
     end
 
-    property(target_machine : LLVM::TargetMachine) { codegen_target.to_target_machine }
+    {% unless flag?(:without_llvm) %}
+      property(target_machine : LLVM::TargetMachine) { codegen_target.to_target_machine }
+    {% end %}
 
     def codegen_target=(@codegen_target : Codegen::Target) : Codegen::Target
       crystal.types["TARGET_TRIPLE"].as(Const).value.as(StringLiteral).value = codegen_target.to_s

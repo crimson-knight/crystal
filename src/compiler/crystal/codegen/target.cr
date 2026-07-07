@@ -14,7 +14,11 @@ class Crystal::Codegen::Target
   def initialize(target_triple : String)
     # Let LLVM convert the user-inputted target triple into at least a target
     # triple with the architecture, vendor and OS in the correct place.
-    target_triple = LLVM.normalize_triple(target_triple.downcase)
+    {% if flag?(:without_llvm) %}
+      target_triple = Target.normalize_triple_without_llvm(target_triple.downcase)
+    {% else %}
+      target_triple = LLVM.normalize_triple(target_triple.downcase)
+    {% end %}
 
     if target_triple.count('-') < 2
       raise Target::Error.new("Invalid target triple: #{target_triple}")
@@ -52,6 +56,19 @@ class Crystal::Codegen::Target
       else
         # no need to tweak the environment
       end
+    end
+  end
+
+  # Minimal pure-Crystal stand-in for `LLVMNormalizeTargetTriple` used under
+  # `-Dwithout_llvm`: it only fills in a missing vendor component
+  # (e.g. "wasm32-wasi" -> "wasm32-unknown-wasi"). Architecture aliases
+  # (arm64/amd64/i686/...) are already handled below in `#initialize`.
+  def self.normalize_triple_without_llvm(triple : String) : String
+    parts = triple.split('-')
+    if parts.size == 2
+      "#{parts[0]}-unknown-#{parts[1]}"
+    else
+      triple
     end
   end
 

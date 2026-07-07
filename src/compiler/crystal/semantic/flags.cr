@@ -104,9 +104,13 @@ class Crystal::Program
 
     flags.add "bsd" if target.bsd?
 
-    if target.avr? && (cpu = target_machine.cpu.presence)
-      flags.add cpu
-    end
+    {% unless flag?(:without_llvm) %}
+      # The AVR CPU name comes from the LLVM target machine, which does not
+      # exist in frontend-only (without_llvm) builds.
+      if target.avr? && (cpu = target_machine.cpu.presence)
+        flags.add cpu
+      end
+    {% end %}
 
     flags
   end
