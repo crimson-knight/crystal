@@ -55,6 +55,59 @@ Log.setup_from_env(default_level: :warn, default_sources: "crystal.*")
 
 module Crystal
   module FrontendMain
+    # C-4 fix (docs_c4_implementation_notes.md §Completeness): maximum AST
+    # nesting depth accepted by the frontend. The parser's call-depth guard
+    # (Parser::MAX_PARSE_RECURSION) bounds recursion that traps DURING parse,
+    # but constructs that parse ITERATIVELY into a deep LEFT-NESTED AST
+    # (`a && b && c…`, `a.b.c…`, `a[0][0]…`, `a rescue b rescue c…`,
+    # `Int32****…`) complete parsing and would then trap later, in
+    # normalize/semantic, while a recursive visitor walks the deep spine
+    # (observed browser/wasmtime@1MB trap floor ≈ 500–1000 levels). This cap
+    # sits far below that floor and is checked with an ITERATIVE walk (below)
+    # right after parse, so such input degrades to a clean SyntaxException
+    # instead of an uncatchable VM call-stack trap. Frontend-only: this file is
+    # never compiled into the native compiler, so native builds are unaffected.
+    MAX_AST_DEPTH = 128
+
+    # One-level child collector: `visit` returns false so `accept` never
+    # descends past the immediate children. This lets check_ast_depth below
+    # enumerate a node's direct children WITHOUT the native recursion an
+    # ordinary Visitor/`accept` walk would incur (which is exactly what would
+    # trap on a deep AST).
+    private class ChildCollector < Visitor
+      getter children = [] of ASTNode
+
+      def visit(node : ASTNode)
+        @children << node
+        false
+      end
+    end
+
+    # Iterative (explicit-stack) max-depth check. Raises SyntaxException — the
+    # same exception the parser raises for "syntax nesting too deep", caught by
+    # `run`'s `rescue Crystal::CodeError` and emitted as an exit-1 diagnostic —
+    # if any node is nested deeper than MAX_AST_DEPTH. Never recurses natively,
+    # so it cannot itself trap on the very input it guards against. Bails at the
+    # first over-deep node (does not walk the whole tree).
+    def self.check_ast_depth(root : ASTNode, filename : String) : Nil
+      stack = [{root, 1}]
+      until stack.empty?
+        node, depth = stack.pop
+        if depth > MAX_AST_DEPTH
+          loc = node.location
+          raise SyntaxException.new(
+            "syntax nesting too deep (exceeds #{MAX_AST_DEPTH})",
+            loc.try(&.line_number) || 1,
+            loc.try(&.column_number) || 1,
+            loc.try(&.filename).try(&.to_s) || filename,
+          )
+        end
+        collector = ChildCollector.new
+        node.accept_children(collector)
+        collector.children.each { |child| stack.push({child, depth + 1}) }
+      end
+    end
+
     def self.run(args = ARGV) : Nil
       target = nil
       prelude = "prelude"
@@ -136,6 +189,11 @@ module Crystal
         parser2 = program.new_parser(source_code)
         parser2.filename = filename
         parsed = parser2.parse.as(ASTNode)
+
+        # C-4: reject deep LEFT-NESTED ASTs (iterative-parse chains) before any
+        # recursive frontend visitor (normalize/semantic) walks them and traps
+        # the ~1 MB browser VM call stack. See MAX_AST_DEPTH above.
+        check_ast_depth(parsed, filename)
 
         location = Location.new(program.filename, 1, 1)
         nodes = Expressions.new([Require.new(prelude).at(location), parsed] of ASTNode)

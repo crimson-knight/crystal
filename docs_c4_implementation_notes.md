@@ -403,3 +403,120 @@ ceiling. The fix is a stack-depth fix; heap peaks are unchanged in order
   attempt 2 by linking to a distinct `…c4v2.linked.wasm` path; a future full
   build via the patched compiler avoids it entirely.
 ```
+
+---
+
+## Completeness audit — C-4 recursion-guard gap (fix attempt 1)
+
+**Gate verdict that triggered this pass:** C-4 gate attempt 3 FAILED. The
+attempt-2 "all recursive-descent paths degrade to a clean SyntaxException" claim
+was FALSE: `if/elsif` chains and right-associative ternaries re-trapped the exact
+C-4 mode (`RangeError: Maximum call stack size exceeded`) in headless Chrome 149.
+The root diagnosis was that guarding a *subset* of chokepoints is unsound — any
+production that self-recurses (or builds a deep AST) without re-entering a guarded
+chokepoint escapes.
+
+**New artifact (fix attempt 1):** `free_tier_lab/artifacts/crystal-frontend-o1.wasm`
+= **24,413,479 B**, sha256
+`89303b31e05f0f3c139f504f5bdbe2556eaa1b0a4fd7863c6293d5245a45edbf`, brotli-q11
+**2,086,555 B (≈2.09 MB)**. No asyncify residue; all 22 imports
+`wasi_snapshot_preview1.*`; validates under `--all-features`. Byte-for-byte the
+same build recipe as attempt 2 (de-asyncify core untouched); only
+`src/compiler/crystal/syntax/parser.cr` + `src/compiler/frontend_main.cr` changed.
+Pre-fix module kept aside as
+`artifacts/crystal-frontend-o1.wasm.c4v3-pre-recursionfix`.
+
+### Method (how completeness was established, not asserted)
+
+1. **Empirical escape battery.** Ran ~30 deeply-nested LEGAL constructs against
+   the *pre-fix* module at `wasmtime -W exceptions=y,max-wasm-stack=1048576`
+   (browser-equivalent 1 MB). Every construct that trapped (exit 134,
+   "call stack exhausted") is an escape. This is decisive and mechanical.
+2. **Codex xhigh structural audit** (problem statement + parser structure + the
+   two known escapes) to hunt for edges the battery might miss.
+3. **Mechanical self-recursion scan** of every `parse_*` method (does any call
+   path recurse back into itself without passing a `with_recursion_guard` site).
+4. **Phase classification.** A flat wide array literal `[1,…,20000]` never traps
+   (exit 0) — WIDTH is safe, only left-nested DEPTH traps. Constructs split into
+   two classes: (a) recursions that trap DURING parse, and (b) constructs that
+   parse ITERATIVELY into a deep left-nested AST and trap LATER in
+   normalize/semantic. Class (a) needs a parser call-depth guard; class (b) needs
+   a post-parse AST-depth bound (a parser call-depth counter never rises for a
+   flat parse loop, so it cannot catch class (b)).
+5. **Re-ran the full battery + the headless-Chrome gate against the rebuilt
+   module**: every probe exit=1, zero traps.
+
+### Class (a) — parser self-recursions that trap DURING parse (bounded by the shared `@parse_recursion_depth` call-depth guard, cap `MAX_PARSE_RECURSION = 128`)
+
+| Production / recursive edge | How it self-recurses w/o a guarded chokepoint | Guarded by (this pass unless noted) | Evidence (probe → result) |
+|---|---|---|---|
+| `parse_op_assign` (whole body) | every expression container re-enters here | pre-existing | `256`/`2048`/`array`/`call` → exit=1 |
+| `parse_prefix` (edge) | `!!!…x` unary chain | pre-existing | `unary` → exit=1 |
+| `parse_pow` (edge) | `2**2**…` right-assoc | pre-existing | `pow` → exit=1 |
+| `parse_union_type` (whole body) | `Pointer(Pointer(…))` nested types | pre-existing | `type` → exit=1 |
+| `parse_macro_control` / `parse_macro_if` (whole body) | `{% if %}`/`{% begin %}`/`{% for %}`/`{% elsif %}` | pre-existing (attempt 2) | `macroif`/`macrobegin`/`macrofor` → exit=1 |
+| **`parse_if` (whole body, wrapper→`parse_if_internal`)** | `if … elsif … elsif …` re-enters `parse_if` via `parse_if_after_condition`'s elsif branch (`a_else = parse_if check_end: false`), bypassing `parse_op_assign` | **NEW** | `elsif` (`(elsif)×4000`) → exit=1 |
+| **`parse_question_colon` (both recursive edges)** | right-assoc `a ? b : c ? d : …` recurses through true_val/false_val without re-entering `parse_op_assign` | **NEW** | `ternary` (`('true ? 1 : ')×4000`) → exit=1 |
+| **`parse_atomic_method_suffix` (`.[` edge)** | `a.[0].[0]…` `return parse_atomic_method_suffix(...)` after `.`+`[` | **NEW** | `dotindex` → exit=1 |
+| **`parse_atomic_method_suffix` (`.!` edge)** | `a.!.!…` via `parse_negation_suffix`→`parse_atomic_method_suffix_special`→`parse_atomic_method_suffix` | **NEW** | `dotbang` → exit=1 |
+| **`parse_block_param` (unpack edge)** | nested block-param unpack `\|((((x))))\|` re-enters `parse_block_param` | **NEW** | `blockparam` → exit=1 |
+| **`parse_range` (chain cap)** | `a..b..c..…` parses iteratively into a deep `RangeLiteral`; as a *constant* `when` expression it is inserted into `Set(ASTNode)` by `add_when_exp`, whose `hash`/`==` recurse over the spine and trap DURING parse. Capped chain length (local counter → same "nesting too deep" raise). | **NEW** | `whenrange` (`when 1(..1)×4000`) → exit=1 |
+
+### Class (a′) — parser-time recursive walks made ITERATIVE (would trap during parse before any post-parse check runs)
+
+| Method | Recursion removed | Fix | Evidence |
+|---|---|---|---|
+| `when_exp_constant?` | recursive AST predicate over a deep range/array/tuple spine | rewritten with an explicit work-stack | `whenrange` → exit=1 |
+| `type_start?` | leading-splat case tail-recursed (`*…Type`) | `while true` loop | (type lookahead; folded into type probes) |
+| `delimiter_or_type_suffix?` | `? * **` suffix case tail-recursed | `while true` loop | (type lookahead) |
+
+### Class (b) — iterative parse → deep LEFT-NESTED AST → trap in normalize/semantic (bounded by the frontend's iterative post-parse AST-depth check, `frontend_main.cr` `MAX_AST_DEPTH = 128`)
+
+The parser call-depth guard CANNOT catch these: parsing is a flat `while` loop
+(no call recursion), so the counter never rises; the deep AST is built, parse
+returns, and a *recursive* frontend visitor traps later (observed trap floor
+≈ 500–1000 levels at 1 MB — same order as elsif/ternary, i.e. "legal", not
+adversarial-only). `check_ast_depth` (frontend_main.cr) walks the parsed tree
+with an EXPLICIT STACK using a one-level `ChildCollector` visitor (`visit`
+returns false so `accept` never descends), so it cannot itself recurse/trap on
+the very input it guards; it raises the same `SyntaxException` (exit-1
+diagnostic) if any node is nested deeper than `MAX_AST_DEPTH`. Runs right after
+`parser.parse`, before `normalize`/`semantic`. **Frontend-only** (this file is
+never compiled into the native compiler), so native builds are unaffected.
+
+| Iterative production (builds left-nested AST) | Construct | Evidence (probe → result) |
+|---|---|---|
+| `parse_operator` macro (`&&`/`\|\|`/`==`/`<`… left-assoc chains) | `a && b && c…` / `a==b\|\|…` | `andchain` → exit=1 |
+| `parse_add_or_sub` (`+`/`-` chains) | `1+1+1…` | (covered by AST check) |
+| `parse_atomic_method_suffix` loop (method receiver chain) | `a.b.c…` | `dotchain` → exit=1 |
+| `parse_atomic_method_suffix` loop (index chain) | `a[0][0]…` | `indexchain` → exit=1 |
+| `parse_expression_suffix` loop (suffix `rescue`/`if`/`unless`/`ensure`) | `a rescue b rescue c…` | `rescuesfx` → exit=1 |
+| `parse_type_suffix` loop (`*`/`?`/`[N]` type suffixes) | `Int32****…` (nested `Pointer`) | `typesuffix` → exit=1 |
+| `parse_call_block_arg_after_dot` + suffix loop (`&.` + method chain) | `[1].each &.itself.itself…` | (covered by AST check) |
+
+### Result
+
+Full headless-Chrome 149 gate (`results/report_gate-recursionfix.json`,
+`cases=probes,domain,frontend,persist`): `frontend.cold` exit=1 trap=null;
+`diagnosticOk=true` (byte-identical to `results/wasmtime_frontend_diag.err`);
+`warmClean` exit=0 stderrEmpty=true; `warmDiag` exit=1; **all 21 depthProbe
+entries `exit=1`, none `TRAP`** (the 10 attempt-2 probes plus `elsif`, `ternary`,
+`dotindex`, `dotbang`, `blockparam`, `whenrange`, `andchain`, `dotchain`,
+`indexchain`, `rescuesfx`, `typesuffix`). Tier-A `domain` unaffected
+(`outputMatchesLeg3=true`, `RESULT: PASS`). wasmtime leg: diag exit=1
+byte-identical, ok exit=0 empty stderr. No false positives: moderate legal code
+(chains ≤127, `elsif`×60, `ternary`×60, paren×30) parses exit=0; the prelude
+type-checks (ok_test exit=0).
+
+### Residual (documented, not a browser-reachable C-4 trap on the probed surface)
+
+- The `MAX_AST_DEPTH` check runs on the user's top-level parsed file (where all
+  probed deep-AST constructs live). Deep ASTs generated *inside* macro expansion
+  during `semantic` are not walked by this hook; none is reachable from the gate
+  probe surface, and macro-generated spines deeper than 128 are not a construct
+  observed to occur. If ever needed, the same iterative check can be hoisted into
+  `Parser#parse` (native-regression tradeoff: would also cap long chains the
+  native big-stack compiler currently accepts, hence kept frontend-only here).
+- `MAX_AST_DEPTH`/`MAX_PARSE_RECURSION` are both 128 for a uniform "nothing
+  nested/chained past 128 survives the frontend" story; comfortably below the
+  ≈500–1000 semantic trap floor and above any hand-written/prelude spine.
