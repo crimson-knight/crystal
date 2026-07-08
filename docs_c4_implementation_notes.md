@@ -7,9 +7,52 @@
 `RangeError: Maximum call stack size exceeded` now runs the full prelude
 semantic analysis in **headless Chrome 149 at the default engine stack** (no
 `--js-flags=--stack-size`), emits the correct JSON diagnostic, and degrades
-gracefully on pathological nesting of **every** recursive-descent parse path.
+gracefully on pathological nesting of **every** recursive-descent parse path
+(expression containers, unary/pow/type self-recursions, **and the macro-control
+family** — see the fixer pass below).
 
-**Attempt 2 (2026-07-07, post-gate) — closed three gate findings:**
+**Current artifact (attempt 2 — fixer pass):** `crystal-frontend-c4v3.wasm`,
+**24,351,724 B**, sha256
+`96bcf2cd824c1a2df13a8014a691fb215b50738055bc231f0352ccce02324994`. Deployed to
+`free_tier_lab/artifacts/crystal-frontend-o1.wasm`; the prior attempt-2 module is
+kept aside as `…crystal-frontend-o1.wasm.c4v2-nomacroguard`.
+
+**Attempt 2 — fixer pass (2026-07-07, post-gate #2) — closed Defect 1 (BLOCKER):**
+The gate FAILED because the macro-control recursion was still unguarded: deeply
+nested `{% if %}` / `{% begin %}` / `{% for %}` / `{% unless %}` / `elsif` /
+`{% verbatim %}` re-trapped the wasm call stack (`call stack exhausted`, exit 134)
+at ~1000 levels — the exact C-4 failure mode. Root cause: `parse_macro_body`
+mutually recurses with `parse_macro_control` / `parse_macro_if`, a path that
+re-enters **none** of the previously-guarded expression chokepoints
+(`parse_op_assign` / `parse_prefix` / `parse_pow` / `parse_union_type`).
+
+- **Fix (parser.cr):** wrapped the whole body of **`parse_macro_control`** and
+  **`parse_macro_if`** in `with_recursion_guard` via the thin
+  wrapper→`_internal` pattern (same as `parse_op_assign`). Guarding these two is
+  provably sufficient: every `parse_macro_body` re-entry is reached through a
+  guarded `parse_macro_control` or `parse_macro_if` frame, and the only direct
+  bypass — `parse_macro_if → parse_macro_if` for `elsif` — is now guarded too.
+  Uses the same shared `@parse_recursion_depth` / `MAX_PARSE_RECURSION = 128`, so
+  macro nesting now raises the clean `SyntaxException` ("syntax nesting too
+  deep") instead of trapping. Codex (xhigh) independently confirmed completeness
+  and that a *shared* counter is the right safety model (macro-control and
+  expression frames share the one wasm call stack).
+- **Harness (`free_tier_lab/harness/harness.mjs`):** added `macroif` /
+  `macrobegin` / `macrofor` to the `caseFrontend` `depthProbe` set (depth-probe
+  *inputs*, not a runtime change) so the gate exercises this class.
+- **Verified:** at `wasmtime -W max-wasm-stack=1048576` (1 MB browser-equiv) all
+  five macro classes (`if`/`begin`/`for`/`elsif`/`verbatim`) now return clean
+  `exit=1` "syntax nesting too deep (exceeds 128)" — no `TRAP`; the OLD attempt-2
+  module still traps (exit 134) on the identical `macroif` input, proving the
+  probe is valid and the guard is what fixed it. Legit moderate macro nesting
+  (`{% if %}`×20) still parses (exit 0). Full headless-Chrome gate
+  (`report_chrome-headless-c4v3.json`) re-run green: `cold.trap=null`,
+  `diagnosticOk=true`, `warmClean` exit 0 + `stderrEmpty`, **all 10 depthProbe
+  cases (paren/2048/unary/pow/type/array/call + macroif/macrobegin/macrofor) are
+  clean `exit=1`, none `TRAP`**, `domain.outputMatchesLeg3=true` (no regression),
+  probes exnref/gc/jspi all true.
+
+**Attempt 2 (2026-07-07, post-gate #1) — closed three gate findings:**
 1. **Depth guard broadened to the true chokepoint (blocking).** The Layer-3
    guard covered only parenthesized `parse_expression`; MANY other
    recursive-descent paths still recursed unboundedly and trapped the wasm stack
@@ -56,7 +99,7 @@ unaffected.
 | `src/fiber/context/wasm32.cr` | Under the flag: **no** `require "crystal/asyncify"`; `init_main_fiber_asyncify` becomes a no-op; `makecontext` a minimal stub (records `stack_top`, `resumable=1`); `Fiber.swapcontext` a loud abort stub (`LibC.write` to fd 2 + `LibC.exit(1)`). Zero `LibAsyncify`/`Crystal::Asyncify` references in this branch. |
 | `src/crystal/asyncify.cr` | `{% skip_file if flag?(:frontend_no_fibers) %}` at top — compiles to nothing, so no `LibAsyncify`/`LibCrystalAsyncify` import/export survives. |
 | `src/compiler/crystal/compiler.cr` | `run_wasm_opt` gains a `skip_fibers` param; when the **target** program has the flag it skips the `--asyncify` pass **and** the `asyncify_helper.wasm` merge, running `--translate-to-exnref` **and (attempt 2) `--spill-pointers`** (Boehm GC root safety, re-enabled for the no-fibers path only; order: exnref → spill → -Oz). The check is a runtime `program.has_flag?("frontend_no_fibers")` at the call site (NOT a compiler-binary macro flag). |
-| `src/compiler/crystal/syntax/parser.cr` | Layer-3 guard (**attempt 2: broadened to the real chokepoint**): `MAX_PARSE_RECURSION = 128` and a single shared `@parse_recursion_depth` counter, applied via `with_recursion_guard { … }` at the unbounded recursive-descent chokepoints — **`parse_op_assign`** (whole body, via a thin wrapper delegating to `parse_op_assign_internal`; this is the single point ALL expression containers re-enter once per level: parens, array/hash/tuple literals, call args, index subscripts, interpolation, and — through `parse_expression` — block/begin bodies), `parse_prefix` (recursive edge only; deep unary), the generated right-assoc `parse_pow` (recursive edge only; `**` chains), and `parse_union_type` (whole body; nested generic/union/proc types — these three self-recurse WITHOUT re-entering `parse_op_assign`). Raises `Crystal::SyntaxException` (`"syntax nesting too deep (exceeds 128)"`) before deep recursion can trap the engine. Edge-guarding prefix/pow avoids taxing flat expressions; the container budget is ~128 nesting levels (proven safe: paren×128 raises cleanly, no trap, at the 1 MB browser stack). |
+| `src/compiler/crystal/syntax/parser.cr` | Layer-3 guard (**attempt 2: broadened to the real chokepoint**): `MAX_PARSE_RECURSION = 128` and a single shared `@parse_recursion_depth` counter, applied via `with_recursion_guard { … }` at the unbounded recursive-descent chokepoints — **`parse_op_assign`** (whole body, via a thin wrapper delegating to `parse_op_assign_internal`; this is the single point ALL expression containers re-enter once per level: parens, array/hash/tuple literals, call args, index subscripts, interpolation, and — through `parse_expression` — block/begin bodies), `parse_prefix` (recursive edge only; deep unary), the generated right-assoc `parse_pow` (recursive edge only; `**` chains), and `parse_union_type` (whole body; nested generic/union/proc types — these three self-recurse WITHOUT re-entering `parse_op_assign`). Raises `Crystal::SyntaxException` (`"syntax nesting too deep (exceeds 128)"`) before deep recursion can trap the engine. Edge-guarding prefix/pow avoids taxing flat expressions; the container budget is ~128 nesting levels (proven safe: paren×128 raises cleanly, no trap, at the 1 MB browser stack). **Fixer pass** adds whole-body guards on **`parse_macro_control`** and **`parse_macro_if`** (wrapper→`_internal`, same pattern) — the macro-control family (`{% if/unless/begin/for/verbatim %}`/`elsif`) mutually recurses through `parse_macro_body` and re-enters none of the expression chokepoints, so it needed its own guards. |
 
 ---
 
@@ -218,8 +261,15 @@ Attempt 2 verifies every unbounded recursive-descent path degrades cleanly at
 | unary  | `x = ` `!`×20000 `true`   | parse_prefix (edge) | `exit=1` clean |
 | pow    | `x = 2` `**2`×20000       | parse_pow (edge)    | `exit=1` clean |
 | type   | `alias D = ` `Pointer(`×20000 `Int32` `)`×20000 | parse_union_type | `exit=1` clean |
+| macroif  | `{% if true %}`×6000 `{% end %}`×6000 | parse_macro_control/_if | `exit=1` clean |
+| macrobegin | `{% begin %}`×6000 `{% end %}`×6000 | parse_macro_control | `exit=1` clean |
+| macrofor | `{% for x in [1] %}`×6000 `{% end %}`×6000 | parse_macro_control | `exit=1` clean |
+| macroelsif | `{% if false %}` `{% elsif false %}`×6000 `{% end %}` | parse_macro_if (direct) | `exit=1` clean |
+| macroverbatim | `{% verbatim do %}`×6000 `{% end %}`×6000 | parse_macro_control | `exit=1` clean |
 
-(all `exit=1`, message `"syntax nesting too deep (exceeds 128)"`)
+(all `exit=1`, message `"syntax nesting too deep (exceeds 128)"`; the macro rows
+are the fixer pass — before it they trapped exit 134 at the 1 MB stack, and the
+pre-fix attempt-2 module still does on the identical input)
 
 ```sh
 wasmtime run -W exceptions=y,max-wasm-stack=1048576 … /work/arr.cr --error-format json
@@ -243,36 +293,38 @@ full prelude type-checks — the 128 cap does not reject real code.
 ## 6. THE GATE — headless Chrome 149 (default stack)
 
 ```sh
-python3 free_tier_lab/server.py 8799 &
+python3 free_tier_lab/server.py 8804 &
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
-  --user-data-dir=/tmp/prof-c4 --no-first-run --disable-gpu \
-  "http://127.0.0.1:8799/harness/harness.html?auto=1&label=chrome-headless-c4&cases=probes,frontend"
-# -> results/report_chrome-headless-c4.json
+  --user-data-dir=/tmp/prof-c4v3 --no-first-run --disable-gpu \
+  "http://127.0.0.1:8804/harness/harness.html?auto=1&label=chrome-headless-c4v3&cases=probes,domain,frontend,persist"
+# -> results/report_chrome-headless-c4v3.json
 ```
 
 Artifact wiring: `free_tier_lab/artifacts/crystal-frontend-o1.wasm` is the path
-the harness loads; attempt 2 replaced the attempt-1 module with the NEW 24.35 MB
-attempt-2 module (sha256
-`07abcee1e8a2b6182ad9a51335dde6cdf328ce657afcd7e6f771dedcf566e7e5`; attempt-1
-kept aside as `crystal-frontend-o1.wasm.c4v1-nospill`). Gate command used the
-FULL harness `cases=probes,domain,frontend,persist`.
+the harness loads; the **fixer pass** replaced the attempt-2 module with the NEW
+24,351,724 B module (sha256
+`96bcf2cd824c1a2df13a8014a691fb215b50738055bc231f0352ccce02324994`; the pre-fix
+attempt-2 module kept aside as `crystal-frontend-o1.wasm.c4v2-nomacroguard`). Gate
+command used the FULL harness `cases=probes,domain,frontend,persist`.
 
-**Report (`report_chrome-headless-c4v2.json`), all §7 criteria met:**
+**Report (`report_chrome-headless-c4v3.json`), all §7 criteria met:**
 
 ```
-frontend.cold           : exitCode=1, trap=null, runMs=536, memPeakBytes=138,477,568
+frontend.cold           : exitCode=1, trap=null, runMs=544, memPeakBytes=138,477,568
 frontend.diagnosticOk   : true   (file=/work/diag_test.cr, line=5, correct message)
-frontend.warmClean      : exitCode=0, trap=null, stderrEmpty=true, runMs=256
+frontend.warmClean      : exitCode=0, trap=null, stderrEmpty=true, runMs=245
 frontend.warmDiag       : exitCode=1, trap=null
 frontend.depthProbe.256 : "exit=1 runMs=4"    (non-TRAP)
 frontend.depthProbe.2048: "exit=1 runMs=3"    (non-TRAP)
-frontend.depthProbe.unary: "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage
-frontend.depthProbe.pow  : "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage
-frontend.depthProbe.type : "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage
-frontend.depthProbe.array: "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage (container class)
-frontend.depthProbe.call : "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage (container class)
-frontend.compileStreamingMs: 56
-domain.outputMatchesLeg3 : true  ("RESULT: PASS", exit 0, 128 MB peak — no regression)
+frontend.depthProbe.unary: "exit=1 runMs=3"   (non-TRAP)
+frontend.depthProbe.pow  : "exit=1 runMs=3"   (non-TRAP)
+frontend.depthProbe.type : "exit=1 runMs=3"   (non-TRAP)
+frontend.depthProbe.array: "exit=1 runMs=3"   (non-TRAP)
+frontend.depthProbe.call : "exit=1 runMs=3"   (non-TRAP)
+frontend.depthProbe.macroif   : "exit=1 runMs=3"  (non-TRAP)  ← fixer-pass new coverage
+frontend.depthProbe.macrobegin: "exit=1 runMs=3"  (non-TRAP)  ← fixer-pass new coverage
+frontend.depthProbe.macrofor  : "exit=1 runMs=8"  (non-TRAP)  ← fixer-pass new coverage
+domain.outputMatchesLeg3 : true  ("RESULT: PASS", no regression)
 probes: exceptionsFinal=true (exnref), gc=true, jspi=true, streamingCompilation=true
 persist: cacheApi ok, opfs ok, idbModule=false (WebAssembly.Module not structured-
          cloneable — pre-existing engine behavior, unrelated to C-4)
@@ -283,9 +335,10 @@ persist: cacheApi ok, opfs ok, idbModule=false (WebAssembly.Module not structure
 - ✅ `diagnosticOk === true`; the cold diagnostic **byte-matches the wasmtime
   leg** (parity).
 - ✅ `warmClean.exitCode === 0 && stderrEmpty === true`.
-- ✅ `depthProbe[256]`, `[2048]`, **`unary`, `pow`, `type`, `array`, `call`**
-  are all clean `exit=1` (Layer-3 diagnostic), not `TRAP:` — every
-  recursive-descent path, including the expression-container class.
+- ✅ `depthProbe[256]`, `[2048]`, `unary`, `pow`, `type`, `array`, `call`,
+  **`macroif`, `macrobegin`, `macrofor`** are all clean `exit=1` (Layer-3
+  diagnostic), not `TRAP:` — every recursive-descent path, including the
+  expression-container class **and the macro-control family** (fixer pass).
 - ✅ `domain.outputMatchesLeg3 === true` — Tier-A domain gate unaffected by the
   spill-pointers artifact swap (domain_check.wasm itself unchanged).
 
@@ -337,9 +390,13 @@ ceiling. The fix is a stack-depth fix; heap peaks are unchanged in order
   (verified: legit ×30/×40/×20 cases parse; the full prelude type-checks).
   Edge-guarding prefix/pow means flat expressions are not taxed.
   It is a single named constant, easy to raise if a measured budget justifies it.
-- **Macro-control nesting** (`parse_macro_body`/`parse_macro_if`) is a distinct
-  recursion not covered by this guard; it was NOT in the C-4 repro set (unary,
-  pow, type) and is flagged as a possible future audit item, not a gate blocker.
+- **Macro-control nesting** (`parse_macro_control`/`parse_macro_if`/
+  `parse_macro_body`) is **now covered** (fixer pass — see the fixer-pass entry
+  at the top and the `macro*` rows in §5). The attempt-2 gate correctly rejected
+  the earlier claim that this was a mere future-audit item: it is a reachable,
+  depth-driven browser trap (the exact C-4 mode), so it was fixed and probed, not
+  deferred. Both `parse_macro_control` and `parse_macro_if` now carry
+  whole-body `with_recursion_guard` on the shared counter.
 - **Safari** is not automated on this machine (`safaridriver` disabled); the
   automated gate is Chrome headless per design §7. jspi/exnref/gc all probe true.
 - The `-o` == input-`.o` collision in the printed `wasm-ld` command is avoided in

@@ -30,9 +30,15 @@ module Crystal
     #   - parse_prefix        (deep unary chains: `!!!…x`)
     #   - parse_pow           (right-assoc `**` chains: `2**2**2**…`)
     #   - parse_union_type    (nested generic/union/proc types: `Pointer(Pointer(…))`)
-    # parse_op_assign / parse_union_type guard their whole body; parse_prefix and
-    # parse_pow self-recurse without re-entering parse_op_assign, so only their
-    # *recursive edge* is guarded (a flat expression is not taxed).
+    #   - parse_macro_control / parse_macro_if (nested macro control flow:
+    #                          `{% if %}`/`{% unless %}`/`{% begin %}`/`{% for %}`/
+    #                          `{% verbatim %}`/`elsif` — a distinct mutual
+    #                          recursion through parse_macro_body that re-enters
+    #                          none of the expression chokepoints above)
+    # parse_op_assign / parse_union_type / parse_macro_control / parse_macro_if
+    # guard their whole body; parse_prefix and parse_pow self-recurse without
+    # re-entering parse_op_assign, so only their *recursive edge* is guarded (a
+    # flat expression is not taxed).
     MAX_PARSE_RECURSION = 128
 
     property visibility : Visibility?
@@ -315,8 +321,9 @@ module Crystal
     # depth so pathological input degrades to a clean SyntaxException instead of
     # an uncatchable VM call-stack trap in the browser. Increments a single
     # shared counter around a recursive edge and raises past MAX_PARSE_RECURSION.
-    # Used at every unbounded recursion chokepoint (parse_expression /
-    # parse_prefix / parse_pow / parse_union_type). `ensure` guarantees the
+    # Used at every unbounded recursion chokepoint (parse_op_assign /
+    # parse_prefix / parse_pow / parse_union_type / parse_macro_control /
+    # parse_macro_if). `ensure` guarantees the
     # depth is decremented on normal return, early `return` inside the block,
     # and on the raised exception alike.
     private def with_recursion_guard(&)
@@ -3470,6 +3477,22 @@ module Crystal
     end
 
     def parse_macro_control(start_location, macro_state = Token::MacroState.default)
+      # C-4 fix (docs_c4_design.md §3 Layer 3): the macro-control family
+      # (parse_macro_control / parse_macro_if / parse_macro_body) mutually
+      # recurses once per nested {% if %} / {% unless %} / {% begin %} /
+      # {% for %} / {% verbatim %} level. Every parse_macro_body re-entry is
+      # reached through a guarded parse_macro_control or parse_macro_if frame,
+      # so guarding this edge on the shared @parse_recursion_depth counter makes
+      # deep macro nesting raise the clean "syntax nesting too deep"
+      # SyntaxException instead of trapping the browser's fixed ~1 MB VM call
+      # stack (L1-report break C-4). Wrapper-delegates to _internal (like
+      # parse_op_assign) so the body's early `return`s stay ordinary returns.
+      with_recursion_guard do
+        parse_macro_control_internal(start_location, macro_state)
+      end
+    end
+
+    private def parse_macro_control_internal(start_location, macro_state)
       location = @token.location
       next_token_skip_space_or_newline
 
@@ -3562,6 +3585,16 @@ module Crystal
     end
 
     def parse_macro_if(start_location, macro_state, check_end = true, is_unless = false)
+      # C-4 fix: an `elsif` chain ({% if %}{% elsif %}{% elsif %}…) re-enters
+      # parse_macro_if DIRECTLY, bypassing parse_macro_control's guard, so this
+      # edge carries its own guard on the same shared @parse_recursion_depth
+      # counter. Bounds elsif depth to a clean SyntaxException, not a VM trap.
+      with_recursion_guard do
+        parse_macro_if_internal(start_location, macro_state, check_end, is_unless)
+      end
+    end
+
+    private def parse_macro_if_internal(start_location, macro_state, check_end, is_unless)
       location = @token.location
 
       next_token_skip_space
