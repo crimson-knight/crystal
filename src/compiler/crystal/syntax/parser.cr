@@ -35,10 +35,26 @@ module Crystal
     #                          `{% verbatim %}`/`elsif` — a distinct mutual
     #                          recursion through parse_macro_body that re-enters
     #                          none of the expression chokepoints above)
-    # parse_op_assign / parse_union_type / parse_macro_control / parse_macro_if
-    # guard their whole body; parse_prefix and parse_pow self-recurse without
+    #   - parse_if            (runtime `if`/`elsif` chains — parse_if re-enters
+    #                          itself through parse_if_after_condition's `elsif`
+    #                          branch, bypassing parse_op_assign)
+    #   - parse_question_colon (right-assoc ternary `a ? b : c ? d : …` edges)
+    #   - parse_atomic_method_suffix (`a.[0].[0]…` and `a.!.!…` suffix chains
+    #                          that self-recurse without re-entering parse_op_assign)
+    #   - parse_block_param   (nested block-parameter unpacking `|((((x))))|`)
+    # parse_op_assign / parse_union_type / parse_macro_control / parse_macro_if /
+    # parse_if guard their whole body; parse_prefix, parse_pow, parse_question_colon,
+    # parse_atomic_method_suffix and parse_block_param self-recurse without
     # re-entering parse_op_assign, so only their *recursive edge* is guarded (a
     # flat expression is not taxed).
+    #
+    # NOTE (docs_c4_implementation_notes.md §Completeness): this call-depth guard
+    # bounds recursion that traps DURING parse. It does NOT catch constructs that
+    # parse ITERATIVELY into a deep LEFT-NESTED AST (`a && b && c…`, `a.b.c…`,
+    # `a[0][0]…`, `a rescue b rescue c…`, `Int32****…`) — those complete parsing
+    # and trap later in normalize/semantic while walking the deep AST. Those are
+    # bounded by a separate iterative post-parse AST-depth check in the frontend
+    # entry point (src/compiler/frontend_main.cr).
     MAX_PARSE_RECURSION = 128
 
     property visibility : Visibility?
@@ -562,13 +578,19 @@ module Crystal
         next_token_skip_space_or_newline
 
         @no_type_declaration += 1
-        true_val = parse_question_colon
+        # C-4 fix: the right-associative conditional `a ? b : c ? d : e …`
+        # self-recurses through true_val/false_val WITHOUT re-entering
+        # parse_op_assign, so the shared counter never rises and a deep ternary
+        # chain traps the browser VM call stack. Guard just the two recursive
+        # edges (like parse_prefix / parse_pow) so a flat expression pays
+        # nothing and the chain degrades to a clean SyntaxException.
+        true_val = with_recursion_guard { parse_question_colon }
 
         skip_space_or_newline
         check :OP_COLON
         next_token_skip_space_or_newline
 
-        false_val = parse_question_colon
+        false_val = with_recursion_guard { parse_question_colon }
         @no_type_declaration -= 1
 
         cond = If.new(cond, true_val, false_val, ternary: true).at(cond).at_end(false_val)
@@ -586,11 +608,24 @@ module Crystal
         exp = parse_or
       end
 
+      # C-4 fix: `a..b..c..…` parses ITERATIVELY here into a deep left-nested
+      # RangeLiteral. Even though this loop does not recurse, a constant chained
+      # range used as a `when` expression is inserted into a Set(ASTNode) by
+      # add_when_exp, whose `hash`/`==` recurse over the spine and trap the
+      # browser VM call stack DURING parse (before the post-parse AST-depth
+      # check can run). Bound the chain length so a deep range degrades to a
+      # clean SyntaxException. (Real code never chains ranges past a couple;
+      # 128 is far beyond any legitimate use.)
+      range_chain_depth = 0
       while true
         case @token.type
         when .op_period_period?
+          range_chain_depth += 1
+          raise "syntax nesting too deep (exceeds #{MAX_PARSE_RECURSION})" if range_chain_depth > MAX_PARSE_RECURSION
           exp = new_range(exp, location, false)
         when .op_period_period_period?
+          range_chain_depth += 1
+          raise "syntax nesting too deep (exceeds #{MAX_PARSE_RECURSION})" if range_chain_depth > MAX_PARSE_RECURSION
           exp = new_range(exp, location, true)
         else
           return exp
@@ -787,9 +822,16 @@ module Crystal
             atomic = parse_nil?(atomic).at(location)
           elsif @token.type.op_bang?
             atomic = parse_negation_suffix(atomic).at(location)
-            atomic = parse_atomic_method_suffix_special(atomic, location)
+            # C-4 fix: `a.!.!.!…` re-enters parse_atomic_method_suffix through
+            # parse_atomic_method_suffix_special once per `.!`, a self-recursion
+            # that never re-enters parse_op_assign. Guard the recursive edge so
+            # a deep chain degrades to a clean SyntaxException, not a VM trap.
+            atomic = with_recursion_guard { parse_atomic_method_suffix_special(atomic, location) }
           elsif @token.type.op_lsquare?
-            return parse_atomic_method_suffix(atomic, location)
+            # C-4 fix: `a.[0].[0].[0]…` re-enters parse_atomic_method_suffix
+            # directly once per `.[`, another self-recursion off the guarded
+            # chokepoints. Guard the recursive edge.
+            return with_recursion_guard { parse_atomic_method_suffix(atomic, location) }
           else
             name = case @token.type
                    when .ident?, .const?
@@ -3001,22 +3043,33 @@ module Crystal
     # value, but the second same call returns something different
     # and matches it.
     def when_exp_constant?(exp)
-      case exp
-      when NilLiteral, BoolLiteral, CharLiteral, NumberLiteral,
-           StringLiteral, SymbolLiteral, Path
-        true
-      when ArrayLiteral
-        exp.elements.all? { |e| when_exp_constant?(e) }
-      when TupleLiteral
-        exp.elements.all? { |e| when_exp_constant?(e) }
-      when RegexLiteral
-        when_exp_constant?(exp.value)
-      when RangeLiteral
-        when_exp_constant?(exp.from) &&
-          when_exp_constant?(exp.to)
-      else
-        false
+      # C-4 fix: this is a parser-time recursive AST walk. A deeply chained
+      # range spine in a `when` clause (`when 1..2..3..…`, built iteratively by
+      # parse_range) would recurse here once per level and trap the browser VM
+      # call stack DURING parse. Walk iteratively with an explicit stack:
+      # every reachable node must be a constant literal, else the whole
+      # expression is non-constant (return false on the first non-constant).
+      stack = [exp] of ASTNode
+      until stack.empty?
+        node = stack.pop
+        case node
+        when NilLiteral, BoolLiteral, CharLiteral, NumberLiteral,
+             StringLiteral, SymbolLiteral, Path
+          # constant leaf — nothing to descend into
+        when ArrayLiteral
+          stack.concat node.elements
+        when TupleLiteral
+          stack.concat node.elements
+        when RegexLiteral
+          stack.push node.value
+        when RangeLiteral
+          stack.push node.from
+          stack.push node.to
+        else
+          return false
+        end
       end
+      true
     end
 
     def when_expression_end
@@ -4317,6 +4370,22 @@ module Crystal
     end
 
     def parse_if(check_end = true)
+      # C-4 fix (docs_c4_implementation_notes.md): an `if`/`elsif` chain
+      # (`if … elsif … elsif …`) re-enters parse_if DIRECTLY through
+      # parse_if_after_condition's `elsif` branch (`a_else = parse_if
+      # check_end: false`), bypassing parse_op_assign's guard (each elsif
+      # condition enters+exits that guard and returns before the next parse_if,
+      # so the shared counter never accumulates across the chain). Guard the
+      # whole body — the same wrapper->_internal pattern used for parse_macro_if
+      # — so a deep elsif chain raises the clean "syntax nesting too deep"
+      # SyntaxException instead of trapping the browser's fixed ~1 MB VM call
+      # stack (L1-report break C-4).
+      with_recursion_guard do
+        parse_if_internal(check_end)
+      end
+    end
+
+    private def parse_if_internal(check_end)
       location = @token.location
 
       slash_is_regex!
@@ -4714,10 +4783,16 @@ module Crystal
 
         while true
           sub_location = @token.location
-          sub_var, new_found_splat_in_nested_expression, sub_unpack_expressions = parse_block_param(
-            found_splat: found_splat_in_nested_expression,
-            all_names: all_names,
-          )
+          # C-4 fix: nested block-parameter unpacking `|((((x))))|` re-enters
+          # parse_block_param once per `(` without passing a guarded chokepoint.
+          # Guard the recursive edge so a deep unpack raises a clean
+          # SyntaxException instead of trapping the browser VM call stack.
+          sub_var, new_found_splat_in_nested_expression, sub_unpack_expressions = with_recursion_guard do
+            parse_block_param(
+              found_splat: found_splat_in_nested_expression,
+              all_names: all_names,
+            )
+          end
 
           unpack_expression =
             if sub_unpack_expressions
@@ -5531,37 +5606,43 @@ module Crystal
     end
 
     def type_start?
-      while @token.type.op_lparen? || @token.type.op_lcurly?
-        next_token_skip_space_or_newline
-      end
-
-      # TODO: the below conditions are not complete, and there are many false-positive or true-negative examples.
-
-      case @token.type
-      when .ident?
-        return false if named_tuple_start?
-        case @token.value
-        when Keyword::TYPEOF
-          true
-        when Keyword::SELF, "self?"
-          next_token_skip_space
-          delimiter_or_type_suffix?
-        else
-          false
+      # C-4 fix: the leading-splat case (`*`) used to tail-recurse into
+      # type_start?; a deep `********…Type` lookahead would trap the browser VM
+      # call stack DURING a peek. Loop instead — behaviour is identical (each
+      # `*` consumes a token and re-checks), but bounded to O(1) native stack.
+      while true
+        while @token.type.op_lparen? || @token.type.op_lcurly?
+          next_token_skip_space_or_newline
         end
-      when .const?
-        return false if named_tuple_start?
-        type_path_start?
-      when .op_colon_colon?
-        next_token
-        type_path_start?
-      when .underscore?, .op_minus_gt?
-        true
-      when .op_star?
-        next_token_skip_space_or_newline
-        type_start?
-      else
-        false
+
+        # TODO: the below conditions are not complete, and there are many false-positive or true-negative examples.
+
+        case @token.type
+        when .ident?
+          return false if named_tuple_start?
+          case @token.value
+          when Keyword::TYPEOF
+            return true
+          when Keyword::SELF, "self?"
+            next_token_skip_space
+            return delimiter_or_type_suffix?
+          else
+            return false
+          end
+        when .const?
+          return false if named_tuple_start?
+          return type_path_start?
+        when .op_colon_colon?
+          next_token
+          return type_path_start?
+        when .underscore?, .op_minus_gt?
+          return true
+        when .op_star?
+          next_token_skip_space_or_newline
+          # loop (was: type_start?)
+        else
+          return false
+        end
       end
     end
 
@@ -5577,20 +5658,26 @@ module Crystal
     end
 
     def delimiter_or_type_suffix?
-      case @token.type
-      when .op_period?
-        next_token_skip_space_or_newline
-        @token.keyword?(:class)
-      when .op_question?, .op_star?, .op_star_star?
-        # They are conflicted with operators, so more look-ahead is needed.
-        next_token_skip_space
-        delimiter_or_type_suffix?
-      when .op_minus_gt?, .op_bar?, .op_comma?, .op_eq_gt?, .newline?, .eof?,
-           .op_eq?, .op_semicolon?, .op_lparen?, .op_rparen?, .op_lsquare?, .op_rsquare?
-        # -> | , => \n EOF = ; ( ) [ ]
-        true
-      else
-        false
+      # C-4 fix: the `? * **` case used to tail-recurse; a long run of type
+      # suffixes (`Int32 ? ? ? …` / `Int32 ** ** …`) in a lookahead would trap
+      # the browser VM call stack DURING a peek. Loop instead — identical
+      # behaviour, bounded native stack.
+      while true
+        case @token.type
+        when .op_period?
+          next_token_skip_space_or_newline
+          return @token.keyword?(:class)
+        when .op_question?, .op_star?, .op_star_star?
+          # They are conflicted with operators, so more look-ahead is needed.
+          next_token_skip_space
+          # loop (was: delimiter_or_type_suffix?)
+        when .op_minus_gt?, .op_bar?, .op_comma?, .op_eq_gt?, .newline?, .eof?,
+             .op_eq?, .op_semicolon?, .op_lparen?, .op_rparen?, .op_lsquare?, .op_rsquare?
+          # -> | , => \n EOF = ; ( ) [ ]
+          return true
+        else
+          return false
+        end
       end
     end
 
