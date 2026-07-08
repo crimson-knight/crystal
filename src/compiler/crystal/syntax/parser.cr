@@ -13,6 +13,15 @@ module Crystal
 
     record Unclosed, name : String, location : Location
 
+    # C-4 fix (docs_c4_design.md §3 Layer 3): maximum recursive expression
+    # nesting depth. Beyond this the parser raises a clean SyntaxException
+    # ("expression nesting too deep") instead of letting genuine deep recursion
+    # trap the browser's fixed ~1 MB VM call stack (L1-report break C-4). Set
+    # conservatively below the browser budget with margin; real code never
+    # nests expressions this deep (unions/method-chains/array siblings are
+    # parsed iteratively, not via this recursion).
+    MAX_EXPRESSION_NESTING = 128
+
     property visibility : Visibility?
     property def_nest : Int32
     property fun_nest : Int32
@@ -36,6 +45,7 @@ module Crystal
       @def_nest = 0
       @fun_nest = 0
       @type_nest = 0
+      @expression_nesting = 0
       @is_constant_assignment = false
 
       # Keeps track of current call args starting locations,
@@ -289,9 +299,22 @@ module Crystal
     end
 
     def parse_expression
-      location = @token.location
-      atomic = parse_op_assign
-      parse_expression_suffix atomic, location
+      # C-4 fix (docs_c4_design.md §3 Layer 3): bound recursive expression
+      # nesting so pathological input (e.g. `((((…))))`) degrades to a clean
+      # SyntaxException instead of an uncatchable VM call-stack trap in the
+      # browser. This is the single per-nesting-level chokepoint: each
+      # parenthesized sub-expression re-enters parse_expression exactly once.
+      @expression_nesting += 1
+      begin
+        if @expression_nesting > MAX_EXPRESSION_NESTING
+          raise "expression nesting too deep (exceeds #{MAX_EXPRESSION_NESTING})"
+        end
+        location = @token.location
+        atomic = parse_op_assign
+        parse_expression_suffix atomic, location
+      ensure
+        @expression_nesting -= 1
+      end
     end
 
     def parse_expression_suffix(atomic, location)

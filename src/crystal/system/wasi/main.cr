@@ -9,6 +9,23 @@ lib LibC
   fun __main_void : Int32
 end
 
+{% if flag?(:frontend_no_fibers) %}
+# C-4 fix (docs_c4_design.md §3.1): fiber-free WASI entry path.
+#
+# This is the classic WASI command boundary and references NO
+# LibCrystalAsyncify symbol. The frontend compiler is single-threaded, never
+# `spawn`s, and never switches fibers, so the asyncify unwind/rewind loop is
+# dead weight that only inflates the VM call stack (L1-report break C-4).
+# Runtime/GC initialization still happens inside `main` (reached via
+# __main_void -> __main_argc_argv -> main), and an explicit `exit N` in the
+# program calls proc_exit(N) directly, bypassing this return path.
+fun _start
+  LibC.__wasm_call_ctors
+  status = LibC.__main_void
+  LibC.__wasm_call_dtors
+  LibWasi.proc_exit(status) if status != 0
+end
+{% else %}
 # IMPORTANT: _start is excluded from asyncify instrumentation via
 # --pass-arg=asyncify-removelist@_start in the wasm-opt pass. This makes
 # it the "asyncify boundary". When asyncified code unwinds during a fiber
@@ -74,6 +91,7 @@ fun _start
   LibC.__wasm_call_dtors
   LibWasi.proc_exit(status) if status != 0
 end
+{% end %}
 
 # `__main_argc_argv` is called by wasi-libc's `__main_void` with the
 # program arguments.

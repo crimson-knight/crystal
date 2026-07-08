@@ -1,5 +1,39 @@
 {% skip_file unless flag?(:wasm32) %}
 
+{% if flag?(:frontend_no_fibers) %}
+# C-4 fix (docs_c4_design.md §3.2): fiber-free wasm32 context.
+#
+# Under -Dfrontend_no_fibers the module carries NO asyncify apparatus: no
+# `crystal/asyncify` require, no per-fiber asyncify header/buffer, and no
+# LibAsyncify/LibCrystalAsyncify references at all. The frontend is
+# single-threaded and never switches fibers, so this only has to satisfy the
+# compiler for the (unreachable) spawn/switch code paths.
+class Fiber
+  struct Context
+    # No-op: without fibers there is no asyncify buffer to allocate for the
+    # main fiber (called from Fiber#initialize under flag?(:wasm32)).
+    protected def init_main_fiber_asyncify : Nil
+    end
+  end
+
+  # Minimal context setup for a spawned fiber. The frontend never spawns, so
+  # the fiber is never executed; we only record the stack top for GC.
+  def makecontext(stack_ptr, fiber_main) : Nil
+    @context.stack_top = stack_ptr.as(Void*)
+    @context.resumable = 1
+  end
+
+  # Safety net: fiber switching is impossible without the asyncify runtime.
+  # If any unexpected path ever reaches here, abort loudly rather than
+  # silently corrupt state. This must never fire on the analysis path.
+  @[NoInline]
+  def self.swapcontext(current_context, new_context) : Nil
+    msg = "FATAL: Fiber.swapcontext reached in -Dfrontend_no_fibers build\n"
+    LibC.write(2, msg.to_unsafe, msg.bytesize)
+    LibC.exit(1)
+  end
+end
+{% else %}
 require "crystal/asyncify"
 
 class Fiber
@@ -156,3 +190,4 @@ class Fiber
     )
   end
 end
+{% end %}
