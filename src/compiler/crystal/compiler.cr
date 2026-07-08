@@ -1570,9 +1570,24 @@ module Crystal
       # before exnref translation).
       run_wasm_opt_pass(quoted, "--translate-to-exnref", "translate-to-exnref")
 
-      # Step 4: Spill pointers for GC
-      # TODO: Re-enable after verifying compatibility with asyncify
-      # run_wasm_opt_pass(quoted, "--spill-pointers", "spill-pointers")
+      # Step 4: Spill pointers for GC.
+      # Boehm's conservative collector scans linear memory for roots but CANNOT
+      # see a pointer held only in a wasm local; --spill-pointers stores
+      # pointer-typed locals to the shadow (C) stack at every call site so they
+      # stay visible as GC roots (otherwise a still-live object reachable only
+      # from a local can be collected -> use-after-free). This ran
+      # unconditionally in Phase 2; Phase 3 disabled it *solely* because its
+      # interaction with the asyncify instrumentation was unverified
+      # ("Re-enable after verifying compatibility with asyncify").
+      #
+      # The frontend build (skip_fibers / -Dfrontend_no_fibers, C-4 fix) removes
+      # asyncify entirely, so that concern does not apply: re-enable the pass on
+      # that path. Order: AFTER --translate-to-exnref (spill on the final EH
+      # form) and BEFORE -Oz (so the optimizer trims the spill overhead). The
+      # fiber path stays unspilled until asyncify compatibility is verified.
+      if skip_fibers
+        run_wasm_opt_pass(quoted, "--spill-pointers", "spill-pointers")
+      end
 
       if optimize
         # Step 5: Size optimization in release mode

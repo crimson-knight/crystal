@@ -13,14 +13,27 @@ module Crystal
 
     record Unclosed, name : String, location : Location
 
-    # C-4 fix (docs_c4_design.md §3 Layer 3): maximum recursive expression
-    # nesting depth. Beyond this the parser raises a clean SyntaxException
-    # ("expression nesting too deep") instead of letting genuine deep recursion
-    # trap the browser's fixed ~1 MB VM call stack (L1-report break C-4). Set
+    # C-4 fix (docs_c4_design.md §3 Layer 3): maximum recursive-descent parse
+    # depth. Beyond this the parser raises a clean SyntaxException ("syntax
+    # nesting too deep") instead of letting genuine deep recursion trap the
+    # browser's fixed ~1 MB VM call stack (L1-report break C-4). Set
     # conservatively below the browser budget with margin; real code never
-    # nests expressions this deep (unions/method-chains/array siblings are
-    # parsed iteratively, not via this recursion).
-    MAX_EXPRESSION_NESTING = 128
+    # nests any single recursive path this deep (unions/method-chains/array
+    # siblings are parsed iteratively, not via this recursion).
+    #
+    # A single shared counter (@parse_recursion_depth) bounds EVERY unbounded
+    # recursive-descent path, not just parenthesized expressions:
+    #   - parse_op_assign     (the expression-container chokepoint: parens,
+    #                          array/hash/tuple literals, call args, index
+    #                          subscripts, interpolation, block/begin bodies —
+    #                          all re-enter here once per nesting level)
+    #   - parse_prefix        (deep unary chains: `!!!…x`)
+    #   - parse_pow           (right-assoc `**` chains: `2**2**2**…`)
+    #   - parse_union_type    (nested generic/union/proc types: `Pointer(Pointer(…))`)
+    # parse_op_assign / parse_union_type guard their whole body; parse_prefix and
+    # parse_pow self-recurse without re-entering parse_op_assign, so only their
+    # *recursive edge* is guarded (a flat expression is not taxed).
+    MAX_PARSE_RECURSION = 128
 
     property visibility : Visibility?
     property def_nest : Int32
@@ -45,7 +58,7 @@ module Crystal
       @def_nest = 0
       @fun_nest = 0
       @type_nest = 0
-      @expression_nesting = 0
+      @parse_recursion_depth = 0
       @is_constant_assignment = false
 
       # Keeps track of current call args starting locations,
@@ -298,23 +311,30 @@ module Crystal
       exp
     end
 
-    def parse_expression
-      # C-4 fix (docs_c4_design.md §3 Layer 3): bound recursive expression
-      # nesting so pathological input (e.g. `((((…))))`) degrades to a clean
-      # SyntaxException instead of an uncatchable VM call-stack trap in the
-      # browser. This is the single per-nesting-level chokepoint: each
-      # parenthesized sub-expression re-enters parse_expression exactly once.
-      @expression_nesting += 1
+    # C-4 fix (docs_c4_design.md §3 Layer 3): bound recursive-descent parse
+    # depth so pathological input degrades to a clean SyntaxException instead of
+    # an uncatchable VM call-stack trap in the browser. Increments a single
+    # shared counter around a recursive edge and raises past MAX_PARSE_RECURSION.
+    # Used at every unbounded recursion chokepoint (parse_expression /
+    # parse_prefix / parse_pow / parse_union_type). `ensure` guarantees the
+    # depth is decremented on normal return, early `return` inside the block,
+    # and on the raised exception alike.
+    private def with_recursion_guard(&)
+      @parse_recursion_depth += 1
       begin
-        if @expression_nesting > MAX_EXPRESSION_NESTING
-          raise "expression nesting too deep (exceeds #{MAX_EXPRESSION_NESTING})"
+        if @parse_recursion_depth > MAX_PARSE_RECURSION
+          raise "syntax nesting too deep (exceeds #{MAX_PARSE_RECURSION})"
         end
-        location = @token.location
-        atomic = parse_op_assign
-        parse_expression_suffix atomic, location
+        yield
       ensure
-        @expression_nesting -= 1
+        @parse_recursion_depth -= 1
       end
+    end
+
+    def parse_expression
+      location = @token.location
+      atomic = parse_op_assign
+      parse_expression_suffix atomic, location
     end
 
     def parse_expression_suffix(atomic, location)
@@ -385,6 +405,22 @@ module Crystal
     end
 
     def parse_op_assign(allow_ops = true, allow_suffix = true)
+      # C-4 fix: parse_op_assign is the single chokepoint that EVERY nested
+      # expression container re-enters exactly once per nesting level —
+      # parenthesized expressions, array/hash/tuple literals, call arguments,
+      # index subscripts, string interpolations, and (via parse_expression)
+      # block/begin bodies all bottom out here. Guarding it — rather than only
+      # parse_expression — bounds all of them, so pathological input like
+      # `[[[[…]]]]` or `f(f(f(…)))` degrades to a clean SyntaxException instead
+      # of trapping the browser's fixed VM call stack. (Unary / `**` / nested
+      # types self-recurse WITHOUT re-entering here, so they carry their own
+      # edge guards in parse_prefix / parse_pow / parse_union_type.)
+      with_recursion_guard do
+        parse_op_assign_internal(allow_ops, allow_suffix)
+      end
+    end
+
+    private def parse_op_assign_internal(allow_ops, allow_suffix)
       doc = @token.doc
       location = @token.location
       start_token = @token
@@ -591,7 +627,15 @@ module Crystal
 
             slash_is_regex!
             next_token_skip_space_or_newline
-            right = parse_{{(right_associative ? name : next_operator).id}}
+            {% if right_associative %}
+              # C-4 fix: right-assoc operators (only `**`) self-recurse once per
+              # operator (`2**2**2**…`). Guard just the recursive edge so a flat
+              # expression pays nothing and the chain degrades to a clean
+              # SyntaxException before it can trap the browser VM call stack.
+              right = with_recursion_guard { parse_{{name.id}} }
+            {% else %}
+              right = parse_{{next_operator.id}}
+            {% end %}
             left = ({{node.id}}).at(location).at_end(right)
             left.name_location = name_location if left.is_a?(Call)
           else
@@ -658,7 +702,11 @@ module Crystal
         location = @token.location
         next_token_skip_space_or_newline
         check_void_expression_keyword
-        arg = parse_prefix
+        # C-4 fix: deep unary chains (`!!!…x`, `----…x`) self-recurse once per
+        # operator. Guard just the recursive edge so a single prefix pays
+        # nothing and the chain degrades to a clean SyntaxException before it
+        # can trap the browser VM call stack.
+        arg = with_recursion_guard { parse_prefix }
         if token_type.op_bang?
           Not.new(arg).at(location).at_end(arg)
         else
@@ -5067,16 +5115,24 @@ module Crystal
     end
 
     def parse_union_type
-      type = parse_atomic_type_with_suffix
-      return type unless @token.type.op_bar?
+      # C-4 fix: nested generic/union/proc types (`Pointer(Pointer(…))`, deep
+      # unions, proc types) re-enter parse_union_type once per nesting level via
+      # parse_type_arg / parse_type_splat / the `(` case of parse_atomic_type.
+      # This is the single type-parsing chokepoint, so guarding the whole body
+      # bounds every nested-type descent. `return` inside still decrements the
+      # depth via with_recursion_guard's `ensure`.
+      with_recursion_guard do
+        type = parse_atomic_type_with_suffix
+        next type unless @token.type.op_bar?
 
-      types = [type]
-      while @token.type.op_bar?
-        next_token_skip_space_or_newline
-        types << parse_atomic_type_with_suffix
+        types = [type]
+        while @token.type.op_bar?
+          next_token_skip_space_or_newline
+          types << parse_atomic_type_with_suffix
+        end
+
+        Union.new(types).at(type).at_end(types.last)
       end
-
-      Union.new(types).at(type).at_end(types.last)
     end
 
     def parse_atomic_type_with_suffix

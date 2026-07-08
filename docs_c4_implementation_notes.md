@@ -7,7 +7,33 @@
 `RangeError: Maximum call stack size exceeded` now runs the full prelude
 semantic analysis in **headless Chrome 149 at the default engine stack** (no
 `--js-flags=--stack-size`), emits the correct JSON diagnostic, and degrades
-gracefully on pathological nesting.
+gracefully on pathological nesting of **every** recursive-descent parse path.
+
+**Attempt 2 (2026-07-07, post-gate) — closed three gate findings:**
+1. **Depth guard broadened to the true chokepoint (blocking).** The Layer-3
+   guard covered only parenthesized `parse_expression`; MANY other
+   recursive-descent paths still recursed unboundedly and trapped the wasm stack
+   (exit 134): deep **unary** (`!!!…`), **`**` pow**, **nested types**
+   (`Pointer(Pointer(…))`), and — critically — every **expression container**:
+   nested **array** literals `[[[…]]]`, **call args** `f(f(f(…)))`, **index**
+   `a[0[0[…]]]`, **hash values**, and **string interpolation**. Root cause: the
+   counter was on `parse_expression`, but those containers re-enter
+   **`parse_op_assign`** (not `parse_expression`) once per level. Moved the
+   shared `@parse_recursion_depth` guard onto `parse_op_assign` (the single
+   chokepoint all containers funnel through) plus recursive-edge guards on
+   `parse_prefix`/`parse_pow` and a whole-body guard on `parse_union_type` for
+   the self-recursions that bypass `parse_op_assign`. **Every** pathological
+   class now degrades to a clean `exit=1` "syntax nesting too deep" at
+   `wasmtime -W max-wasm-stack=1048576` and in the browser (new harness
+   `depthProbe` cases `unary`/`pow`/`type`/`array`/`call` all `exit=1`, no
+   `TRAP`); the full prelude and legit moderate nesting still parse.
+2. **`--spill-pointers` re-enabled (blocking doc claim / GC safety).** The Boehm
+   conservative-GC root-spill pass was commented out; it is now run on the
+   `skip_fibers` (frontend) path — the asyncify-compat reason it was disabled
+   does not apply once asyncify is gone. Module grew 17.9 MB → **24.35 MB**
+   (brotli-q11 1.50 MB → **2.08 MB**); functional + gate parity unchanged.
+3. **RSS figure corrected (minor).** §4 previously claimed 581 MB peak RSS; the
+   real measured peak is **~273 MB** for this artifact (see §4).
 
 ---
 
@@ -29,8 +55,8 @@ unaffected.
 | `src/crystal/system/wasi/main.cr` | Under `{% if flag?(:frontend_no_fibers) %}`: a fiber-free classic WASI `_start` (`__wasm_call_ctors → status = __main_void → __wasm_call_dtors → proc_exit(status) if status != 0`) that references **no** asyncify symbol. The existing asyncify `_start` moves to the `{% else %}` branch. |
 | `src/fiber/context/wasm32.cr` | Under the flag: **no** `require "crystal/asyncify"`; `init_main_fiber_asyncify` becomes a no-op; `makecontext` a minimal stub (records `stack_top`, `resumable=1`); `Fiber.swapcontext` a loud abort stub (`LibC.write` to fd 2 + `LibC.exit(1)`). Zero `LibAsyncify`/`Crystal::Asyncify` references in this branch. |
 | `src/crystal/asyncify.cr` | `{% skip_file if flag?(:frontend_no_fibers) %}` at top — compiles to nothing, so no `LibAsyncify`/`LibCrystalAsyncify` import/export survives. |
-| `src/compiler/crystal/compiler.cr` | `run_wasm_opt` gains a `skip_fibers` param; when the **target** program has the flag it skips the `--asyncify` pass **and** the `asyncify_helper.wasm` merge, running only `--translate-to-exnref`. The check is a runtime `program.has_flag?("frontend_no_fibers")` at the call site (NOT a compiler-binary macro flag). |
-| `src/compiler/crystal/syntax/parser.cr` | Layer-3 guard: `MAX_EXPRESSION_NESTING = 128`, an `@expression_nesting` counter incremented/decremented around `parse_expression` (the per-nesting-level chokepoint — each parenthesized sub-expression re-enters it once), raising a `Crystal::SyntaxException` (`"expression nesting too deep (exceeds 128)"`) before deep recursion can trap the engine. |
+| `src/compiler/crystal/compiler.cr` | `run_wasm_opt` gains a `skip_fibers` param; when the **target** program has the flag it skips the `--asyncify` pass **and** the `asyncify_helper.wasm` merge, running `--translate-to-exnref` **and (attempt 2) `--spill-pointers`** (Boehm GC root safety, re-enabled for the no-fibers path only; order: exnref → spill → -Oz). The check is a runtime `program.has_flag?("frontend_no_fibers")` at the call site (NOT a compiler-binary macro flag). |
+| `src/compiler/crystal/syntax/parser.cr` | Layer-3 guard (**attempt 2: broadened to the real chokepoint**): `MAX_PARSE_RECURSION = 128` and a single shared `@parse_recursion_depth` counter, applied via `with_recursion_guard { … }` at the unbounded recursive-descent chokepoints — **`parse_op_assign`** (whole body, via a thin wrapper delegating to `parse_op_assign_internal`; this is the single point ALL expression containers re-enter once per level: parens, array/hash/tuple literals, call args, index subscripts, interpolation, and — through `parse_expression` — block/begin bodies), `parse_prefix` (recursive edge only; deep unary), the generated right-assoc `parse_pow` (recursive edge only; `**` chains), and `parse_union_type` (whole body; nested generic/union/proc types — these three self-recurse WITHOUT re-entering `parse_op_assign`). Raises `Crystal::SyntaxException` (`"syntax nesting too deep (exceeds 128)"`) before deep recursion can trap the engine. Edge-guarding prefix/pow avoids taxing flat expressions; the container budget is ~128 nesting levels (proven safe: paren×128 raises cleanly, no trap, at the 1 MB browser stack). |
 
 ---
 
@@ -100,27 +126,36 @@ wasm-ld .../crystal-frontend-c4.o -o .../crystal-frontend-c4.o --stack-first \
   -lc -lwasi-emulated-mman -lwasi-emulated-process-clocks \
   -L.../.build/wasm32-wasi-libs -lpcre2-8 -lgc
 
-# [3] exnref translation ONLY (asyncify + wasm-merge skipped — the whole fix)
-wasm-opt .../crystal-frontend-c4.o -o .../crystal-frontend-c4.wasm \
-  --translate-to-exnref --all-features                     # final = 17.9 MB
+# [3] exnref translation + spill-pointers (asyncify + wasm-merge skipped — the
+#     whole fix). Two in-place wasm-opt passes in this order, exactly mirroring
+#     the two run_wasm_opt_pass calls the patched compiler makes for skip_fibers:
+wasm-opt .../crystal-frontend-c4v2.linked.wasm -o .../crystal-frontend-c4v2.wasm \
+  --translate-to-exnref --all-features                     # 17.9 MB
+wasm-opt .../crystal-frontend-c4v2.wasm -o .../crystal-frontend-c4v2.wasm \
+  --spill-pointers --all-features                          # final = 24.35 MB
 ```
 
 **Module size:** OLD (asyncify) `crystal-frontend-o1.wasm` = 56,048,133 B;
-**NEW** `crystal-frontend-c4.wasm` = **17,894,275 B** (≈68% smaller — removing
-the asyncify instrumentation + merged helper).
+attempt-1 (exnref only, no spill) = 17,894,275 B; **NEW attempt-2**
+`crystal-frontend-c4v2.wasm` = **24,352,577 B** (still ≈57% smaller than the
+asyncify build; +6.5 MB vs attempt-1 is the `--spill-pointers` GC-root stores).
+brotli-q11: 6.72 MB (asyncify) → 1.50 MB (attempt-1) → **2.08 MB (attempt-2)**.
+sha256 = `07abcee1e8a2b6182ad9a51335dde6cdf328ce657afcd7e6f771dedcf566e7e5`.
 
 ---
 
 ## 3. No-asyncify-residue assertion (design §7/§9)
 
 ```sh
-wasm-objdump -j Import -x crystal-frontend-c4.wasm | grep -iE "asyncify"  # (none)
-wasm-objdump -j Export -x crystal-frontend-c4.wasm | grep -iE "asyncify"  # (none)
+wasm-objdump -j Import -x crystal-frontend-c4v2.wasm | grep -iE "asyncify"  # (none)
+wasm-objdump -j Export -x crystal-frontend-c4v2.wasm | grep -iE "asyncify"  # (none)
 ```
 
-Result: **NO** `asyncify_*` / `crystal_asyncify_*` imports or exports. All
-imports are `wasi_snapshot_preview1.*`. `_start` and `memory` are exported. The
-module validates under `wasm-opt --all-features`.
+Result (re-verified attempt 2, post-spill-pointers): **NO** `asyncify_*` /
+`crystal_asyncify_*` imports or exports. All **22** imports are
+`wasi_snapshot_preview1.*`. `_start` and `memory` are exported. The module
+validates under `wasm-opt --all-features`. Spill-pointers does not introduce any
+new imports (it only spills locals to the existing linear-memory shadow stack).
 
 ---
 
@@ -137,9 +172,14 @@ SRC=$CRYST/src; WORK=<workdir with diag_test.cr/ok_test.cr>; CACHE=<tmp>
 - exit **1**; stderr diagnostic is **byte-identical** to the reference
   `free_tier_lab/results/wasmtime_frontend_diag.err`:
   `[{"file":"/work/diag_test.cr","line":5,"column":13,"size":0,"message":"expected argument #2 to 'add' to be Int32, not String\n\nOverloads are:\n - add(a : Int32, b : Int32)"}]`
-- peak RSS **581,206,016 B (~581 MB)** — matches the L1 budget (~590 MB), no
-  regression. Wall **1.46 s** (cold; cranelift compiles the smaller module in
-  parallel). `ok_test.cr` → exit **0**, empty stderr.
+- **peak RSS `286,752,768 B (~273 MB)`** (`/usr/bin/time -l`, cold, diag case,
+  16 MB stack, attempt-2 spill-pointers artifact) — comfortably under the ~590 MB
+  L1 budget, no regression. Wall **~0.57 s**. `ok_test.cr` → exit **0**, empty
+  stderr.
+  - **Correction:** attempt-1 notes claimed 581 MB here; that figure did not
+    reproduce. The gate independently measured **245 MB** on the pre-spill
+    attempt-1 module; this attempt-2 (with `--spill-pointers`) measures ~273 MB.
+    All three are well within budget.
 
 ---
 
@@ -160,18 +200,43 @@ Binary-searched the smallest `-W max-wasm-stack=N` that runs the full prelude
   (~2 MB) exceeds it** — precisely why Chrome 149 / Safari 26.5 trapped.
 - Layer 1 alone clears the budget; **Layer 2 was not required**.
 
-### Depth probes (Layer 3), simulated at browser-like stack
+### Depth probes (Layer 3), simulated at browser-like stack — ALL FOUR PATHS
+
+Attempt 2 verifies every unbounded recursive-descent path degrades cleanly at
+`wasmtime -W exceptions=y,max-wasm-stack=1048576` (browser-equivalent 1 MB):
+
+| probe | input | recursion path | result |
+|---|---|---|---|
+| paren  | `x = (`×2048 `1` `)`×2048 | parse_op_assign | `exit=1` clean |
+| array  | `x = [`×6000 `1` `]`×6000 | parse_op_assign | `exit=1` clean |
+| call   | `x = f(`×6000 `1` `)`×6000 | parse_op_assign | `exit=1` clean |
+| index  | `x = a[0`×6000 `]`×6000 | parse_op_assign | `exit=1` clean |
+| hash   | `x = {1 => `×6000 `1` `}`×6000 | parse_op_assign | `exit=1` clean |
+| interp | `x = "#{`×6000 `1` `}"`×6000 | parse_op_assign | `exit=1` clean |
+| block  | `x = f{`×6000 `1` `}`×6000 | parse_expression→parse_op_assign | `exit=1` clean |
+| begin  | `x = begin `×6000 `1` ` end`×6000 | parse_expression→parse_op_assign | `exit=1` clean |
+| unary  | `x = ` `!`×20000 `true`   | parse_prefix (edge) | `exit=1` clean |
+| pow    | `x = 2` `**2`×20000       | parse_pow (edge)    | `exit=1` clean |
+| type   | `alias D = ` `Pointer(`×20000 `Int32` `)`×20000 | parse_union_type | `exit=1` clean |
+
+(all `exit=1`, message `"syntax nesting too deep (exceeds 128)"`)
 
 ```sh
-# deep_256.cr / deep_2048.cr = `x = ((((…))))` + `puts x`
-wasmtime run -W exceptions=y,max-wasm-stack=1048576 … /work/deep_2048.cr --error-format json
+wasmtime run -W exceptions=y,max-wasm-stack=1048576 … /work/arr.cr --error-format json
 # -> exit 1, NON-trap:
-#    [{"file":"/work/deep_2048.cr","line":1,"column":134,"size":null,
-#      "message":"expression nesting too deep (exceeds 128)"}]
+#    [{"file":"/work/arr.cr","line":1,"column":133,"size":null,
+#      "message":"syntax nesting too deep (exceeds 128)"}]
 ```
 
-Both `deep_256` and `deep_2048` produce the clean nesting diagnostic (exit 1,
-**never** `call stack exhausted`) at 1 MB and at the 512 KB wasmtime default.
+**Before attempt 2** everything except paren **trapped** (exit 134, "call stack
+exhausted") at this stack — only the paren path was guarded. Attempt 1 (guarding
+`parse_expression` + unary/pow/type edges) still trapped the container class
+(array/call/index/hash/interp) because those re-enter `parse_op_assign`, NOT
+`parse_expression` — which is why the guard was moved to `parse_op_assign`. All
+paths above now produce the clean diagnostic (exit 1, **never** `call stack
+exhausted`) at 1 MB and at the 512 KB wasmtime default. Legit moderate nesting
+(array/paren ×30, unary/pow ×40, `Pointer(` ×20) still parses (exit 0), and the
+full prelude type-checks — the 128 cap does not reject real code.
 
 ---
 
@@ -186,21 +251,31 @@ python3 free_tier_lab/server.py 8799 &
 ```
 
 Artifact wiring: `free_tier_lab/artifacts/crystal-frontend-o1.wasm` is the path
-the harness loads; the OLD 56 MB module was moved aside to
-`crystal-frontend-o1.wasm.bak` and replaced with the NEW 17.9 MB module
-(sha256 `2794040113494df44d445d7ae96d6be60b8717eb4e07f49f677256fcd61827a6`).
+the harness loads; attempt 2 replaced the attempt-1 module with the NEW 24.35 MB
+attempt-2 module (sha256
+`07abcee1e8a2b6182ad9a51335dde6cdf328ce657afcd7e6f771dedcf566e7e5`; attempt-1
+kept aside as `crystal-frontend-o1.wasm.c4v1-nospill`). Gate command used the
+FULL harness `cases=probes,domain,frontend,persist`.
 
-**Report (`report_chrome-headless-c4.json`), all §7 criteria met:**
+**Report (`report_chrome-headless-c4v2.json`), all §7 criteria met:**
 
 ```
-frontend.cold           : exitCode=1, trap=null, runMs=322, memPeakBytes=138,477,568
+frontend.cold           : exitCode=1, trap=null, runMs=536, memPeakBytes=138,477,568
 frontend.diagnosticOk   : true   (file=/work/diag_test.cr, line=5, correct message)
-frontend.warmClean      : exitCode=0, trap=null, stderrEmpty=true, runMs=202
-frontend.warmDiag       : exitCode=1, trap=null, runMs=192
+frontend.warmClean      : exitCode=0, trap=null, stderrEmpty=true, runMs=256
+frontend.warmDiag       : exitCode=1, trap=null
 frontend.depthProbe.256 : "exit=1 runMs=4"    (non-TRAP)
 frontend.depthProbe.2048: "exit=1 runMs=3"    (non-TRAP)
-frontend.compileStreamingMs: 60
+frontend.depthProbe.unary: "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage
+frontend.depthProbe.pow  : "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage
+frontend.depthProbe.type : "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage
+frontend.depthProbe.array: "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage (container class)
+frontend.depthProbe.call : "exit=1 runMs=3"   (non-TRAP)  ← attempt-2 new coverage (container class)
+frontend.compileStreamingMs: 56
+domain.outputMatchesLeg3 : true  ("RESULT: PASS", exit 0, 128 MB peak — no regression)
 probes: exceptionsFinal=true (exnref), gc=true, jspi=true, streamingCompilation=true
+persist: cacheApi ok, opfs ok, idbModule=false (WebAssembly.Module not structured-
+         cloneable — pre-existing engine behavior, unrelated to C-4)
 ```
 
 - ✅ `cold.trap === null` — **the C-4 gate** (was `RangeError: Maximum call
@@ -208,22 +283,25 @@ probes: exceptionsFinal=true (exnref), gc=true, jspi=true, streamingCompilation=
 - ✅ `diagnosticOk === true`; the cold diagnostic **byte-matches the wasmtime
   leg** (parity).
 - ✅ `warmClean.exitCode === 0 && stderrEmpty === true`.
-- ✅ `depthProbe[256]` and `[2048]` are clean `exit=1` (Layer-3 diagnostic), not
-  `TRAP:`.
+- ✅ `depthProbe[256]`, `[2048]`, **`unary`, `pow`, `type`, `array`, `call`**
+  are all clean `exit=1` (Layer-3 diagnostic), not `TRAP:` — every
+  recursive-descent path, including the expression-container class.
+- ✅ `domain.outputMatchesLeg3 === true` — Tier-A domain gate unaffected by the
+  spill-pointers artifact swap (domain_check.wasm itself unchanged).
 
 ---
 
 ## 7. Peak memory + timings vs the L1 report budgets
 
-| Metric | L1 budget | This build |
+| Metric | L1 budget | This build (attempt 2) |
 |---|---|---|
-| wasmtime warm wall (prelude) | 1.39 s | 1.46 s cold / (cranelift now much faster for the 17.9 MB module) |
-| wasmtime peak RSS | ~590 MB | 581 MB |
+| wasmtime warm wall (prelude) | 1.39 s | ~0.57 s cold (diag) |
+| wasmtime peak RSS | ~590 MB | **273 MB** (was mis-reported as 581 MB) |
 | Browser linear-memory peak (diag) | (frontend budget is the ~590 MB order; 128 MB fig. is the Tier-A domain core) | **138 MB** `memory.buffer.byteLength` high-water |
-| Browser compileStreaming | — | 60 ms |
-| Browser cold run / warm run | — | 322 ms / 202 ms |
+| Browser compileStreaming | — | 56 ms |
+| Browser cold run / warm run | — | 554 ms / 250 ms |
 | Min `max-wasm-stack` (prelude) | 16 MB *used* (~2 MB floor) | **~128 KB floor** |
-| Module size | 56 MB | 17.9 MB |
+| Module size | 56 MB | 24.35 MB (17.9 MB pre-spill + 6.5 MB spill-pointers) |
 
 All well within the L1 GREEN tier and far under the ~3.8 GB effective wasm32
 ceiling. The fix is a stack-depth fix; heap peaks are unchanged in order
@@ -236,17 +314,35 @@ ceiling. The fix is a stack-depth fix; heap peaks are unchanged in order
 - **`compiler.cr` patch is committed but not exercised by this artifact** (Option
   B uses prebuilt `$ACBIN`). It is verified-equivalent by construction: it makes
   a full build do exactly the `wasm-ld` + `wasm-opt --translate-to-exnref`
-  pipeline that was run by hand. A future full compiler rebuild would produce the
-  same module directly via `crystal build … -Dfrontend_no_fibers`.
-- **Parser cap = 128 is deliberately conservative** (design suggested ~512). It
-  guarantees the depth probes degrade to a clean diagnostic well before any
-  VM-stack trap regardless of exact per-frame cost. Real code and the prelude
-  never nest *expressions* this deep (unions/method-chains/array siblings parse
-  iteratively, not through this recursion). It is a single named constant, easy
-  to raise if a measured budget justifies it.
+  **+ `wasm-opt --spill-pointers`** pipeline that was run by hand (attempt 2 adds
+  the spill pass to both the compiler and the manual build so they still match).
+  A future full compiler rebuild would produce the same module directly via
+  `crystal build … -Dfrontend_no_fibers`.
+- **`--spill-pointers` scope (attempt 2):** re-enabled for the `skip_fibers`
+  (frontend) path ONLY. The fiber build still does not spill — that was disabled
+  because its asyncify interaction was never verified, and this change does not
+  reopen that question. If/when the fiber path ships, spill-pointers there needs
+  its own asyncify-compat verification. The 8 MB linker stack
+  (`-z stack-size=8388608`) means the extra shadow-stack spill traffic does not
+  approach the linear-memory stack limit.
+- **Parser cap = 128 is deliberately conservative** (design suggested ~512), now
+  a single SHARED cap across the recursive-descent chokepoints —
+  `parse_op_assign` (the expression-container chokepoint: paren/array/hash/tuple/
+  call-args/index/interpolation/block/begin) plus edge guards on
+  `parse_prefix`/`parse_pow` and a whole-body guard on `parse_union_type`. It
+  guarantees every depth probe degrades to a clean diagnostic well before any
+  VM-stack trap regardless of per-frame cost (empirically: paren×128 raises
+  cleanly at the 1 MB browser stack; all container paths share that per-level
+  frame cost). Real code and the prelude never nest any single path this deep
+  (verified: legit ×30/×40/×20 cases parse; the full prelude type-checks).
+  Edge-guarding prefix/pow means flat expressions are not taxed.
+  It is a single named constant, easy to raise if a measured budget justifies it.
+- **Macro-control nesting** (`parse_macro_body`/`parse_macro_if`) is a distinct
+  recursion not covered by this guard; it was NOT in the C-4 repro set (unary,
+  pow, type) and is flagged as a possible future audit item, not a gate blocker.
 - **Safari** is not automated on this machine (`safaridriver` disabled); the
   automated gate is Chrome headless per design §7. jspi/exnref/gc all probe true.
-- The `-o` == input-`.o` collision in the printed `wasm-ld` command is benign
-  (wasm-ld reads before writing) but noted; a future full build via the patched
-  compiler avoids it entirely.
+- The `-o` == input-`.o` collision in the printed `wasm-ld` command is avoided in
+  attempt 2 by linking to a distinct `…c4v2.linked.wasm` path; a future full
+  build via the patched compiler avoids it entirely.
 ```
