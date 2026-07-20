@@ -687,7 +687,7 @@ class Crystal::Command
     abort! "maximum number of threads cannot be lower than 1", :USAGE_ERROR if compiler.n_threads < 1
 
     if compiler.no_cache? && compiler.incremental?
-      error "--no-cache and --incremental are mutually exclusive"
+      raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
     end
 
     if !compiler.no_codegen? && !run && Dir.exists?(output_filename)

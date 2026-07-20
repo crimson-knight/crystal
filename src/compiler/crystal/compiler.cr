@@ -1598,8 +1598,8 @@ module Crystal
       # Find asyncify_helper.wasm in CRYSTAL_PATH
       helper_path = find_asyncify_helper
       unless helper_path
-        error "asyncify_helper.wasm not found in CRYSTAL_PATH. " \
-              "This file is required for WASM fiber support."
+        raise CompilerError.new("asyncify_helper.wasm not found in CRYSTAL_PATH. " \
+                                "This file is required for WASM fiber support.", :FAILURE)
       end
 
       quoted_output = Process.quote_posix(output_filename)
@@ -1614,7 +1614,7 @@ module Crystal
       print_command(cmd, nil) if verbose?
       status = Process.run(cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
       unless status.success?
-        error "wasm-merge failed with exit status #{status}: #{cmd}"
+        raise CompilerError.new("wasm-merge failed with exit status #{status}: #{cmd}", :FAILURE)
       end
     end
 
@@ -1633,7 +1633,7 @@ module Crystal
       print_command(cmd, nil) if verbose?
       status = Process.run(cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
       unless status.success?
-        error "wasm-opt #{pass_name} pass failed with exit status #{status}: #{cmd}"
+        raise CompilerError.new("wasm-opt #{pass_name} pass failed with exit status #{status}: #{cmd}", :FAILURE)
       end
     end
 

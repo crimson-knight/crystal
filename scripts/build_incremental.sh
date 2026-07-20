@@ -18,7 +18,10 @@ set -e
 # ---------------------------------------------------------------------------
 
 EXPECTED_BRANCH="incremental-compilation"
-LLVM_CONFIG="/opt/homebrew/Cellar/llvm/21.1.8_1/bin/llvm-config"
+# Use the brew symlink rather than a pinned Cellar path: pinned installs go
+# stale after brew upgrades (the old 21.1.8_1 llvm-config aborts on launch).
+# The Makefile validates the version against its compatible list at build time.
+LLVM_CONFIG="/opt/homebrew/opt/llvm/bin/llvm-config"
 
 # Resolve the repository root relative to this script's location, regardless
 # of where the script is invoked from.
