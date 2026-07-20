@@ -1,0 +1,62 @@
+name: Release
+
+# Cutting a release of the fork:
+#   git tag v<upstream-version>-incremental-<n> && git push fork <tag>
+# This workflow then creates the GitHub release with the source tarball.
+# The homebrew-agent-crystal tap's autobump workflow picks the release up
+# (daily cron, or immediately via:
+#   gh workflow run autobump.yml -R crimson-knight/homebrew-agent-crystal).
+
+on:
+  push:
+    tags:
+      - "v*-incremental-*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@v4
+
+      - name: Build source tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          git archive --format=tar.gz --prefix="crystal-alpha-${VERSION}/" \
+            -o "crystal-alpha-${VERSION}.tar.gz" "$GITHUB_REF_NAME"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          UPSTREAM="${VERSION%%-incremental-*}"
+          cat > notes.md <<EOF
+          ## Crystal Alpha with Incremental Compilation — ${VERSION}
+
+          Parity release tracking upstream [Crystal ${UPSTREAM}](https://github.com/crystal-lang/crystal/releases/tag/${UPSTREAM}),
+          plus the fork's incremental compilation, iOS/Android/watchOS target
+          work, and \`--shared\` output mode.
+
+          Install via Homebrew:
+          \`\`\`bash
+          brew install crimson-knight/agent-crystal/agent-crystal
+          \`\`\`
+
+          Or build from source:
+          \`\`\`bash
+          git clone --branch ${GITHUB_REF_NAME} https://github.com/crimson-knight/crystal
+          cd crystal
+          LLVM_CONFIG=\$(brew --prefix llvm)/bin/llvm-config make crystal release=1
+          \`\`\`
+
+          _This release was created automatically from tag ${GITHUB_REF_NAME}.
+          Edit these notes to add highlights._
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Crystal Alpha ${VERSION}" \
+            --notes-file notes.md \
+            "crystal-alpha-${VERSION}.tar.gz"
