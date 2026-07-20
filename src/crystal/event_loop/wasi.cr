@@ -437,6 +437,12 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
     end
   end
 
+  def pread(file_descriptor : Crystal::System::FileDescriptor, slice : Bytes, offset : Int64) : Int32
+    evented_read(file_descriptor, "Error reading file_descriptor") do
+      LibC.pread(file_descriptor.fd, slice, slice.size, offset)
+    end
+  end
+
   def wait_readable(file_descriptor : Crystal::System::FileDescriptor) : Nil
     file_descriptor.evented_wait_readable(raise_if_closed: false) do
       raise IO::TimeoutError.new("Read timed out")
@@ -520,6 +526,10 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
 
   def accept(socket : ::Socket) : {::Socket::Handle, Bool}?
     raise NotImplementedError.new "Crystal::Wasi::EventLoop#accept: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
+  end
+
+  def sendfile(socket : ::Socket, fd : System::FileDescriptor::Handle, offset : Int64, count : Int64, flags : Int32) : Int64 | Errno | WinError
+    raise NotImplementedError.new "Crystal::Wasi::EventLoop#sendfile: socket operations are not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2."
   end
 
   def shutdown(socket : ::Socket) : Nil

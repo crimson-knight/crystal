@@ -130,7 +130,7 @@ module Crystal
   end
 end
 
-{% unless flag?(:shared) %}
+{% unless flag?(:shared) || flag?(:without_main) %}
   # Main function that acts as C's main function.
   # Invokes `Crystal.main`.
   #
@@ -143,13 +143,15 @@ end
   end
 {% end %}
 
-{% if flag?(:interpreted) %}
-  # the interpreter doesn't call Crystal.main(&)
-  Crystal.init_runtime
-{% elsif flag?(:win32) %}
-  require "./system/win32/wmain"
-{% elsif flag?(:wasi) %}
-  require "./system/wasi/main"
-{% else %}
-  require "./system/unix/main"
+{% unless flag?(:without_main) %}
+  {% if flag?(:interpreted) %}
+    # the interpreter doesn't call Crystal.main(&)
+    Crystal.init_runtime
+  {% elsif flag?(:win32) %}
+    require "./system/win32/wmain"
+  {% elsif flag?(:wasi) %}
+    require "./system/wasi/main"
+  {% else %}
+    require "./system/unix/main"
+  {% end %}
 {% end %}

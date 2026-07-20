@@ -681,12 +681,10 @@ describe "unbuffered" do
     state = :none
 
     Sync::CONCURRENT.spawn do
-      begin
-        state = :ready
-        ch.send(nil)
-      rescue Channel::ClosedError
-        state = :closed
-      end
+      state = :ready
+      ch.send(nil)
+    rescue Channel::ClosedError
+      state = :closed
     end
 
     Sync::CONCURRENT.spawn do
@@ -864,6 +862,21 @@ describe "buffered" do
 
     Sync.eventually { {:raised, :done}.should contain(state) }
     state.should eq(:done)
+  end
+
+  it "can be used as an iterator" do
+    ch = Channel(Int32).new
+    spawn do
+      ch.send(1).send(2).send(3)
+    ensure
+      ch.close
+    end
+
+    iterator = ch.each
+    iterator.next.should eq 1
+    iterator.next.should eq 2
+    iterator.next.should eq 3
+    iterator.next.should be_a Iterator::Stop
   end
 
   it "does inspect on unbuffered channel" do
