@@ -606,6 +606,20 @@ module Crystal
                         nil
                       end
 
+      # The module mapping only records files whose defs go through codegen_fun.
+      # Code can reach a module without that: top-level expressions, trivial
+      # method bodies inlined at call sites, macro-expanded code. A changed file
+      # that is not attributed to ANY module can therefore affect any module,
+      # and per-module skipping is unsound for this rebuild. Disable it and let
+      # the bitcode comparison in must_compile? decide object reuse instead.
+      if changed_files && cached_module_mapping
+        mapped_files = Set(String).new
+        cached_module_mapping.each_value { |files| mapped_files.concat(files) }
+        unless changed_files.all? { |f| mapped_files.includes?(f) }
+          changed_files = nil
+        end
+      end
+
       bc_flags_changed = bc_flags_changed? output_dir
       target_triple = target_machine.triple
 
@@ -1100,12 +1114,13 @@ module Crystal
           exit 1
         end
 
-        if @progress_tracker.stats?
-          if result["reused"].as_bool
-            name = result["name"].as_s
-            unit = units.find! { |unit| unit.name == name }
-            unit.reused_previous_compilation = true
-          end
+        # Always sync the child's reuse flag to the parent unit: the link-skip
+        # decision (units.all?(&.reused_previous_compilation?)) depends on it,
+        # not just the --stats output.
+        if result["reused"].as_bool
+          name = result["name"].as_s
+          unit = units.find! { |unit| unit.name == name }
+          unit.reused_previous_compilation = true
         end
         @progress_tracker.stage_progress += 1
       end
