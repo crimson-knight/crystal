@@ -20,6 +20,16 @@ lib LibObjC
   alias SEL = Void*
   alias Class = Void*
 
+  struct CGPoint
+    x : Float64
+    y : Float64
+  end
+
+  struct CGSize
+    width : Float64
+    height : Float64
+  end
+
   struct CGRect
     x : Float64
     y : Float64
@@ -33,21 +43,67 @@ lib LibObjC
   fun objc_registerClassPair(cls : Class)
   fun class_addMethod(cls : Class, sel : SEL, imp : Void*, types : UInt8*) : Bool
 
-  # Bridge functions from objc_bridge.c
+  # --- Bridge functions from objc_bridge.c ---
+
+  # Section 1: Basic message sends (integer/pointer args only)
   fun objc_send(self : Id, sel : SEL) : Id
   fun objc_send_id(self : Id, sel : SEL, arg1 : Id) : Id
   fun objc_send_id_id(self : Id, sel : SEL, arg1 : Id, arg2 : Id) : Id
+  fun objc_send_id_id_id(self : Id, sel : SEL, arg1 : Id, arg2 : Id, arg3 : Id) : Id
   fun objc_send_bool(self : Id, sel : SEL, arg1 : Int32)
   fun objc_send_long(self : Id, sel : SEL, arg1 : Int64) : Id
+  fun objc_send_ulong(self : Id, sel : SEL, arg1 : UInt64) : Id
   fun objc_send_int(self : Id, sel : SEL, arg1 : Int32) : Id
   fun objc_send_void_id(self : Id, sel : SEL, arg1 : Id)
   fun objc_send_sel(self : Id, sel : SEL, arg1 : SEL)
+  fun objc_send_id_sel(self : Id, sel : SEL, arg1 : Id, arg2 : SEL)
+  fun objc_send_id_sel_ulong(self : Id, sel : SEL, arg1 : Id, arg2 : SEL, arg3 : UInt64)
+  fun objc_send_id_long(self : Id, sel : SEL, arg1 : Id, arg2 : Int64) : Id
+
+  # Section 2: Double/float register sends
+  # ARM64: doubles go in d0-d7 (separate from integer x0-x7 bank).
+  # Each wrapper MUST have exactly the right number of double params.
+  fun objc_send_1d(self : Id, sel : SEL, d0 : Float64)
+  fun objc_send_1d_ret_id(self : Id, sel : SEL, d0 : Float64) : Id
+  fun objc_send_2d_ret_id(self : Id, sel : SEL, d0 : Float64, d1 : Float64) : Id
+  fun objc_send_3d_ret_id(self : Id, sel : SEL, d0 : Float64, d1 : Float64, d2 : Float64) : Id
+  fun objc_send_4d_ret_id(self : Id, sel : SEL, d0 : Float64, d1 : Float64, d2 : Float64, d3 : Float64) : Id
+  fun objc_send_2d(self : Id, sel : SEL, d0 : Float64, d1 : Float64)
+  fun objc_send_id_1d_ret_id(self : Id, sel : SEL, arg1 : Id, d0 : Float64) : Id
+
+  # Backward compatibility aliases (delegate to the above)
   fun objc_send_double(self : Id, sel : SEL, arg1 : Float64)
   fun objc_send_double_ret_id(self : Id, sel : SEL, arg1 : Float64) : Id
+
+  # Section 3: CGRect / CGPoint / CGSize sends (HFA on ARM64)
   fun objc_send_rect(self : Id, sel : SEL, rect : CGRect) : Id
+  fun objc_send_rect_void(self : Id, sel : SEL, rect : CGRect)
   fun objc_send_rect_ulong_ulong_bool(self : Id, sel : SEL, rect : CGRect, a : UInt64, b : UInt64, c : Int32) : Id
+  fun objc_send_point(self : Id, sel : SEL, point : CGPoint) : Id
+  fun objc_send_point_void(self : Id, sel : SEL, point : CGPoint)
+  fun objc_send_size_void(self : Id, sel : SEL, size : CGSize)
+  fun objc_send_ret_rect(self : Id, sel : SEL) : CGRect
+  fun objc_send_ret_point(self : Id, sel : SEL) : CGPoint
+  fun objc_send_ret_size(self : Id, sel : SEL) : CGSize
+  fun objc_send_ret_double(self : Id, sel : SEL) : Float64
+  fun objc_send_ret_long(self : Id, sel : SEL) : Int64
+  fun objc_send_ret_bool(self : Id, sel : SEL) : Int32
+
+  # Section 4: Convenience helpers
   fun nsstring_from_cstr(s : UInt8*) : Id
+  fun nscolor_rgba(r : Float64, g : Float64, b : Float64, a : Float64) : Id
+  fun nscolor_srgba(r : Float64, g : Float64, b : Float64, a : Float64) : Id
+  fun nscolor_hsba(h : Float64, s : Float64, b : Float64, a : Float64) : Id
+  fun nscolor_white_alpha(white : Float64, alpha : Float64) : Id
+  fun nsfont_system(size : Float64) : Id
+  fun nsfont_bold_system(size : Float64) : Id
+  fun nsfont_system_weight(size : Float64, weight : Float64) : Id
+  fun nsfont_monospaced_system(size : Float64, weight : Float64) : Id
+  fun nsfont_monospaced_digit(size : Float64, weight : Float64) : Id
+  fun nsfont_named(name : Id, size : Float64) : Id
   fun objc_get_frame(self : Id) : CGRect
+  fun objc_get_bounds(self : Id) : CGRect
+  fun objc_set_frame(self : Id, frame : CGRect)
   fun objc_add_subview(parent : Id, child : Id)
   fun objc_set_autoresize(view : Id, mask : UInt64)
 end
@@ -168,7 +224,7 @@ title_label = LibObjC.objc_send_rect(
   alloc("NSTextField"), sel("initWithFrame:"),
   LibObjC::CGRect.new(x: 20.0, y: 320.0, width: 480.0, height: 40.0))
 LibObjC.objc_send_id(title_label, sel("setStringValue:"), nsstr("Crystal Cross-Platform Demo"))
-font = LibObjC.objc_send_double_ret_id(cls("NSFont").as(LibObjC::Id), sel("boldSystemFontOfSize:"), 22.0)
+font = LibObjC.nsfont_bold_system(22.0)
 LibObjC.objc_send_id(title_label, sel("setFont:"), font)
 LibObjC.objc_send_bool(title_label, sel("setBezeled:"), 0)
 LibObjC.objc_send_bool(title_label, sel("setDrawsBackground:"), 0)
@@ -197,12 +253,12 @@ info_label = LibObjC.objc_send_rect(
   LibObjC::CGRect.new(x: 20.0, y: 275.0, width: 480.0, height: 25.0))
 LibObjC.objc_send_id(info_label, sel("setStringValue:"),
   nsstr("Platform: #{platform_name} | add(17,25)=#{crystal_add(17, 25)} | fib(20)=#{crystal_fibonacci(20)}"))
-small_font = LibObjC.objc_send_double_ret_id(cls("NSFont").as(LibObjC::Id), sel("systemFontOfSize:"), 13.0)
+small_font = LibObjC.nsfont_system(13.0)
 LibObjC.objc_send_id(info_label, sel("setFont:"), small_font)
 LibObjC.objc_send_bool(info_label, sel("setBezeled:"), 0)
 LibObjC.objc_send_bool(info_label, sel("setDrawsBackground:"), 0)
 LibObjC.objc_send_bool(info_label, sel("setEditable:"), 0)
-light_gray = LibObjC.objc_send_double_ret_id(cls("NSColor").as(LibObjC::Id), sel("colorWithWhite:alpha:"), 0.85)
+light_gray = LibObjC.nscolor_white_alpha(0.85, 1.0)
 LibObjC.objc_send_id(info_label, sel("setTextColor:"), light_gray)
 LibObjC.objc_add_subview(visual_effect, info_label)
 
@@ -212,13 +268,12 @@ results_label = LibObjC.objc_send_rect(
   LibObjC::CGRect.new(x: 20.0, y: 195.0, width: 480.0, height: 70.0))
 LibObjC.objc_send_id(results_label, sel("setStringValue:"),
   nsstr("multiply(6,7) = #{crystal_multiply(6, 7)}\nfactorial(10) = #{crystal_factorial(10)}\npower(2,20) = #{crystal_power(2, 20)}"))
-mono_font = LibObjC.objc_send_double_ret_id(
-  cls("NSFont").as(LibObjC::Id), sel("monospacedSystemFontOfSize:weight:"), 12.0)
+mono_font = LibObjC.nsfont_monospaced_system(12.0, 0.0) # 0.0 = NSFontWeightRegular
 LibObjC.objc_send_id(results_label, sel("setFont:"), mono_font)
 LibObjC.objc_send_bool(results_label, sel("setBezeled:"), 0)
 LibObjC.objc_send_bool(results_label, sel("setDrawsBackground:"), 0)
 LibObjC.objc_send_bool(results_label, sel("setEditable:"), 0)
-green = LibObjC.objc_send_double_ret_id(cls("NSColor").as(LibObjC::Id), sel("colorWithRed:green:blue:alpha:"), 0.4)
+green = LibObjC.nscolor_rgba(0.4, 0.9, 0.4, 1.0) # Light green on dark glass
 LibObjC.objc_send_id(results_label, sel("setTextColor:"), green)
 LibObjC.objc_add_subview(visual_effect, results_label)
 
@@ -232,7 +287,7 @@ LibObjC.objc_send_id(AppState.label, sel("setFont:"), small_font)
 LibObjC.objc_send_bool(AppState.label, sel("setBezeled:"), 0)
 LibObjC.objc_send_bool(AppState.label, sel("setDrawsBackground:"), 0)
 LibObjC.objc_send_bool(AppState.label, sel("setEditable:"), 0)
-cyan = LibObjC.objc_send_double_ret_id(cls("NSColor").as(LibObjC::Id), sel("colorWithRed:green:blue:alpha:"), 0.3)
+cyan = LibObjC.nscolor_rgba(0.3, 0.85, 1.0, 1.0) # Cyan on dark glass
 LibObjC.objc_send_id(AppState.label, sel("setTextColor:"), cyan)
 LibObjC.objc_add_subview(visual_effect, AppState.label)
 
@@ -257,12 +312,12 @@ footer = LibObjC.objc_send_rect(
   LibObjC::CGRect.new(x: 20.0, y: 15.0, width: 480.0, height: 40.0))
 LibObjC.objc_send_id(footer, sel("setStringValue:"),
   nsstr("Built with Crystal 1.20.0-dev | LLVM 21.1.8\nNative AppKit + NSVisualEffectView glass effect"))
-tiny_font = LibObjC.objc_send_double_ret_id(cls("NSFont").as(LibObjC::Id), sel("systemFontOfSize:"), 10.0)
+tiny_font = LibObjC.nsfont_system(10.0)
 LibObjC.objc_send_id(footer, sel("setFont:"), tiny_font)
 LibObjC.objc_send_bool(footer, sel("setBezeled:"), 0)
 LibObjC.objc_send_bool(footer, sel("setDrawsBackground:"), 0)
 LibObjC.objc_send_bool(footer, sel("setEditable:"), 0)
-dim = LibObjC.objc_send_double_ret_id(cls("NSColor").as(LibObjC::Id), sel("colorWithWhite:alpha:"), 0.55)
+dim = LibObjC.nscolor_white_alpha(0.55, 1.0)
 LibObjC.objc_send_id(footer, sel("setTextColor:"), dim)
 LibObjC.objc_add_subview(visual_effect, footer)
 
