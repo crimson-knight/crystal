@@ -516,11 +516,27 @@ module HTTP
                            end
                            table
                          {% end %}
+
+  # :nodoc:
+  def self.valid_token?(string : String) : Bool
+    !string.empty? && !string.to_slice.any? { |c| VALID_TOKEN_CHAR_MAP[c] == 0 }
+  end
+
+  # :nodoc:
+  def self.validate_token(string : String, message = "Invalid HTTP token") : String
+    unless valid_token?(string)
+      raise ArgumentError.new(message)
+    end
+
+    string
+  end
 end
 
 require "./status"
-require "./request"
-require "./client/response"
+{% unless flag?(:wasi) %}
+  require "./request"
+  require "./client/response"
+{% end %}
 require "./headers"
 require "./content"
 require "./cookie"
