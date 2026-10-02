@@ -1,5 +1,6 @@
 require "../spec_helper"
 require "./spec_helper"
+require "../support/env"
 
 describe "Compiler" do
   it "has a valid version" do
@@ -24,6 +25,106 @@ describe "Compiler" do
         File.exists?(path).should be_true
 
         Process.capture(path).should eq("Hello!")
+      end
+    end
+  end
+
+  describe "incremental compilation (on by default)" do
+    it "rebuilds when the output was replaced by another build" do
+      with_tempfile("incremental_a.cr", "incremental_b.cr") do |a, b|
+        File.write(a, %(puts "A"))
+        File.write(b, %(puts "B"))
+
+        with_temp_executable "incremental_replaced" do |path|
+          Crystal::Command.run ["build"].concat(program_flags_options).concat([a, "-o", path])
+          Crystal::Command.run ["build"].concat(program_flags_options).concat([b, "-o", path])
+          Process.capture(path).should eq("B\n")
+
+          # Nothing in a.cr changed, but the output is b's binary now
+          Crystal::Command.run ["build"].concat(program_flags_options).concat([a, "-o", path])
+          Process.capture(path).should eq("A\n")
+        end
+      end
+    end
+
+    it "rebuilds when only the build settings changed" do
+      with_tempfile("incremental_settings.cr") do |source|
+        File.write(source, %(puts {{ flag?(:debug) }}))
+
+        with_temp_executable "incremental_settings" do |path|
+          Crystal::Command.run ["build"].concat(program_flags_options).concat([source, "-o", path])
+          Process.capture(path).should eq("true\n")
+
+          Crystal::Command.run ["build", "--no-debug"].concat(program_flags_options).concat([source, "-o", path])
+          Process.capture(path).should eq("false\n")
+        end
+      end
+    end
+
+    it "rebuilds when a macro read external state" do
+      with_tempfile("incremental_env.cr") do |source|
+        File.write(source, %(puts {{ env("CRYSTAL_INCREMENTAL_SPEC_VALUE") }}))
+
+        with_temp_executable "incremental_env" do |path|
+          {"one", "two"}.each do |value|
+            with_env("CRYSTAL_INCREMENTAL_SPEC_VALUE": value) do
+              Crystal::Command.run ["build"].concat(program_flags_options).concat([source, "-o", path])
+            end
+            Process.capture(path).should eq("#{value}\n")
+          end
+        end
+      end
+    end
+
+    it "relinks correctly when a changed file drops an instantiation in another module" do
+      with_tempfile("incremental_instantiation_main.cr", "incremental_instantiation_foo.cr") do |main, foo|
+        File.write(main, %(require "./#{File.basename(foo)}"\nFoo.run))
+        File.write(foo, <<-CRYSTAL)
+          enum Color
+            Green
+          end
+
+          module Foo
+            def self.run
+              puts String.build { |s| s << Color::Green }
+            end
+          end
+          CRYSTAL
+
+        with_temp_executable "incremental_instantiation" do |path|
+          Crystal::Command.run ["build"].concat(program_flags_options).concat([main, "-o", path])
+          Process.capture(path).should eq("Green\n")
+
+          File.write(foo, <<-CRYSTAL)
+            enum Color
+              Green
+            end
+
+            module Foo
+              def self.run
+                puts "no color"
+              end
+            end
+            CRYSTAL
+          Crystal::Command.run ["build"].concat(program_flags_options).concat([main, "-o", path])
+          Process.capture(path).should eq("no color\n")
+        end
+      end
+    end
+
+    it "doesn't reuse the output of a different in-memory source" do
+      with_tempfile("incremental_in_memory.cr") do |filename|
+        with_temp_executable "incremental_in_memory" do |path|
+          flags = program_flags_options.select(&.starts_with?("-D")).map(&.lchop("-D"))
+
+          {"1", "2"}.each do |value|
+            compiler = create_spec_compiler
+            compiler.flags.concat flags
+            compiler.incremental = true
+            compiler.compile Crystal::Compiler::Source.new(filename, "puts #{value}"), path
+            Process.capture(path).should eq("#{value}\n")
+          end
+        end
       end
     end
   end

@@ -122,6 +122,8 @@ time bin/crystal build src/compiler/crystal.cr --stats -o /dev/null
 | `CRYSTAL_CACHE_DIR` | Override cache directory location |
 | `CRYSTAL_LIBRARY_PATH` | Library search path (needed for WASM) |
 | `CRYSTAL_PARALLEL_PARSE` | Set to `0` to disable parallel parsing (Phase 3) |
+| `CRYSTAL_INCREMENTAL` | Set to `0` to disable incremental compilation (on by default) |
+| `CRYSTAL_INCREMENTAL_MODULE_SKIP` | Set to `1` to enable experimental per-module codegen skipping (Phase 4) |
 
 ## Decision Log
 
@@ -133,6 +135,9 @@ time bin/crystal build src/compiler/crystal.cr --stats -o /dev/null
 | 2026-02-16 | Program always created fresh (no reuse) | No reset mechanism exists; adding one is prohibitively complex |
 | 2026-02-16 | JSON for cache metadata, not binary | Debuggable, matches existing RequireWithTimestamp/RecordedRequire patterns |
 | 2026-02-16 | Phase 7 (semantic parallelism) is research-grade | MainVisitor has deep shared mutable state; requires fundamental redesign |
+| 2026-10-02 | Incremental compilation on by default for `build`/`run`/`spec`/`eval`/`watch` | Coding agents rarely pass `--incremental`; opt out with `--no-incremental` or `CRYSTAL_INCREMENTAL=0` |
+| 2026-10-02 | Whole-build skip requires matching build settings, output stamp, in-memory sources and macro inputs | Previously `build` → `build --release`, a replaced output, `crystal spec a` → `spec b`, or a changed `env(...)` could leave a stale binary |
+| 2026-10-02 | Phase 4 module skipping made opt-in | A changed file can add/remove instantiations in an unchanged type's module, so skipping it linked stale objects (`undefined symbol`); measured gain ~5% on the compiler itself |
 
 ## Benchmarks
 

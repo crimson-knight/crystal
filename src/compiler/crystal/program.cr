@@ -65,6 +65,15 @@ module Crystal
     # If `true`, doc comments are attached to types and methods.
     property? wants_doc = false
 
+    # State outside the source files that macros read, recorded so that an
+    # incremental build is only skipped as a whole when all of it is still the
+    # same. See `IncrementalCache::ExternalInput`.
+    getter external_macro_inputs = {} of String => String?
+
+    # Set when a macro read external state that can't be re-checked cheaply
+    # (`run`). An incremental build can then never be skipped as a whole.
+    property? uses_unverifiable_macro_inputs = false
+
     # If `true`, error messages can be colorized
     property? color = true
 

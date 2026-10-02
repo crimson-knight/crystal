@@ -39,6 +39,7 @@ class Crystal::Command
     end
 
     compiler.link_flags = link_flags.join(' ') unless link_flags.empty?
+    apply_incremental_default(compiler)
 
     # Assume spec files end with ".cr" and optionally with a colon and a number
     # (for the target line number), or is a directory. Everything else is an option we forward.

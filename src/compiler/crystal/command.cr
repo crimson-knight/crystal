@@ -605,9 +605,7 @@ class Crystal::Command
         opts.on("--static", "Link statically") do
           compiler.static = true
         end
-        opts.on("--incremental", "Enable incremental compilation (file fingerprinting and parse cache)") do
-          compiler.incremental = true
-        end
+        setup_incremental_options(opts)
         opts.on("--no-cache", "Disable all compilation caching (force full rebuild)") do
           compiler.no_cache = true
         end
@@ -673,11 +671,13 @@ class Crystal::Command
     end
 
     # CRYSTAL_NO_CACHE env var (command-line flags take precedence)
-    if !compiler.incremental? && !compiler.no_cache?
+    if @incremental_choice != true && !compiler.no_cache?
       if ENV["CRYSTAL_NO_CACHE"]? == "1"
         compiler.no_cache = true
       end
     end
+
+    apply_incremental_default(compiler)
 
     output_format ||= allowed_formats[0]
     unless output_format.in?(allowed_formats)
@@ -685,10 +685,6 @@ class Crystal::Command
     end
 
     abort! "maximum number of threads cannot be lower than 1", :USAGE_ERROR if compiler.n_threads < 1
-
-    if compiler.no_cache? && compiler.incremental?
-      raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
-    end
 
     if !compiler.no_codegen? && !run && Dir.exists?(output_filename)
       abort! "can't use `#{output_filename}` as output filename because it's a directory", :USAGE_ERROR
@@ -759,9 +755,7 @@ class Crystal::Command
       @color = false
       compiler.color = false
     end
-    opts.on("--incremental", "Enable incremental compilation (file fingerprinting and parse cache)") do
-      compiler.incremental = true
-    end
+    setup_incremental_options(opts)
     opts.on("--no-cache", "Disable all compilation caching (force full rebuild)") do
       compiler.no_cache = true
     end
@@ -896,5 +890,38 @@ class Crystal::Command
 
   private def new_compiler
     @compiler = Compiler.new
+  end
+
+  # Explicit `--incremental` (true) / `--no-incremental` (false) choice from
+  # the command line, nil when neither was given.
+  @incremental_choice : Bool? = nil
+
+  private def setup_incremental_options(opts)
+    opts.on("--incremental", "Enable incremental compilation (default; disable with --no-incremental or CRYSTAL_INCREMENTAL=0)") do
+      @incremental_choice = true
+    end
+    opts.on("--no-incremental", "Disable incremental compilation") do
+      @incremental_choice = false
+    end
+  end
+
+  # Incremental compilation is on by default for every command that generates
+  # code. It is off when `--no-incremental`, `CRYSTAL_INCREMENTAL=0`,
+  # `--no-cache` or `CRYSTAL_NO_CACHE=1` is given, and for `--no-codegen`
+  # (nothing is compiled, so there is nothing to cache). An explicit
+  # `--incremental` together with `--no-cache` is a usage error.
+  private def apply_incremental_default(compiler)
+    if @incremental_choice == true && compiler.no_cache?
+      raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
+    end
+
+    compiler.incremental =
+      @incremental_choice.nil? ? incremental_by_default?(compiler) : @incremental_choice.not_nil!
+  end
+
+  private def incremental_by_default?(compiler) : Bool
+    return false if compiler.no_cache? || compiler.no_codegen?
+    return false if ENV["CRYSTAL_NO_CACHE"]? == "1"
+    ENV["CRYSTAL_INCREMENTAL"]? != "0"
   end
 end

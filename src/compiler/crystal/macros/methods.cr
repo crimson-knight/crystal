@@ -142,6 +142,7 @@ module Crystal
         arg.accept self
         cmd = @last.to_macro_id
         env_value = ENV[cmd]?
+        @program.external_macro_inputs[IncrementalCache::ExternalInput.env_key(cmd)] = env_value
         @last = env_value ? StringLiteral.new(env_value) : NilLiteral.new
       end
     end
@@ -263,6 +264,7 @@ module Crystal
       end
 
       if $?.success?
+        @program.external_macro_inputs[IncrementalCache::ExternalInput.system_key(cmd)] = result
         @last = MacroId.new(result)
       elsif result.empty?
         node.raise "error executing command: #{cmd}, got exit status #{$?}"
@@ -283,6 +285,8 @@ module Crystal
       interpret_check_args_toplevel do |arg|
         arg.accept self
         filename = @last.to_macro_id
+        key, value = IncrementalCache::ExternalInput.file_exists(filename)
+        @program.external_macro_inputs[key] = value
 
         @last = BoolLiteral.new(File.exists?(filename))
       end
@@ -292,6 +296,8 @@ module Crystal
       interpret_check_args_toplevel do |arg|
         arg.accept self
         filename = @last.to_macro_id
+        key, value = IncrementalCache::ExternalInput.read_file(filename)
+        @program.external_macro_inputs[key] = value
 
         begin
           @last = StringLiteral.new(File.read(filename))
@@ -303,6 +309,7 @@ module Crystal
     end
 
     def interpret_run(node)
+      @program.uses_unverifiable_macro_inputs = true
       if node.args.size == 0
         node.wrong_number_of_arguments "macro '::run'", 0, "1+"
       end

@@ -68,6 +68,27 @@ module Crystal
     include JSON::Serializable
   end
 
+  # Identity of an output binary produced by an incremental build: its path,
+  # mtime and size right after it was written. A compilation (or link) may
+  # only be skipped when the output on disk still matches this stamp, i.e. it
+  # is the very file this cache produced and nothing has replaced it since.
+  record OutputStamp,
+    path : String,
+    mtime_epoch : Int64,
+    byte_size : Int64 do
+    include JSON::Serializable
+
+    def self.for?(path : String) : OutputStamp?
+      info = File.info?(path)
+      return unless info
+      new(path, info.modification_time.to_unix_ms, info.size)
+    end
+
+    def matches_file? : Bool
+      OutputStamp.for?(path) == self
+    end
+  end
+
   # Serializable cache data written to disk between compilations.
   # Tracks compiler version, target, flags, and per-file fingerprints
   # so the cache can be invalidated when any of these change.
@@ -80,6 +101,25 @@ module Crystal
     getter codegen_target : String
     getter flags : Array(String)
     getter prelude : String
+
+    # Codegen/link settings that are not part of `flags` but change the
+    # output (optimization level, debug info, static, link flags, ...).
+    # A mismatch invalidates the cache, like a flags mismatch.
+    getter build_settings : String = ""
+
+    # The output produced by the compilation that wrote this cache.
+    # Nil when no output was produced (e.g. old cache format).
+    @[JSON::Field(emit_null: false)]
+    getter output : OutputStamp? = nil
+
+    # External state read by macros (env vars, command outputs, files) with
+    # the value observed, see `IncrementalCache::ExternalInput`.
+    getter external_macro_inputs : Hash(String, String?) = {} of String => String?
+
+    # Whether a macro read external state that can't be re-checked (`run`).
+    # If so, the next build can't be skipped as a whole.
+    getter? unverifiable_macro_inputs : Bool = false
+
     getter file_fingerprints : Hash(String, FileFingerprint)
 
     # Maps LLVM module name => array of source filenames that contributed
@@ -119,7 +159,11 @@ module Crystal
                    @module_file_mapping : Hash(String, Array(String))? = nil,
                    @file_signatures : Hash(String, FileTopLevelSignature)? = nil,
                    @allocation_hints : AllocationHints? = nil,
-                   @file_dependencies : Hash(String, Array(String))? = nil)
+                   @file_dependencies : Hash(String, Array(String))? = nil,
+                   @build_settings : String = "",
+                   @output : OutputStamp? = nil,
+                   @external_macro_inputs : Hash(String, String?) = {} of String => String?,
+                   @unverifiable_macro_inputs : Bool = false)
     end
   end
 
@@ -129,19 +173,66 @@ module Crystal
   module IncrementalCache
     CACHE_FILENAME = "incremental_cache.json"
 
+    # External state read by macros, keyed by `<kind>:<argument>` with the
+    # value observed during compilation. A build may only be skipped as a whole
+    # if every recorded input still has the same value.
+    module ExternalInput
+      def self.env_key(name : String) : String
+        "env:#{name}"
+      end
+
+      def self.system_key(command : String) : String
+        "system:#{command}"
+      end
+
+      def self.file_exists(filename : String) : {String, String?}
+        {"file_exists:#{File.expand_path(filename)}", File.exists?(filename).to_s}
+      end
+
+      def self.read_file(filename : String) : {String, String?}
+        content_hash = begin
+          Crystal::Digest::MD5.hexdigest(File.read(filename))
+        rescue IO::Error
+          nil
+        end
+        {"read_file:#{File.expand_path(filename)}", content_hash}
+      end
+
+      # Whether all *inputs* still have the recorded value. Re-runs `system`
+      # commands, which is cheap compared to the compilation it may avoid.
+      def self.unchanged?(inputs : Hash(String, String?)) : Bool
+        inputs.all? { |key, value| current_value(key) == value }
+      end
+
+      private def self.current_value(key : String) : String?
+        kind, _, argument = key.partition(':')
+        case kind
+        when "env"         then ENV[argument]?
+        when "file_exists" then file_exists(argument)[1]
+        when "read_file"   then read_file(argument)[1]
+        when "system"
+          output = `#{argument}` rescue return "\0failed"
+          $?.success? ? output : "\0failed"
+        else
+          "\0unknown"
+        end
+      end
+    end
+
     # Load cache data from disk. Returns nil if missing, corrupt, or
     # version/target/flags mismatch.
-    def self.load(cache_dir : String, compiler_version : String, codegen_target : String, flags : Array(String), prelude : String) : IncrementalCacheData?
+    def self.load(cache_dir : String, compiler_version : String, codegen_target : String, flags : Array(String), prelude : String, build_settings : String) : IncrementalCacheData?
       path = File.join(cache_dir, CACHE_FILENAME)
       return nil unless File.exists?(path)
 
       data = IncrementalCacheData.from_json(File.read(path))
 
-      # Invalidate if compiler version, target, flags, or prelude changed
+      # Invalidate if compiler version, target, flags, prelude or build settings changed
       return nil unless data.compiler_version == compiler_version
       return nil unless data.codegen_target == codegen_target
       return nil unless data.flags == flags
       return nil unless data.prelude == prelude
+      return nil unless data.build_settings == build_settings
 
       data
     rescue JSON::ParseException
@@ -641,7 +732,7 @@ module Crystal
     def self.classify_changes(
       changed_files : Set(String),
       old_signatures : Hash(String, FileTopLevelSignature)?,
-      new_signatures : Hash(String, FileTopLevelSignature)
+      new_signatures : Hash(String, FileTopLevelSignature),
     ) : {Set(String), Set(String)}
       body_only = Set(String).new
       structural = Set(String).new

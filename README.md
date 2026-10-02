@@ -1,4 +1,34 @@
-# Crystal
+# Crystal Alpha — incremental compilation fork
+
+Incremental compilation is on by default (`build`, `run`, `spec`, `eval`, `watch`);
+opt out with `--no-incremental` or `CRYSTAL_INCREMENTAL=0`. The biggest win comes
+from a long-running `crystal watch`, which coding agents don't use unless told to.
+
+### Using it with Claude Code / AI agents
+
+Add this to your project's `CLAUDE.md` (or `AGENTS.md`):
+
+~~~~markdown
+## Crystal toolchain (crystal-alpha, incremental)
+- Check once: `crystal watch --help` must work; otherwise the upstream compiler is
+  on PATH — tell the user.
+- Keep ONE watcher running for the session (check `pgrep -af "crystal watch"`
+  first), started in the background:
+  `crystal watch src/<APP>.cr --no-color > .crystal-watch.log 2>&1`
+  The binary is written to `./<APP>`; gitignore it and the log.
+- After editing `.cr` files, don't rebuild: wait for a new
+  `[watch] Compiled successfully` or `[watch] Compilation failed` line in
+  `.crystal-watch.log`; the error is printed above it.
+- If the watcher's FIRST compile failed, it watches nothing: fix, then restart it.
+- Specs: `crystal spec [spec/file_spec.cr:LINE]`. Don't pass `--no-incremental`
+  or `--no-cache` unless debugging the compiler.
+- Navigate with `crystal tool implementations|context|expand -c FILE:LINE:COL src/<APP>.cr`.
+- Format with `crystal tool format`.
+~~~~
+
+---
+
+# Crystal (upstream README)
 
 [![Linux CI Build Status](https://github.com/crystal-lang/crystal/workflows/Linux%20CI/badge.svg)](https://github.com/crystal-lang/crystal/actions?query=workflow%3A%22Linux+CI%22+event%3Apush+branch%3Amaster)
 [![macOS CI Build Status](https://github.com/crystal-lang/crystal/workflows/macOS%20CI/badge.svg)](https://github.com/crystal-lang/crystal/actions?query=workflow%3A%22macOS+CI%22+event%3Apush+branch%3Amaster)
