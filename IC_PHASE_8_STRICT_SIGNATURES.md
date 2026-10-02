@@ -124,6 +124,16 @@ module's object from the last build is reused (`CompilationUnit` with
   (with their new bodies); calls to functions of other modules only declare
   them (`codegen_fun` skips the body). The codegen state of consts and class
   vars is kept from the last full codegen, matching its reused main module.
+- Codegen inlines a trivial body (a literal, `self`, an instance variable)
+  at its call sites, in the callers' modules. Behind the return type
+  firewall literals and `self` aren't inlined; an instance variable getter
+  must stay inlined (semantics), so editing one, or a method into one, needs
+  a full codegen (`IncrementalSemantic#full_codegen_reason`).
+- Instantiations recorded for typing again include calls with named
+  arguments (when they use the def itself) and expansions with a copy of the
+  body (a default value with a restriction), re-expanded from the new body.
+  An instantiation with a block, or of a def with splats, can't be typed on
+  its own: editing that def needs a full compilation.
 - It falls back to a full codegen when the regenerated code needs something
   the reused main module doesn't have: a new type id (a new type could be
   missing from other modules' virtual dispatch), a new symbol, or a function

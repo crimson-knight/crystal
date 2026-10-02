@@ -380,6 +380,13 @@ module Crystal
       owner.program.strict_file?(location.original_filename)
     end
 
+    # Whether this is a method of strict code with a declared return type:
+    # its body can be typed and code-generated again on its own, so nothing
+    # outside it may depend on the body (see `IncrementalSemantic`).
+    def return_type_firewall? : Bool
+      !!return_type && strict_signatures?
+    end
+
     # Whether *type* can be the type of a value: a restriction like `Array`
     # (a generic type without its type arguments) or a module (`self` in a
     # module method is the module, not the including type) only constrains

@@ -112,12 +112,25 @@ module Crystal
       @instantiation_records = records.try &.compare_by_identity
     end
 
+    # *vars* are the typed def's variables before typing its body: `self`,
+    # the arguments (positional, named, magic constant defaults) and their
+    # types.
+    #
+    # *expansion* is set when the typed def came from an expansion of the
+    # def with a copy of its body (a default value with a restriction): the
+    # number of positional arguments and the named ones, to expand the new
+    # body the same way.
     record InstantiationRecord,
       typed_def : Def,
       self_type : Type?,
-      arg_types : Array(Type),
+      vars : Array({String, Type?}),
       context : MatchContext,
-      call : Call
+      call : Call,
+      expansion : {Int32, Array(String)?}? = nil
+
+    # Defs with an instantiation `IncrementalSemantic` can't type again on its
+    # own (see `Call#instantiate`).
+    getter defs_typed_with_callers = Set(Def).new.compare_by_identity
 
     # Library code found through `CRYSTAL_PATH` (the standard library, shards)
     # is never strict, even inside the root: in the compiler's own repository

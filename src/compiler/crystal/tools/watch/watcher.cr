@@ -221,12 +221,17 @@ module Crystal
 
         codegen = ""
         unless @compiler.no_codegen?
-          changed_types = (incremental.retyped + new_instances).map(&.owner)
-          if reason = @compiler.codegen_again(result, sources, @output_filename, changed_types)
+          if reason = incremental.full_codegen_reason
+            @compiler.codegen_again(result, sources, @output_filename)
             codegen = ", full codegen (#{reason})"
           else
-            modules = changed_types.uniq.size
-            codegen = ", codegen of #{modules} module#{modules == 1 ? "" : "s"}"
+            changed_types = (incremental.retyped + new_instances).map(&.owner)
+            if reason = @compiler.codegen_again(result, sources, @output_filename, changed_types)
+              codegen = ", full codegen (#{reason})"
+            else
+              modules = changed_types.uniq.size
+              codegen = ", codegen of #{modules} module#{modules == 1 ? "" : "s"}"
+            end
           end
         end
         print_status "Typed #{incremental.retyped.size} method instantiation#{incremental.retyped.size == 1 ? "" : "s"} again in #{typing.total_milliseconds.round(1)}ms#{codegen}, total #{start.elapsed.total_seconds.round(2)}s"

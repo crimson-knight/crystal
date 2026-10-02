@@ -26,8 +26,15 @@ private def rebuild_partially(before : String, after : String) : {String?, Strin
       incremental.apply({main => after})
       program.collected_def_instances = nil
 
-      changed_types = (incremental.retyped + new_instances).map(&.owner)
-      reason = compiler.codegen_again(result, [Compiler::Source.new(main, after)], output, changed_types)
+      after_sources = [Compiler::Source.new(main, after)]
+      reason =
+        if full_reason = incremental.full_codegen_reason
+          compiler.codegen_again(result, after_sources, output)
+          full_reason
+        else
+          changed_types = (incremental.retyped + new_instances).map(&.owner)
+          compiler.codegen_again(result, after_sources, output, changed_types)
+        end
       {reason, Process.run(output, output: :pipe) { |process| process.output.gets_to_end }}
     end
   end
@@ -104,6 +111,82 @@ describe "Code gen: partial codegen" do
       CRYSTAL
     reason.should be_nil
     output.should eq("103\n")
+  end
+
+  it "regenerates callers of a method returning a literal" do
+    # Codegen inlines trivial bodies at call sites, except behind the return
+    # type firewall: the caller in another module must see the new literal.
+    reason, output = rebuild_partially(<<-CRYSTAL, <<-CRYSTAL)
+      class Model
+        def name : String
+          "old"
+        end
+      end
+
+      class View
+        def render(model : Model) : String
+          "<" + model.name + ">"
+        end
+      end
+
+      puts View.new.render(Model.new)
+      CRYSTAL
+      class Model
+        def name : String
+          "new"
+        end
+      end
+
+      class View
+        def render(model : Model) : String
+          "<" + model.name + ">"
+        end
+      end
+
+      puts View.new.render(Model.new)
+      CRYSTAL
+    reason.should be_nil
+    output.should eq("<new>\n")
+  end
+
+  it "falls back to a full codegen for an instance variable getter" do
+    reason, output = rebuild_partially(<<-CRYSTAL, <<-CRYSTAL)
+      class Model
+        def initialize(@name : String)
+        end
+
+        def name : String
+          @name
+        end
+      end
+
+      class View
+        def render(model : Model) : String
+          "<" + model.name + ">"
+        end
+      end
+
+      puts View.new.render(Model.new("x"))
+      CRYSTAL
+      class Model
+        def initialize(@name : String)
+        end
+
+        def name : String
+          @name.upcase
+        end
+      end
+
+      class View
+        def render(model : Model) : String
+          "<" + model.name + ">"
+        end
+      end
+
+      puts View.new.render(Model.new("x"))
+      CRYSTAL
+    reason.should_not be_nil
+    output.should eq("<X>\n")
   end
 
   it "falls back to a full codegen for a new symbol" do

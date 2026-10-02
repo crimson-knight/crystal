@@ -29,6 +29,11 @@ module Crystal
     # Instantiations typed again by the last `apply`.
     getter retyped = [] of Def
 
+    # Why the last `apply` needs a full codegen, if it does: codegen inlines
+    # instance variable getters at their call sites, so callers' code depends
+    # on such a body.
+    getter full_codegen_reason : String?
+
     # *sources* are the contents the program was compiled from, by filename.
     def initialize(@program : Program, @sources : Hash(String, String))
       @defs_by_location = {} of {String, Int32, Int32} => Def
@@ -42,6 +47,7 @@ module Crystal
     # typed again, which expands it again.
     def apply(contents : Hash(String, String), changed_inputs : Enumerable(String) = [] of String) : Nil
       @retyped.clear
+      @full_codegen_reason = nil
       changed = [] of {Def, Def}
 
       contents.each do |filename, new_source|
@@ -241,7 +247,8 @@ module Crystal
         raise Unsupported.new("#{location}: def #{original.name} isn't strict code (--strict-signatures)")
       end
       raise Unsupported.new("#{location}: def #{original.name} has no return type") unless original.return_type
-      if original.name.in?("initialize", "finalize") || original.macro_def? || original.block_arity || original.block_arg
+      if original.name.in?("initialize", "finalize") || original.macro_def? || original.block_arity || original.block_arg ||
+         @program.defs_typed_with_callers.includes?(original)
         raise Unsupported.new("#{location}: def #{original.name} is typed together with its callers")
       end
     end
@@ -257,10 +264,16 @@ module Crystal
       old_type = typed_def.type?
       old_raises = typed_def.raises?
 
+      inlined_before = typed_def.body.is_a?(InstanceVar)
       disconnect(typed_def.body)
       typed_def.unbind_from(typed_def.body)
 
-      body = original.body.clone
+      body =
+        if expansion = record.expansion
+          original.expand_default_arguments(@program, expansion[0], expansion[1]).body.clone
+        else
+          original.body.clone
+        end
       typed_def.body = body
       typed_def.location = original.location
       typed_def.end_location = original.end_location
@@ -270,14 +283,17 @@ module Crystal
       typed_def.bind_to(body)
 
       args = MetaVars.new
-      if self_type = record.self_type
-        args["self"] = MetaVar.new("self", self_type)
-      end
-      record.arg_types.each_with_index do |type, index|
-        arg = typed_def.args[index]
-        var = MetaVar.new(arg.name, type).at(arg)
+      record.vars.each do |name, type|
+        var = MetaVar.new(name, type)
+        if name == "self"
+          args[name] = var
+          next
+        end
+        if arg = typed_def.args.find { |arg| arg.name == name }
+          var.at(arg)
+        end
         var.bind_to(var)
-        args[arg.name] = var
+        args[name] = var
       end
 
       visitor = MainVisitor.new(@program, args, typed_def)
@@ -297,6 +313,10 @@ module Crystal
         raise Unsupported.new("#{original.location}: #{typed_def.short_reference} now raises")
       end
 
+      if inlined_before || typed_def.body.is_a?(InstanceVar)
+        @full_codegen_reason ||= "#{typed_def.short_reference} is or was an instance variable getter, inlined at its calls"
+      end
+
       @retyped << typed_def
     end
 
@@ -309,7 +329,7 @@ module Crystal
         records.each do |record|
           typed_def = record.typed_def
           next unless (filename = typed_def.location.try(&.filename)).is_a?(String) && filename.starts_with?(root)
-          key = "#{typed_def.owner}##{typed_def.name}(#{record.arg_types.join(", ")})"
+          key = "#{typed_def.owner}##{typed_def.name}(#{record.vars.join(", ") { |name, type| "#{name}: #{type}" }})"
           methods[key] = describe(typed_def)
         end
       end

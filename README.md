@@ -184,8 +184,10 @@ Things to check when switching a project or system to this compiler:
    relied on running Crystal code in the child between `fork` and `exec`
    can't, but the standard library never offered that for `Process.new`.
 8. In strict code, a method with a declared return type always counts as
-   possibly raising, so calls to it inside `begin`/`rescue` use `invoke`:
-   no change in behavior, slightly less optimizable code.
+   possibly raising (calls to it inside `begin`/`rescue` use `invoke`), and a
+   body that is just a literal or `self` isn't inlined at its call sites:
+   no change in behavior, slightly slower non-release builds. (Release builds
+   inline through LLVM as before.)
 
 ---
 

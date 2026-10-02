@@ -100,6 +100,32 @@ describe IncrementalSemantic do
     end
   end
 
+  it "types again an instantiation called with named arguments" do
+    incremental = assert_incremental(
+      {"main.cr" => <<-CRYSTAL},
+        require "primitives"
+
+        def foo(x : Int32, y : Int32 = 2) : Int32
+          x + y
+        end
+
+        foo(1)
+        foo(x: 1, y: 3)
+        CRYSTAL
+      {"main.cr" => <<-CRYSTAL})
+        require "primitives"
+
+        def foo(x : Int32, y : Int32 = 2) : Int32
+          x * y
+        end
+
+        foo(1)
+        foo(x: 1, y: 3)
+        CRYSTAL
+    # `foo(1)` uses an expansion with a copy of the body, `foo(x: 1, y: 3)` the def
+    incremental.retyped.map(&.name).should eq(["foo", "foo"])
+  end
+
   it "instantiates methods the new body calls" do
     assert_incremental(
       {"main.cr" => <<-CRYSTAL},
@@ -286,6 +312,13 @@ describe IncrementalSemantic do
     assert_unsupported(
       {"main.cr" => %(require "primitives"\ndef foo : Int32\n  yield 1\nend\nfoo { |x| x }\n)},
       {"main.cr" => %(require "primitives"\ndef foo : Int32\n  yield 2\nend\nfoo { |x| x }\n)},
+      "typed together with its callers")
+  end
+
+  it "needs a full compilation for a method expanded with a copy of its body" do
+    assert_unsupported(
+      {"main.cr" => %(require "primitives"\ndef foo(*xs : Int32) : Int32\n  1\nend\nfoo(1, 2)\n)},
+      {"main.cr" => %(require "primitives"\ndef foo(*xs : Int32) : Int32\n  2\nend\nfoo(1, 2)\n)},
       "typed together with its callers")
   end
 

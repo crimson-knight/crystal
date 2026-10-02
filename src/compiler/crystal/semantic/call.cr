@@ -398,7 +398,7 @@ class Crystal::Call
       typed_def = def_instance_owner.lookup_def_instance def_instance_key if use_cache
 
       unless typed_def
-        typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
+        typed_def, typed_def_args, expanded_def = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
         program.collected_def_instances.try &.<< typed_def
 
@@ -410,15 +410,27 @@ class Crystal::Call
           typed_def.raises = true
         end
 
-        # Only plain instantiations can be typed again on their own: one with
-        # a block is typed together with the block, and one that needed an
-        # expansion (default or named arguments, splats) is a forwarder whose
-        # body isn't the def's.
-        if (records = program.instantiation_records) && !block &&
-           match.arg_types.size == match.def.args.size && !match.def.splat_index &&
-           !named_args_types && !match.def.double_splat
-          (records[match.def] ||= [] of Program::InstantiationRecord) << Program::InstantiationRecord.new(
-            typed_def, lookup_self_type, match.arg_types.dup, match.context, self)
+        # `IncrementalSemantic` types instantiations of a def again when its
+        # body changes. It can when the typed def is a copy of the def itself
+        # (also with named arguments in order, or magic constant defaults).
+        # An expansion that forwards to the def (default arguments) needs
+        # nothing: the def's own instantiation is recorded. One with a copy of
+        # the body (a default value with a restriction) is recorded with how
+        # to expand the new body. An instantiation with a block, or an
+        # expansion of a def with splats (their names are generated), can't
+        # be typed again on its own: editing the def needs a full compilation.
+        if records = program.instantiation_records
+          a_def = match.def
+          expanded = !expanded_def.same?(a_def)
+          if block || (expanded && a_def.expansion_retains_body? &&
+             (a_def.splat_index || a_def.double_splat || a_def.block_arity || a_def.macro_def?))
+            program.defs_typed_with_callers << a_def
+          elsif !expanded || a_def.expansion_retains_body?
+            vars = typed_def_args.map { |name, var| {name, var.type?.as(Type?)} }
+            expansion = {match.arg_types.size, named_args_types.try(&.map(&.name))} if expanded
+            (records[a_def] ||= [] of Program::InstantiationRecord) << Program::InstantiationRecord.new(
+              typed_def, lookup_self_type, vars, match.context, self, expansion)
+          end
         end
 
         # Record file-level dependency for incremental compilation.
@@ -1286,7 +1298,7 @@ class Crystal::Call
       typed_def.block_arg.not_nil!.type = block_arg_type
     end
 
-    {typed_def, args}
+    {typed_def, args, untyped_def}
   end
 
   def attach_subclass_observer(type : Type)
