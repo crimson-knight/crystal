@@ -52,11 +52,11 @@ def assert_type(str, *, inject_primitives = false, flags = nil, file = __FILE__,
   result
 end
 
-def semantic(code : String, wants_doc = false, inject_primitives = false, flags = nil, filename = nil)
+def semantic(code : String, wants_doc = false, inject_primitives = false, flags = nil, filename = nil, strict_signatures_root = nil)
   warnings = WarningCollection.new
   node = parse(code, wants_doc: wants_doc, filename: filename, warnings: warnings)
   node = inject_primitives(node) if inject_primitives
-  semantic node, warnings: warnings, wants_doc: wants_doc, flags: flags
+  semantic node, warnings: warnings, wants_doc: wants_doc, flags: flags, strict_signatures_root: strict_signatures_root
 end
 
 private def inject_primitives(node : ASTNode)
@@ -72,8 +72,9 @@ private def inject_primitives(node : ASTNode)
   end
 end
 
-def semantic(node : ASTNode, *, warnings = nil, wants_doc = false, flags = nil)
+def semantic(node : ASTNode, *, warnings = nil, wants_doc = false, flags = nil, strict_signatures_root = nil)
   program = new_program
+  program.strict_signatures_root = strict_signatures_root
   program.warnings = warnings if warnings
   program.flags.concat(flags.split) if flags
   program.wants_doc = wants_doc

@@ -231,6 +231,9 @@ module Crystal
     # file fingerprinting, parse caching, and cache persistence.
     property? incremental = false
 
+    # Strict signatures mode, see `Program#strict_signatures_root`.
+    property? strict_signatures : Bool = ENV["CRYSTAL_STRICT_SIGNATURES"]? == "1"
+
     # If `true`, cache files are never read during compilation (forces recompile of
     # every module), but are still written. Mutually exclusive with `--incremental`.
     property? no_cache = false
@@ -292,8 +295,6 @@ module Crystal
       @compilation_skipped = false
       @link_skipped = false
 
-      node = parse program, source
-
       # Load incremental cache data once for the entire compilation
       if @incremental && !@no_cache
         output_dir_for_cache = CacheDir.instance.directory_for(source)
@@ -344,6 +345,10 @@ module Crystal
           end
         end
       end
+
+      # The skip check above only needs the cached file list, so a skipped
+      # build doesn't parse the program at all.
+      node = compilation_skipped ? Nop.new : parse(program, source)
 
       unless compilation_skipped
         begin
@@ -431,6 +436,7 @@ module Crystal
         io << '|' << static? << '|' << shared? << '|' << cross_compile?
         io << '|' << frame_pointers << '|' << emit_targets
         io << '|' << @link_flags << '|' << @mcpu << '|' << @mattr << '|' << @mcmodel
+        io << '|' << strict_signatures?
       end
     end
 
@@ -476,6 +482,7 @@ module Crystal
       program.progress_tracker = @progress_tracker
       program.warnings = @warnings
       program.optimization_mode = @optimization_mode
+      program.strict_signatures_root = Dir.current if strict_signatures?
 
       # Apply allocation hints from previous compilation
       if @incremental

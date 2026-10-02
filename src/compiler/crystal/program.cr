@@ -74,6 +74,32 @@ module Crystal
     # (`run`). An incremental build can then never be skipped as a whole.
     property? uses_unverifiable_macro_inputs = false
 
+    # Strict signatures mode (`--strict-signatures`): the directory whose code
+    # (except its `lib/`) must declare the return type of every method, and in
+    # which a declared return type is the type callers see. `nil` when off.
+    property strict_signatures_root : String?
+
+    # Methods in strict code that lack a return type, reported together after
+    # the top-level pass.
+    getter strict_signature_violations = [] of Def
+
+    @strict_files = {} of String => Bool
+
+    # When set, every method instantiation is appended to it, including the
+    # ones that aren't cached (those taking a block). Used by
+    # `crystal tool annotate`.
+    property collected_def_instances : Array(Def)?
+
+    # Whether *filename* is strict code, see `strict_signatures_root`.
+    def strict_file?(filename : String?) : Bool
+      return false unless filename
+      return false unless root = @strict_signatures_root
+
+      @strict_files.put_if_absent(filename) do
+        filename.starts_with?(root) && !filename.starts_with?(File.join(root, "lib", ""))
+      end
+    end
+
     # If `true`, error messages can be colorized
     property? color = true
 

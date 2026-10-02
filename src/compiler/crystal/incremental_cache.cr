@@ -116,8 +116,9 @@ module Crystal
     # the value observed, see `IncrementalCache::ExternalInput`.
     getter external_macro_inputs : Hash(String, String?) = {} of String => String?
 
-    # Whether a macro read external state that can't be re-checked (`run`).
-    # If so, the next build can't be skipped as a whole.
+    # Whether a macro read external state that can't be re-checked (a `run`
+    # with `CRYSTAL_MACRO_RUN_TRUST=0`). If so, the next build can't be
+    # skipped as a whole.
     getter? unverifiable_macro_inputs : Bool = false
 
     getter file_fingerprints : Hash(String, FileFingerprint)
@@ -198,10 +199,51 @@ module Crystal
         {"read_file:#{File.expand_path(filename)}", content_hash}
       end
 
+      # The files of directory *path* (recursively), with their size and
+      # modification time. Detects added, removed and edited files.
+      def self.dir_tree(path : String) : {String, String?}
+        expanded = File.expand_path(path)
+        digest = begin
+          Crystal::Digest::MD5.hexdigest do |ctx|
+            Dir.glob(File.join(::Path[expanded].to_posix.to_s, "**", "*"), match: :dot_files).sort!.each do |entry|
+              info = File.info?(entry)
+              next unless info
+              ctx.update entry
+              ctx.update "\0"
+              ctx.update "#{info.size}:#{info.modification_time.to_unix_ns}" unless info.directory?
+              ctx.update "\0"
+            end
+          end
+        rescue IO::Error
+          nil
+        end
+        {"dir_tree:#{expanded}", digest}
+      end
+
+      # The input for a path a macro `run` program was given or declared:
+      # a file's content, a directory's tree, or the absence of either.
+      def self.path(path : String) : {String, String?}
+        if File.file?(path)
+          read_file(path)
+        elsif Dir.exists?(path)
+          dir_tree(path)
+        else
+          file_exists(path)
+        end
+      end
+
       # Whether all *inputs* still have the recorded value. Re-runs `system`
       # commands, which is cheap compared to the compilation it may avoid.
       def self.unchanged?(inputs : Hash(String, String?)) : Bool
-        inputs.all? { |key, value| current_value(key) == value }
+        commands, others = inputs.partition { |key, _| key.starts_with?("system:") }
+        return false unless others.all? { |key, value| current_value(key) == value }
+
+        # The commands are independent subprocesses: run them concurrently.
+        results = Channel(Bool).new(commands.size)
+        commands.each do |key, value|
+          spawn { results.send(current_value(key) == value) }
+        end
+        commands.size.times.all? { results.receive }
       end
 
       private def self.current_value(key : String) : String?
@@ -210,6 +252,7 @@ module Crystal
         when "env"         then ENV[argument]?
         when "file_exists" then file_exists(argument)[1]
         when "read_file"   then read_file(argument)[1]
+        when "dir_tree"    then dir_tree(argument)[1]
         when "system"
           output = `#{argument}` rescue return "\0failed"
           $?.success? ? output : "\0failed"

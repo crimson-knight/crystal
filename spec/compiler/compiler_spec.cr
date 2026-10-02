@@ -76,6 +76,42 @@ describe "Compiler" do
       end
     end
 
+    it "skips a build that used `run`, and rebuilds when a file it read changes" do
+      with_tempfile("incremental_run_sources") do |dir|
+        Dir.mkdir_p(dir)
+        main = File.join(dir, "main.cr")
+        data = File.join(dir, "data.txt")
+        hidden = File.join(dir, "hidden.txt")
+        File.write(File.join(dir, "reader.cr"), <<-CRYSTAL)
+          # Declares a file it reads beyond its arguments
+          File.write(ENV["CRYSTAL_MACRO_RUN_DEPFILE"], "#{hidden}\n")
+          print "\#{File.read(ARGV[0]).strip} + \#{File.read("#{hidden}").strip}".inspect
+          CRYSTAL
+        File.write(main, %(puts {{ run("./reader", "#{data}") }}))
+        File.write(data, "one")
+        File.write(hidden, "a")
+
+        with_temp_executable "incremental_run" do |path|
+          build = -> { Crystal::Command.run ["build"].concat(program_flags_options).concat([main, "-o", path]) }
+
+          build.call
+          Process.capture(path).should eq("one + a\n")
+
+          mtime = File.info(path).modification_time
+          build.call
+          File.info(path).modification_time.should eq(mtime)
+
+          File.write(data, "two")
+          build.call
+          Process.capture(path).should eq("two + a\n")
+
+          File.write(hidden, "b")
+          build.call
+          Process.capture(path).should eq("two + b\n")
+        end
+      end
+    end
+
     it "relinks correctly when a changed file drops an instantiation in another module" do
       with_tempfile("incremental_instantiation_main.cr", "incremental_instantiation_foo.cr") do |main, foo|
         File.write(main, %(require "./#{File.basename(foo)}"\nFoo.run))

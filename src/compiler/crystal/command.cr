@@ -57,6 +57,7 @@ class Crystal::Command
     Usage: crystal tool [tool] [switches] [program file] [--] [arguments]
 
     Tool:
+        annotate                 add inferred return types to methods missing one
         context                  show context for given location
         dependencies             show file dependency tree
         expand                   show macro expansion for given location
@@ -225,6 +226,9 @@ class Crystal::Command
     when !tool
       puts COMMANDS_USAGE
       exit
+    when "annotate" == tool
+      options.shift
+      annotate
     when "context".starts_with?(tool)
       options.shift
       context
@@ -815,6 +819,10 @@ class Crystal::Command
     end
 
     compiler.warnings.exclude_lib_path = true
+
+    opts.on("--strict-signatures", "Require return types in this directory's code (except lib/) and make them the type callers see (or CRYSTAL_STRICT_SIGNATURES=1)") do
+      compiler.strict_signatures = true
+    end
   end
 
   private def validate_emit_values(values)

@@ -308,8 +308,34 @@ module Crystal
       end
     end
 
+    # The output of a `run` program is assumed to depend only on the program's
+    # sources, the arguments that name files or directories, and the paths it
+    # declared in its depfile (see `Program::MACRO_RUN_DEPFILE_ENV`). That
+    # covers the ECR, Slang and i18n embed programs. `CRYSTAL_MACRO_RUN_TRUST=0`
+    # restores the conservative behavior: never skip a build that used `run`.
+    private def record_macro_run_inputs(result, run_args)
+      if ENV["CRYSTAL_MACRO_RUN_TRUST"]? == "0"
+        @program.uses_unverifiable_macro_inputs = true
+        return
+      end
+
+      inputs = @program.external_macro_inputs
+      result.sources.each do |source|
+        key, value = IncrementalCache::ExternalInput.read_file(source)
+        inputs[key] = value
+      end
+      run_args.each do |arg|
+        next unless File.exists?(arg)
+        key, value = IncrementalCache::ExternalInput.path(arg)
+        inputs[key] = value
+      end
+      result.declared_inputs.each do |path|
+        key, value = IncrementalCache::ExternalInput.path(path)
+        inputs[key] = value
+      end
+    end
+
     def interpret_run(node)
-      @program.uses_unverifiable_macro_inputs = true
       if node.args.size == 0
         node.wrong_number_of_arguments "macro '::run'", 0, "1+"
       end
@@ -330,6 +356,7 @@ module Crystal
       end
 
       result = @program.macro_run(filename, run_args)
+      record_macro_run_inputs(result, run_args)
       if result.status.success?
         @last = MacroId.new(result.stdout)
       else

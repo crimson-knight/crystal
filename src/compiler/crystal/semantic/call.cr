@@ -400,6 +400,7 @@ class Crystal::Call
       unless typed_def
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
+        program.collected_def_instances.try &.<< typed_def
 
         # Record file-level dependency for incremental compilation.
         # If a call in file A resolves to a def in file B, then A depends on B.

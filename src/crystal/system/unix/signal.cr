@@ -49,6 +49,11 @@ module Crystal::System::Signal
     end
   end
 
+  # The signals with a handler installed by `trap`.
+  def self.trapped_sigset : LibC::SigsetT
+    @@mutex.synchronize { @@sigset.to_unsafe.value }
+  end
+
   def self.trap_handler?(signal)
     @@mutex.synchronize { @@handlers[signal]? }
   end

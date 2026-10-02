@@ -348,13 +348,50 @@ module Crystal
 
   class Def
     def map_type(type)
+      freeze_type = self.freeze_type
+      return type unless freeze_type
+
       # When we have Nil forced as a return type, NoReturn still
       # wins, so we must account for this case.
       # Otherwise we simply keep having the Nil type.
-      if freeze_type.try &.nil_type? && !type.no_return?
-        freeze_type
+      if freeze_type.nil_type?
+        return type.no_return? ? type : freeze_type
+      end
+
+      # Return type firewall: a method with a declared return type has that
+      # type for its callers, not the (possibly narrower) type of its body.
+      # Editing the body then can't change the types in the rest of the
+      # program, which is what lets a body-only change be recompiled on its
+      # own. NoReturn still wins, like for Nil above. A type that doesn't fit
+      # is left alone so `set_type` reports the usual error.
+      #
+      # Only applies to strict code (`--strict-signatures`): the standard
+      # library and shards rely on the narrower type in many places, and they
+      # don't need it since they aren't edited.
+      if !type.no_return? && strict_signatures? && Def.firewall_type?(freeze_type) && type.implements?(freeze_type)
+        freeze_type.virtual_type
       else
         type
+      end
+    end
+
+    private def strict_signatures? : Bool
+      return false unless (location = self.location) && (owner = self.owner?)
+      owner.program.strict_file?(location.original_filename)
+    end
+
+    # Whether *type* can be the type of a value: a restriction like `Array`
+    # (a generic type without its type arguments) or a module (`self` in a
+    # module method is the module, not the including type) only constrains
+    # the method's type, so the body's type is kept.
+    def self.firewall_type?(type : Type) : Bool
+      case type
+      when UnionType
+        type.union_types.all? { |union_type| firewall_type?(union_type) }
+      when GenericType
+        false
+      else
+        !type.module?
       end
     end
   end
