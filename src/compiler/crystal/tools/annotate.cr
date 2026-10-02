@@ -4,11 +4,9 @@ require "../compiler"
 module Crystal
   class Command
     private def annotate
-      dry_run = false
+      # Not a compiler option, so it must be taken out before they're parsed.
+      dry_run = !!options.delete("--dry-run")
       config = create_compiler "tool annotate", no_codegen: true
-      if options.delete("--dry-run")
-        dry_run = true
-      end
       config.compiler.no_codegen = true
       # The tool needs the types the bodies infer, before any are declared.
       config.compiler.strict_signatures = false
