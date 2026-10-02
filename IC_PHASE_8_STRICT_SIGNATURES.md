@@ -110,5 +110,35 @@ match a full compilation (4435 typed methods), a signature change falls back
 to a full compilation, and the incrementally built server serves the edited
 page.
 
-Next: regenerate only the LLVM modules of the changed methods instead of the
-whole program.
+### Partial codegen
+
+`Program#codegen_partial` then generates only the LLVM modules of the types
+whose methods were typed again (and of new instantiations); every other
+module's object from the last build is reused (`CompilationUnit` with
+`skipped_via_module_cache`).
+
+- A full codegen records, per module, the functions it generated with a body
+  (`Program::CodegenSnapshot`), plus the main module's definitions, the number
+  of symbols and the last type id.
+- A partial codegen generates those functions of the changed modules again
+  (with their new bodies); calls to functions of other modules only declare
+  them (`codegen_fun` skips the body). The codegen state of consts and class
+  vars is kept from the last full codegen, matching its reused main module.
+- It falls back to a full codegen when the regenerated code needs something
+  the reused main module doesn't have: a new type id (a new type could be
+  missing from other modules' virtual dispatch), a new symbol, or a function
+  or global the main module would now define (a const or class var read for
+  the first time); also when the main module itself changed (top-level
+  methods).
+- A full `codegen_again` assigns the type ids again, since a type created
+  after they were assigned gets an id outside its hierarchy's range.
+
+crysterr, release compiler, `crystal watch`:
+
+| Change | Before phase 8 | Typing only | Partial codegen |
+|--------|----------------|-------------|-----------------|
+| Method body (controller, model) | 11.9s | 4.3-5.3s | **0.24-0.41s** |
+| Lines added mid-file (23 methods, 10 modules) | 11.9s | 4.8s | **0.47s** |
+| Signature change (full compilation) | 11.9s | 10.9s | 10.9s |
+
+The partially built server serves the edited pages.

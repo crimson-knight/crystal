@@ -390,11 +390,48 @@ module Crystal
 
     # Generates the executable again for a program whose methods
     # `IncrementalSemantic` typed again, without the semantic pass.
-    def codegen_again(result : Result, sources : Array(Source), output_filename : String) : Nil
-      result.program.restore_codegen_state
-      units = codegen result.program, result.node, sources, output_filename
+    #
+    # *changed_types* are the owners of the methods typed again (and of new
+    # instantiations): when given, only their LLVM modules are generated
+    # again if possible (see `Program#codegen_partial`). Returns why that
+    # wasn't possible, or `nil` when it was.
+    def codegen_again(result : Result, sources : Array(Source), output_filename : String, changed_types : Enumerable(Type)? = nil) : String?
+      program = result.program
+      reason = "no changed types given"
+
+      if changed_types && !single_module_codegen?(program)
+        partial_modules = changed_types.to_set.map { |type| codegen_module_name(type) }.to_set
+        begin
+          units = codegen program, result.node, sources, output_filename, partial_modules: partial_modules
+          @progress_tracker.clear
+          print_codegen_stats(units)
+          return nil
+        rescue ex : Program::PartialCodegenUnsupported
+          reason = ex.message || "unsupported"
+        end
+      end
+
+      program.restore_codegen_state
+      units = codegen program, result.node, sources, output_filename
       @progress_tracker.clear
       print_codegen_stats(units)
+      reason
+    end
+
+    # The name of the LLVM module the methods of *type* are generated in
+    # (see `CodeGenVisitor#type_module`).
+    private def codegen_module_name(type : Type) : String
+      type = type.remove_typedef
+      case type
+      when Program, LibType
+        ""
+      else
+        type.instance_type.to_s
+      end
+    end
+
+    private def single_module_codegen?(program) : Bool
+      @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
     end
 
     # Runs the semantic pass on the given source, without generating an
@@ -642,7 +679,7 @@ module Crystal
       bc_flags_changed
     end
 
-    private def codegen(program, node : ASTNode, sources, output_filename)
+    private def codegen(program, node : ASTNode, sources, output_filename, partial_modules : Set(String)? = nil)
       {% if LibLLVM::IS_LT_130 %}
         if @codegen_target.architecture == "aarch64"
           stderr.puts "Error: Target #{@codegen_target} requires a Crystal compiler built with LLVM 13 or a later version."
@@ -653,8 +690,13 @@ module Crystal
       is_single_module = @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
 
       llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
-        program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: is_single_module
+        if partial_modules
+          program.codegen_partial node, partial_modules, debug: debug, frame_pointers: frame_pointers,
+            single_module: is_single_module
+        else
+          program.codegen node, debug: debug, frame_pointers: frame_pointers,
+            single_module: is_single_module
+        end
       end
 
       output_dir = CacheDir.instance.directory_for(sources)
@@ -743,6 +785,15 @@ module Crystal
         end
 
         CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, skip_codegen)
+      end
+
+      # A partial codegen reuses the objects of the modules it didn't generate.
+      if partial_modules && (snapshot = program.codegen_snapshot)
+        reused_module = LLVM::Context.new.new_module("reused")
+        snapshot.module_names.each do |type_name|
+          next if partial_modules.includes?(type_name)
+          units << CompilationUnit.new(self, program, type_name, reused_module, output_dir, bc_flags_changed, true)
+        end
       end
 
       # Store module source files for later saving to incremental cache

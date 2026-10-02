@@ -106,7 +106,10 @@ module Crystal
         @incremental_semantic = nil
         strict = @compiler.strict_signatures?
         result = @compiler.compile_configure_program(sources, @output_filename) do |program|
-          program.instantiation_records = {} of Def => Array(Program::InstantiationRecord) if strict
+          if strict
+            program.instantiation_records = {} of Def => Array(Program::InstantiationRecord)
+            program.codegen_snapshot = Program::CodegenSnapshot.new
+          end
         end
         @result = result
 
@@ -126,18 +129,31 @@ module Crystal
         return nil unless incremental && result && !@changed.empty?
 
         start = Time.instant
+        program = result.program
+        new_instances = program.collected_def_instances = [] of Def
         begin
           incremental.apply(@changed.to_h { |filename| {filename, File.read(filename)} })
         rescue ex : IncrementalSemantic::Unsupported
           print_status "Full compilation: #{ex.message}"
           return nil
+        ensure
+          program.collected_def_instances = nil
         end
         typing = start.elapsed
 
-        verify_incremental(sources, result.program) if ENV["CRYSTAL_INCREMENTAL_SEMANTIC_VERIFY"]? == "1"
+        verify_incremental(sources, program) if ENV["CRYSTAL_INCREMENTAL_SEMANTIC_VERIFY"]? == "1"
 
-        @compiler.codegen_again(result, sources, @output_filename) unless @compiler.no_codegen?
-        print_status "Typed #{incremental.retyped.size} method instantiation#{incremental.retyped.size == 1 ? "" : "s"} again in #{typing.total_milliseconds.round(1)}ms, total #{start.elapsed.total_seconds.round(2)}s"
+        codegen = ""
+        unless @compiler.no_codegen?
+          changed_types = (incremental.retyped + new_instances).map(&.owner)
+          if reason = @compiler.codegen_again(result, sources, @output_filename, changed_types)
+            codegen = ", full codegen (#{reason})"
+          else
+            modules = changed_types.uniq.size
+            codegen = ", codegen of #{modules} module#{modules == 1 ? "" : "s"}"
+          end
+        end
+        print_status "Typed #{incremental.retyped.size} method instantiation#{incremental.retyped.size == 1 ? "" : "s"} again in #{typing.total_milliseconds.round(1)}ms#{codegen}, total #{start.elapsed.total_seconds.round(2)}s"
         result
       end
 

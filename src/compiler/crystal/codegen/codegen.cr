@@ -156,11 +156,74 @@ module Crystal
                 frame_pointers = FramePointers::Auto)
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
+      snapshot = codegen_snapshot
+      visitor.recorded_funs = {} of String => Array(CodegenFun) if snapshot
       visitor.accept node
       visitor.process_finished_hooks
       visitor.finish
 
+      if snapshot
+        snapshot.funs = visitor.recorded_funs.not_nil!
+        snapshot.module_names = visitor.modules.keys
+        snapshot.main_definitions = visitor.main_definitions
+        snapshot.symbols_size = symbols.size
+        snapshot.last_type_id = llvm_id.last_id
+        snapshot.taken = true
+      end
+
       {visitor.modules, visitor.module_source_files}
+    end
+
+    class PartialCodegenUnsupported < Exception
+    end
+
+    # Generates only the LLVM modules named *module_names* again, after
+    # `IncrementalSemantic` typed some of their methods again: the functions
+    # the last full codegen generated in them (now with their new bodies),
+    # plus any they now call that are new. Functions of other modules are
+    # only declared, their objects from the last build being reused.
+    #
+    # Codegen state on the program (const and class var flags, type ids) is
+    # kept from the last full codegen, matching its main module's object,
+    # which is reused too. So this raises `PartialCodegenUnsupported` when
+    # the regenerated code needs something that main module doesn't have: a
+    # new type id, a new symbol, a new function or global in the main module
+    # (a const or class var read for the first time...), or a change to the
+    # main module itself.
+    def codegen_partial(node, module_names : Set(String), single_module = false, debug = Debug::Default,
+                        frame_pointers = FramePointers::Auto)
+      snapshot = codegen_snapshot
+      raise PartialCodegenUnsupported.new("no previous codegen") unless snapshot && snapshot.taken?
+      raise PartialCodegenUnsupported.new("the main module changed") if module_names.includes?("")
+      raise PartialCodegenUnsupported.new("new symbols") unless symbols.size == snapshot.symbols_size
+
+      revive_codegen_funs
+      visitor = CodeGenVisitor.new self, node, single_module: single_module,
+        debug: debug, frame_pointers: frame_pointers
+      visitor.partial_modules = module_names
+      recorded = visitor.recorded_funs = {} of String => Array(CodegenFun)
+
+      module_names.each do |module_name|
+        snapshot.funs[module_name]?.try &.each do |codegen_fun|
+          visitor.codegen_again(codegen_fun)
+        end
+      end
+      visitor.finish
+
+      unless llvm_id.last_id == snapshot.last_type_id
+        raise PartialCodegenUnsupported.new("new types")
+      end
+      new_definitions = visitor.main_definitions - snapshot.main_definitions
+      unless new_definitions.empty?
+        raise PartialCodegenUnsupported.new("the main module would define #{new_definitions.first(3).join(", ")}")
+      end
+
+      module_names.each do |module_name|
+        snapshot.funs[module_name] = recorded[module_name]? || [] of CodegenFun
+      end
+
+      modules = visitor.modules.select { |name, _| module_names.includes?(name) }
+      {modules, visitor.module_source_files}
     end
 
     def llvm_id
@@ -221,6 +284,13 @@ module Crystal
     getter builder : CrystalLLVMBuilder
     getter main : LLVM::Function
     getter modules : Hash(String, ModuleInfo)
+
+    # See `Program#codegen_partial`: the modules to generate, the others'
+    # functions are only declared.
+    property partial_modules : Set(String)?
+
+    # When set, the functions generated with a body, by module.
+    property recorded_funs : Hash(String, Array(Program::CodegenFun))?
     getter context : Context
     getter llvm_typer : LLVMTyper
     getter alloca_block : LLVM::BasicBlock
@@ -574,9 +644,31 @@ module Crystal
       context.type.not_nil!
     end
 
+    # Generates *fun* (recorded by a previous codegen) in its module again.
+    def codegen_again(recorded : Program::CodegenFun) : Nil
+      mod = type_module(recorded.self_type).mod
+      return if typed_fun?(mod, recorded.mangled_name)
+
+      codegen_fun(recorded.mangled_name, recorded.target_def, recorded.self_type, is_closure: recorded.is_closure)
+    end
+
+    # The functions and globals the main module defines (not just declares).
+    def main_definitions : Set(String)
+      definitions = Set(String).new
+      @main_mod.functions.each { |func| definitions << func.name unless func.declaration? }
+      @main_mod.globals.each { |global| definitions << global.name unless global.declaration? }
+      definitions
+    end
+
     def finish
       clear_current_debug_location if @debug.line_numbers?
-      codegen_return @main_ret_type
+      if @partial_modules
+        # The main module of a partial codegen is thrown away: its main code
+        # wasn't generated, there's no value to return.
+        unreachable
+      else
+        codegen_return @main_ret_type
+      end
 
       # If there are no instructions in the alloca block and the
       # const block, we just removed them (less noise)

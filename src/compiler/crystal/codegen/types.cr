@@ -253,6 +253,9 @@ module Crystal
     end
 
     def restore_codegen_state : Nil
+      # Types created since the ids were assigned got ids outside their
+      # hierarchy's range: assign them all again.
+      @llvm_id = nil
       @codegen_saved_funs.each &.dead = false
       @codegen_saved_funs.clear
       @codegen_saved_consts.each do |const, (read, no_init_flag)|
@@ -268,5 +271,35 @@ module Crystal
       end
       @codegen_saved_class_vars.clear
     end
+
+    # Lets the next codegen generate the `fun`s again (well known ones like
+    # `__crystal_malloc64` must exist in the main module) without resetting
+    # the rest of the codegen state, see `codegen_partial`.
+    def revive_codegen_funs : Nil
+      @codegen_saved_funs.each &.dead = false
+    end
+
+    # A function codegen generated with its body, recorded so that a partial
+    # codegen can generate its module again.
+    record CodegenFun,
+      mangled_name : String,
+      target_def : Def,
+      self_type : Type,
+      is_closure : Bool
+
+    # What the last full codegen produced, for `codegen_partial`. Set it to
+    # an empty snapshot to have codegen record it.
+    class CodegenSnapshot
+      # Functions with a body, by module name (`""` is the main module).
+      property funs = {} of String => Array(CodegenFun)
+      property module_names = [] of String
+      # Functions and globals the main module defines.
+      property main_definitions = Set(String).new
+      property symbols_size = 0
+      property last_type_id = 0
+      property? taken = false
+    end
+
+    property codegen_snapshot : CodegenSnapshot?
   end
 end
