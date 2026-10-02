@@ -70,6 +70,17 @@ module Crystal
     # same. See `IncrementalCache::ExternalInput`.
     getter external_macro_inputs = {} of String => String?
 
+    # For each external macro input (see `external_macro_inputs`), the
+    # methods whose body expanded the macro that read it, or `nil` in the
+    # set when a macro outside a method body read it. `crystal watch` uses
+    # it to type those methods again when a template or other input changes.
+    getter external_macro_input_users = {} of String => Set(Def?)
+
+    def record_external_macro_input(key : String, value : String?, user : Def?) : Nil
+      external_macro_inputs[key] = value
+      (external_macro_input_users[key] ||= Set(Def?).new.compare_by_identity) << user
+    end
+
     # Set when a macro read external state that can't be re-checked cheaply
     # (`run`). An incremental build can then never be skipped as a whole.
     property? uses_unverifiable_macro_inputs = false
@@ -93,7 +104,13 @@ module Crystal
     # When set, how each method instantiation was made, so that
     # `IncrementalSemantic` can type it again with a new body. Keyed by the
     # untyped def (compared by identity).
-    property instantiation_records : Hash(Def, Array(InstantiationRecord))?
+    getter instantiation_records : Hash(Def, Array(InstantiationRecord))?
+
+    # Defs hash by content, and `IncrementalSemantic` replaces their bodies:
+    # the records must be found by identity.
+    def instantiation_records=(records : Hash(Def, Array(InstantiationRecord))?)
+      @instantiation_records = records.try &.compare_by_identity
+    end
 
     record InstantiationRecord,
       typed_def : Def,

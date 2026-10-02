@@ -142,7 +142,7 @@ module Crystal
         arg.accept self
         cmd = @last.to_macro_id
         env_value = ENV[cmd]?
-        @program.external_macro_inputs[IncrementalCache::ExternalInput.env_key(cmd)] = env_value
+        @program.record_external_macro_input(IncrementalCache::ExternalInput.env_key(cmd), env_value, @def)
         @last = env_value ? StringLiteral.new(env_value) : NilLiteral.new
       end
     end
@@ -264,7 +264,7 @@ module Crystal
       end
 
       if $?.success?
-        @program.external_macro_inputs[IncrementalCache::ExternalInput.system_key(cmd)] = result
+        @program.record_external_macro_input(IncrementalCache::ExternalInput.system_key(cmd), result, @def)
         @last = MacroId.new(result)
       elsif result.empty?
         node.raise "error executing command: #{cmd}, got exit status #{$?}"
@@ -286,7 +286,7 @@ module Crystal
         arg.accept self
         filename = @last.to_macro_id
         key, value = IncrementalCache::ExternalInput.file_exists(filename)
-        @program.external_macro_inputs[key] = value
+        @program.record_external_macro_input(key, value, @def)
 
         @last = BoolLiteral.new(File.exists?(filename))
       end
@@ -297,7 +297,7 @@ module Crystal
         arg.accept self
         filename = @last.to_macro_id
         key, value = IncrementalCache::ExternalInput.read_file(filename)
-        @program.external_macro_inputs[key] = value
+        @program.record_external_macro_input(key, value, @def)
 
         begin
           @last = StringLiteral.new(File.read(filename))
@@ -319,19 +319,18 @@ module Crystal
         return
       end
 
-      inputs = @program.external_macro_inputs
       result.sources.each do |source|
         key, value = IncrementalCache::ExternalInput.read_file(source)
-        inputs[key] = value
+        @program.record_external_macro_input(key, value, @def)
       end
       run_args.each do |arg|
         next unless File.exists?(arg)
         key, value = IncrementalCache::ExternalInput.path(arg)
-        inputs[key] = value
+        @program.record_external_macro_input(key, value, @def)
       end
       result.declared_inputs.each do |path|
         key, value = IncrementalCache::ExternalInput.path(path)
-        inputs[key] = value
+        @program.record_external_macro_input(key, value, @def)
       end
     end
 

@@ -78,6 +78,12 @@ class Crystal::Command
   private getter options
   @compiler : Compiler?
 
+  # `--watch` / `--no-watch` of `crystal run`, `nil` when not given.
+  @run_watch : Bool? = nil
+
+  # Whether the program file came from `Crystal.project_main_file`.
+  @main_inferred = false
+
   def initialize(@options : Array(String))
     @color = Colorize.default_enabled?(STDOUT, STDERR)
     @error_trace = false
@@ -285,6 +291,16 @@ class Crystal::Command
 
   private def run_command(single_file = false)
     config = create_compiler "run", run: true, single_file: single_file
+
+    # `crystal run` in a project (no file given) keeps running in a terminal,
+    # like `crystal watch --run`: rebuilt and restarted on every change.
+    watch = @run_watch
+    watch = @main_inferred && STDIN.tty? && STDOUT.tty? if watch.nil?
+    if watch && !config.specified_output && !config.compiler.no_codegen?
+      watch_and_run(config)
+      return
+    end
+
     if config.specified_output
       config.compile
       report_warnings
@@ -302,6 +318,17 @@ class Crystal::Command
 
       execute output_filename, config.arguments, config.compiler
     end
+  end
+
+  private def watch_and_run(config)
+    Watch::Watcher.new(
+      compiler: config.compiler,
+      sources: config.sources,
+      output_filename: Crystal.temp_executable(config.output_filename),
+      run_mode: true,
+      run_args: config.arguments,
+      color: @color
+    ).run
   end
 
   private def types
@@ -617,6 +644,15 @@ class Crystal::Command
         end
       end
 
+      if run
+        opts.on("--watch", "Keep running: rebuild and restart the program when a file changes (default without a file, in a terminal)") do
+          @run_watch = true
+        end
+        opts.on("--no-watch", "Run once and exit") do
+          @run_watch = false
+        end
+      end
+
       opts.on("--stdin-filename ", "Source file name to be read from STDIN") do |stdin_filename|
         has_stdin_filename = true
         filenames << stdin_filename
@@ -643,6 +679,13 @@ class Crystal::Command
     if single_file && (files = filenames[1..-1]?)
       arguments = files + arguments
       filenames = [filenames[0]]
+    end
+
+    # Without a file, use the shard's main file (see `Crystal.project_main_file`).
+    @main_inferred = false
+    if filenames.empty? && !cursor_command && (main = Crystal.project_main_file)
+      filenames << main
+      @main_inferred = true
     end
 
     if filenames.size == 0 || (cursor_command && cursor_location.nil?)

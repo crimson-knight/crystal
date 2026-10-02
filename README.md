@@ -1,30 +1,139 @@
-# Crystal Alpha — incremental compilation fork
+# Crystal Alpha — fast rebuilds fork
 
-Incremental compilation is on by default (`build`, `run`, `spec`, `eval`, `watch`);
-opt out with `--no-incremental` or `CRYSTAL_INCREMENTAL=0`. The biggest win comes
-from a long-running `crystal watch`, which coding agents don't use unless told to.
+A Crystal compiler fork where editing a method rebuilds in a fraction of a
+second. On a ~8k line Amber app, a method body or template edit rebuilds in
+**~0.3s** instead of 12s, and a rebuild without changes is skipped (0.07s).
 
-### Using it with Claude Code / AI agents
+It's built for both ways of writing code today:
 
-Add this to your project's `CLAUDE.md` (or `AGENTS.md`):
+- **By hand:** keep `crystal run` open in a terminal; save a file and the
+  program restarts with the change before you've switched windows. Declared
+  return types read as documentation and put type errors where you made them.
+- **With an LLM (Claude Code, other agents):** the agent edits several files
+  without a build per step (`crystal watch hold`), then gets its errors in
+  under a second (`crystal watch build`) instead of waiting for a full
+  compile. Explicit signatures tell it what each method returns without
+  reading the body.
+
+Both can work on the same project at once: the agent edits, you keep
+`crystal run` open, and it rebuilds once when the agent is done.
+
+## Quick start
+
+In a shard, commands find the main file from `shard.yml` (first target's
+`main`, else `src/<name>.cr`):
+
+```sh
+crystal run      # build, run, rebuild + restart on every change (in a terminal)
+crystal build    # build; skipped if nothing changed
+crystal spec
+```
+
+`crystal run file.cr` runs once as before; `--watch` / `--no-watch` choose.
+`crystal watch` rebuilds without running.
+
+## Strict signatures (on by default)
+
+Every `def` in your project (not `lib/`, not the standard library) declares
+its return type, and that declared type is what callers see. That makes a
+body edit invisible to the rest of the program, so only that method is typed
+and code-generated again. Migrating a project:
+
+```sh
+crystal tool annotate --dry-run   # show the return types it would add
+crystal tool annotate             # add them; then type the methods it lists
+```
+
+Annotated code still compiles with upstream Crystal. Opt out with
+`--no-strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=0`.
+
+What rebuilds fast: method bodies, and templates (Slang, ECR) rendered inside
+a method. A signature change, a new method or type, or a file read by a
+top-level macro (e.g. i18n locales) rebuilds fully (~10s).
+
+## Coding agents and editors
+
+So that an agent's multi-file edit isn't compiled at every step, the watcher
+(`crystal run` / `crystal watch`) can be held:
+
+```sh
+crystal watch hold claude   # don't build while editing
+crystal watch release       # build what changed, once
+crystal watch build         # build now, wait, print errors (exit 0 ok, 1 failed, 2 no watcher)
+crystal watch status        # result of the last build
+crystal watch hooks         # Claude Code hooks that hold/release automatically
+```
+
+Add the output of `crystal watch hooks` to `.claude/settings.json`, and this
+to the project's `CLAUDE.md` (or `AGENTS.md`):
 
 ~~~~markdown
-## Crystal toolchain (crystal-alpha, incremental)
-- Check once: `crystal watch --help` must work; otherwise the upstream compiler is
-  on PATH — tell the user.
-- Keep ONE watcher running for the session (check `pgrep -af "crystal watch"`
-  first), started in the background:
-  `crystal watch src/<APP>.cr --no-color > .crystal-watch.log 2>&1`
-  The binary is written to `./<APP>`; gitignore it and the log.
-- After editing `.cr` files, don't rebuild: wait for a new
-  `[watch] Compiled successfully` or `[watch] Compilation failed` line in
-  `.crystal-watch.log`; the error is printed above it.
-- If the watcher's FIRST compile failed, it watches nothing: fix, then restart it.
-- Specs: `crystal spec [spec/file_spec.cr:LINE]`. Don't pass `--no-incremental`
-  or `--no-cache` unless debugging the compiler.
-- Navigate with `crystal tool implementations|context|expand -c FILE:LINE:COL src/<APP>.cr`.
-- Format with `crystal tool format`.
+## Crystal toolchain (crystal-alpha fork)
+- `crystal watch --help` must list `hold` and `build`; if not, the upstream
+  compiler is on PATH: tell the user.
+- Every `def` here declares its return type (strict signatures). For a new
+  method, write the type yourself; for many, run `crystal tool annotate` and
+  type what it lists. Don't use `--no-strict-signatures` to get past errors.
+- The user keeps `crystal run` (or `crystal watch`) running. Don't start
+  another build or watcher; check with `crystal watch status`.
+- After your edits, run `crystal watch build`: it builds what changed
+  (usually under a second) and prints the errors; exit 1 = fix them.
+  Exit 2 = no watcher: use `crystal build --no-codegen` to type check.
+- Without the hooks, run `crystal watch hold claude` before editing.
+- Prefer editing method bodies; changing signatures or adding methods or
+  types is fine but triggers a full rebuild (~10s).
+- Specs: `crystal spec [spec/file_spec.cr:LINE]`. Format: `crystal tool format`.
 ~~~~
+
+How it works: `IC_PHASE_8_STRICT_SIGNATURES.md`. Incremental caching and
+`--no-incremental`: `INCREMENTAL_PLAN.md`.
+
+## What's different from upstream Crystal
+
+Things to check when switching a project or system to this compiler:
+
+1. **Strict signatures are on (breaking).** In your project's code (the
+   current directory, except `lib/` and anything on `CRYSTAL_PATH`) every
+   `def` must declare its return type, or the build fails with a list of the
+   methods missing one. Run `crystal tool annotate`, or opt out with
+   `--no-strict-signatures` / `CRYSTAL_STRICT_SIGNATURES=0` (e.g. in CI for a
+   project not migrated yet). `initialize` and methods generated by macros
+   are exempt.
+2. **A declared return type is what callers see.** Upstream, `def foo : Int32?`
+   whose body returns an `Int32` has type `Int32` at call sites; here it's
+   `Int32?`. Code relying on the narrower type (arithmetic on the result,
+   `typeof`, an overload only the narrow type matches) fails to compile:
+   declare the precise type (`: Int32`) or handle the wider one. A class
+   (`: Animal`) becomes its virtual type (`Animal+`), dispatching at runtime
+   to the subclass as before. Not affected: `NoReturn` bodies, and return
+   types that aren't value types (`: Array` without type arguments, modules,
+   `self` in a module).
+3. **Incremental compilation is on**, cached in `CRYSTAL_CACHE_DIR` (default
+   `~/.cache/crystal`): `crystal build` with nothing changed only checks
+   file fingerprints and macro inputs. If something looks stale, build with
+   `--no-incremental` (or `CRYSTAL_INCREMENTAL=0`) and please report it.
+4. **`run` macros must name what they read.** A build that used `{{ run(...) }}`
+   is now skipped when nothing changed, judging by the program's sources, the
+   arguments that are files or directories, and the files the program lists
+   in the file named by the `CRYSTAL_MACRO_RUN_DEPFILE` environment variable
+   (one path per line). A `run` program reading other files (a fixed config
+   path, a glob of its own) should list them there; or set
+   `CRYSTAL_MACRO_RUN_TRUST=0` to never skip such builds. ECR, Slang and
+   i18n embeds are covered by their arguments.
+5. **`crystal run` without a file** builds the shard's main file
+   (`shard.yml`) and, in a terminal, keeps running and restarting on
+   changes; it no longer exits after one run. Scripts and CI (no terminal),
+   `crystal run file.cr` and `crystal run --no-watch` run once.
+6. **`.crystal-watch/`** appears in projects where `crystal run` or
+   `crystal watch` ran (it holds the build status; it ignores itself in git).
+7. **Processes are spawned with `posix_spawn`** on Linux (glibc) instead of
+   `fork` + `exec`, when no `chdir:` is given: much faster from a large
+   process, same redirections, environment and signal handling. Code that
+   relied on running Crystal code in the child between `fork` and `exec`
+   can't, but the standard library never offered that for `Process.new`.
+8. In strict code, a method with a declared return type always counts as
+   possibly raising, so calls to it inside `begin`/`rescue` use `invoke`:
+   no change in behavior, slightly less optimizable code.
 
 ---
 

@@ -36,8 +36,11 @@ module Crystal
       @program.file_modules.each_value { |file_module| index_defs(file_module) }
     end
 
-    # Applies the new *contents* of some files (by filename).
-    def apply(contents : Hash(String, String)) : Nil
+    # Applies the new *contents* of some source files (by filename), and
+    # changes to files macros read (*changed_inputs*: templates, a `run`
+    # program's data): the methods whose body expanded such a macro are
+    # typed again, which expands it again.
+    def apply(contents : Hash(String, String), changed_inputs : Enumerable(String) = [] of String) : Nil
       @retyped.clear
       changed = [] of {Def, Def}
 
@@ -48,15 +51,86 @@ module Crystal
         changed.concat changed_defs(filename, old_source, new_source)
       end
 
+      expanding = Set(Def).new.compare_by_identity
+      changed_inputs.each do |path|
+        macro_input_users(path).each { |user| expanding << user }
+      end
+      changed.each { |original, _| expanding.delete(original) }
+
       changed.each { |original, _| check_retypeable(original) }
+      expanding.each { |original| check_retypeable(original) }
 
       changed.each do |original, new_def|
         records = @program.instantiation_records.try &.[original]?
         update_original(original, new_def)
         records.try &.each { |record| retype(original, record) }
       end
+      expanding.each do |original|
+        @program.instantiation_records.try &.[original]?.try &.each { |record| retype(original, record) }
+      end
 
       contents.each { |filename, source| @sources[filename] = source }
+    end
+
+    # The source files whose content differs from what the program was last
+    # updated with, and the files macros read whose content changed since:
+    # what `apply` should be given after changes that weren't watched one
+    # by one (see `crystal watch hold`).
+    def changed_files : Array(String)
+      changed = @sources.compact_map do |filename, source|
+        current = File.read(filename) rescue nil
+        filename unless current == source
+      end
+      @program.external_macro_inputs.each do |key, value|
+        kind, _, input = key.partition(':')
+        next unless kind.in?("read_file", "file_exists", "dir_tree")
+        next if @sources.has_key?(input)
+        changed << input unless IncrementalCache::ExternalInput.unchanged?({key => value})
+      end
+      changed.uniq
+    end
+
+    # Whether *filename* is one of the program's source files.
+    def source?(filename : String) : Bool
+      @sources.has_key?(filename)
+    end
+
+    # The methods whose body expanded a macro that read *path* (or a
+    # directory containing it).
+    private def macro_input_users(path : String) : Array(Def)
+      path = File.expand_path(path)
+      users = [] of Def
+      found = false
+      @program.external_macro_input_users.each do |key, key_users|
+        kind, _, input = key.partition(':')
+        next unless kind.in?("read_file", "file_exists", "dir_tree")
+        next unless input == path || (kind == "dir_tree" && path.starts_with?(File.join(input, "")))
+
+        found = true
+        if key_users.includes?(nil)
+          raise Unsupported.new("#{path} is read by a macro outside a method body")
+        end
+        key_users.each { |user| users << user.not_nil! }
+      end
+      raise Unsupported.new("#{path} changed, but no macro of the program read it") unless found
+      users
+    end
+
+    # The files and directories macros of *program* read, for watching. A
+    # directory read as a whole comes with its subdirectories and files.
+    def self.macro_input_paths(program : Program) : Set(String)
+      paths = Set(String).new
+      program.external_macro_inputs.each_key do |key|
+        kind, _, input = key.partition(':')
+        case kind
+        when "read_file", "file_exists"
+          paths << input
+        when "dir_tree"
+          paths << input
+          Dir.glob(File.join(::Path[input].to_posix.to_s, "**", "*"), match: :dot_files) { |entry| paths << entry }
+        end
+      end
+      paths
     end
 
     private def index_defs(type : Type) : Nil

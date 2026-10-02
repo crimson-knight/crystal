@@ -1,6 +1,7 @@
 require "./file_watcher"
 require "./kqueue_watcher"
 require "./inotify_watcher"
+require "./coordination"
 
 module Crystal
   module Watch
@@ -24,6 +25,14 @@ module Crystal
       @incremental_semantic : IncrementalSemantic?
       @changed = [] of String
 
+      # See `Coordination`: the project directory with `.crystal-watch/`, the
+      # number of the last finished build and the request it answers.
+      @root : String = Dir.current
+      @build = 0
+      @request : String? = nil
+      @last_state = "compiling"
+      @last_errors : String? = nil
+
       def initialize(
         @compiler : Compiler,
         @sources : Array(Compiler::Source),
@@ -39,6 +48,8 @@ module Crystal
 
       def run : Nil
         setup_signal_handler
+        Coordination.setup(@root)
+        @request = Coordination.requested(@root)
 
         loop do
           break if @interrupted
@@ -58,14 +69,19 @@ module Crystal
           Compiler::Source.new(source.filename, File.read(source.filename))
         end
 
+        write_status "compiling", "Compiling"
         begin
           result = compile_incrementally(fresh_sources) || compile_fully(fresh_sources)
 
-          # Extract watched files from program.requires
+          # Watch the program's files, the ones its macros read (templates, a
+          # `run` program's data) and `.crystal-watch/`
           watched_files = result.program.requires.dup
+          watched_files.concat IncrementalSemantic.macro_input_paths(result.program)
+          watched_files << Coordination.dir(@root)
           @file_watcher.watch(watched_files)
 
           print_success "Compiled successfully (watching #{watched_files.size} files)"
+          finish_build "ok", "Compiled successfully"
 
           if @run_mode
             kill_running_process
@@ -74,21 +90,26 @@ module Crystal
         rescue ex : Crystal::CodeError
           # The kept program may be half updated: start over next time.
           @incremental_semantic = nil
+          ex.color = false
+          errors = ex.to_s
           ex.color = @color
           STDERR.puts ex
           print_error "Compilation failed (watching for changes...)"
+          finish_build "failed", "Compilation failed", errors
         rescue ex : Crystal::Error
           STDERR.puts ex.message
           print_error "Compilation failed (watching for changes...)"
+          finish_build "failed", "Compilation failed", ex.message
         rescue ex : IO::Error
           STDERR.puts ex.message
           print_error "File read error (watching for changes...)"
+          finish_build "failed", "File read error", ex.message
         end
 
         return if @interrupted
 
         print_status "Watching for changes..."
-        changed = @file_watcher.wait_for_changes(@debounce)
+        changed = wait_for_changes_to_build
 
         return if @interrupted
 
@@ -100,6 +121,60 @@ module Crystal
           end
           puts
         end
+      end
+
+      # Waits for changes worth a build. Waits longer while a hold is in
+      # effect (`crystal watch hold`), answers requests (`crystal watch build`)
+      # that need no build, and ignores events that didn't change anything.
+      private def wait_for_changes_to_build : Array(String)
+        loop do
+          events = @file_watcher.wait_for_changes(@debounce)
+          return [] of String if @interrupted
+
+          if reason = Coordination.held?(@root)
+            print_status "Held by #{reason}: building when released (crystal watch release)"
+            write_status "held", "Held by #{reason}"
+            while Coordination.held?(@root) && !@interrupted
+              sleep 200.milliseconds
+            end
+            return [] of String if @interrupted
+            @file_watcher.drain
+          end
+
+          # A request answered by the next build is the one made by now.
+          @request = Coordination.requested(@root)
+          changed = changes_since_last_build(events)
+          return changed unless changed.empty?
+
+          write_status @last_state, "No changes since the last build", @last_errors
+        end
+      end
+
+      # What changed since the last build: by content when the program is
+      # kept (so a file saved without changes, or a hold released after no
+      # change, builds nothing); otherwise any watched file that changed.
+      private def changes_since_last_build(events : Array(String)) : Array(String)
+        control = Coordination.dir(@root)
+        if incremental = @incremental_semantic
+          incremental.changed_files
+        elsif @last_state == "failed" || events.any? { |path| path != control && !path.starts_with?(File.join(control, "")) }
+          [@sources.first.filename]
+        else
+          [] of String
+        end
+      end
+
+      private def finish_build(state : String, message : String, errors : String? = nil) : Nil
+        @build += 1
+        @last_state = state
+        @last_errors = errors
+        write_status state, message, errors
+      end
+
+      private def write_status(state : String, message : String, errors : String? = nil) : Nil
+        Coordination.write_status(@root, Coordination::Status.new(
+          state: state, build: @build, request: @request, pid: Process.pid.to_i64,
+          updated_at: Time.utc, message: message, errors: errors))
       end
 
       private def compile_fully(sources : Array(Compiler::Source)) : Compiler::Result
@@ -132,7 +207,8 @@ module Crystal
         program = result.program
         new_instances = program.collected_def_instances = [] of Def
         begin
-          incremental.apply(@changed.to_h { |filename| {filename, File.read(filename)} })
+          changed_sources, changed_inputs = @changed.partition { |filename| incremental.source?(filename) }
+          incremental.apply(changed_sources.to_h { |filename| {filename, File.read(filename)} }, changed_inputs)
         rescue ex : IncrementalSemantic::Unsupported
           print_status "Full compilation: #{ex.message}"
           return nil

@@ -82,6 +82,24 @@ describe IncrementalSemantic do
     incremental.retyped.map(&.name).should eq(["foo"])
   end
 
+  it "types a method edited twice" do
+    with_tempfile("incremental_semantic_twice") do |dir|
+      Dir.mkdir_p(dir)
+      main = File.join(dir, "main.cr")
+      versions = (1..3).map { |i| %(require "primitives"\n\ndef foo : Int32\n  #{i}\nend\n\nfoo\n) }
+      program = compile_typed(dir, {"main.cr" => versions[0]})
+      incremental = IncrementalSemantic.new(program, {main => versions[0]})
+
+      incremental.apply({main => versions[1]})
+      incremental.retyped.size.should eq(1)
+      incremental.apply({main => versions[2]})
+      incremental.retyped.size.should eq(1)
+
+      expected = IncrementalSemantic.typed_methods(compile_typed(dir, {"main.cr" => versions[2]}), dir)
+      IncrementalSemantic.typed_methods(program, dir).should eq(expected)
+    end
+  end
+
   it "instantiates methods the new body calls" do
     assert_incremental(
       {"main.cr" => <<-CRYSTAL},

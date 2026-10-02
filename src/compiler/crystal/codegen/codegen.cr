@@ -652,12 +652,18 @@ module Crystal
       codegen_fun(recorded.mangled_name, recorded.target_def, recorded.self_type, is_closure: recorded.is_closure)
     end
 
-    # The functions and globals the main module defines (not just declares).
+    # The functions and globals the main module defines (not just declares)
+    # for other modules. Private and internal ones (string literals...) are
+    # the module's own business.
     def main_definitions : Set(String)
       definitions = Set(String).new
-      @main_mod.functions.each { |func| definitions << func.name unless func.declaration? }
-      @main_mod.globals.each { |global| definitions << global.name unless global.declaration? }
+      @main_mod.functions.each { |func| definitions << func.name if exported_definition?(func) }
+      @main_mod.globals.each { |global| definitions << global.name if exported_definition?(global) }
       definitions
+    end
+
+    private def exported_definition?(value) : Bool
+      !value.declaration? && !value.linkage.in?(LLVM::Linkage::Private, LLVM::Linkage::Internal)
     end
 
     def finish

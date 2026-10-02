@@ -142,3 +142,47 @@ crysterr, release compiler, `crystal watch`:
 | Signature change (full compilation) | 11.9s | 10.9s | 10.9s |
 
 The partially built server serves the edited pages.
+
+## Usage
+
+In a shard, commands find the main file themselves: the `main` of the first
+target in `shard.yml`, otherwise `src/<name>.cr` (`Crystal.project_main_file`).
+So `crystal build`, `crystal run`, `crystal watch` and `crystal tool annotate`
+need no file argument.
+
+`crystal run` without a file, in a terminal, keeps running like
+`crystal watch --run`: on each change it rebuilds (incrementally when only
+method bodies changed) and restarts the program. `--watch` does this for an
+explicit file too, `--no-watch` runs once. Scripts, pipes and CI (no
+terminal) run once as before.
+
+### Templates and other macro inputs
+
+`crystal watch` and `crystal run` also watch the files macros read
+(templates, `run` programs' data). `Program#record_external_macro_input`
+records which method's body expanded the macro that read each one; when such
+a file changes, those methods are typed again (expanding the macro again) and
+their modules regenerated. A file read by a macro outside a method body (an
+i18n embed at the top level) needs a full compilation. On crysterr a layout
+or page template edit takes the incremental path.
+
+### Coordinating with editors and AI agents
+
+An agent editing several files shouldn't trigger a build per intermediate
+state. `.crystal-watch/` in the project (ignored by git) coordinates:
+
+```
+crystal watch hold [reason]   # don't build until released; renew before each edit
+crystal watch release         # build what changed meanwhile (once)
+crystal watch build           # build now, wait, print errors; exit 0 ok, 1 failed, 2 no watcher
+crystal watch status          # state of the last build
+crystal watch hooks           # Claude Code hooks: hold before Edit/Write, release on Stop
+```
+
+While held, changes pile up; on release the watcher compares contents with
+the last build (not events), so it builds once, and builds nothing if nothing
+changed. A hold not renewed for 10 minutes is ignored. The watcher writes
+`.crystal-watch/status.json` (state, build number, answered request, errors)
+after each step, so `crystal watch build` gives an agent the result of its
+edit without compiling itself.
+

@@ -16,6 +16,11 @@ module Crystal
       # Release all resources (file descriptors, etc).
       abstract def close : Nil
 
+      # Forgets the changes seen so far (after a hold, the watcher compares
+      # contents instead).
+      def drain : Nil
+      end
+
       # Factory method: returns the best available FileWatcher for the platform.
       def self.create(force_polling : Bool = false, poll_interval : Time::Span = 1.second) : FileWatcher
         if force_polling
@@ -87,6 +92,10 @@ module Crystal
             return changed
           end
         end
+      end
+
+      def drain : Nil
+        watch(@mtimes.keys.to_set)
       end
 
       def close : Nil
