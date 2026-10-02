@@ -402,6 +402,25 @@ class Crystal::Call
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
         program.collected_def_instances.try &.<< typed_def
 
+        # Part of the return type firewall: whether a method raises decides
+        # how callers inside a `begin`/`rescue` call it, so in strict code a
+        # method with a declared return type always counts as raising. Its
+        # body can then start raising without its callers being affected.
+        if typed_def.return_type && program.strict_file?(typed_def.location.try(&.original_filename))
+          typed_def.raises = true
+        end
+
+        # Only plain instantiations can be typed again on their own: one with
+        # a block is typed together with the block, and one that needed an
+        # expansion (default or named arguments, splats) is a forwarder whose
+        # body isn't the def's.
+        if (records = program.instantiation_records) && !block &&
+           match.arg_types.size == match.def.args.size && !match.def.splat_index &&
+           !named_args_types && !match.def.double_splat
+          (records[match.def] ||= [] of Program::InstantiationRecord) << Program::InstantiationRecord.new(
+            typed_def, lookup_self_type, match.arg_types.dup, match.context, self)
+        end
+
         # Record file-level dependency for incremental compilation.
         # If a call in file A resolves to a def in file B, then A depends on B.
         if program.compiler.try(&.incremental?) &&

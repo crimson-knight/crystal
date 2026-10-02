@@ -29,10 +29,14 @@ crysterr, release compilers, same machine (old = installed fork `042293a`):
 | Method body edit | 19.6s | 11.9s |
 | Slang template edit | 19.2s | 11.4s |
 
-## Step 1: Strict signatures (`--strict-signatures`, `CRYSTAL_STRICT_SIGNATURES=1`)
+## Step 1: Strict signatures (default; `--no-strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=0` opt out)
 
-Applies to the code under the current directory, except `lib/`. The standard
-library and shards are untouched: they aren't edited, so they don't need it.
+Applies to the code under the current directory, except `lib/` and anything
+found through `CRYSTAL_PATH` (the standard library, shards): they aren't
+edited, so they don't need it. Also off for macro `run` programs (separate
+programs), for tools that only read code (`crystal docs`, `crystal tool
+hierarchy`, ...), and in `bin/crystal`, since the compiler's own code and specs
+aren't annotated.
 
 - **R1, return type firewall.** A declared return type is the type callers
   see, not the (possibly narrower) type of the body. `def foo : Int32 | String;
@@ -67,9 +71,44 @@ specs), and one existing declaration made precise (`to_db(Time) : DB::Any` →
 `: String`, since callers now see the declared type). 115/115 specs pass both
 with `--strict-signatures` and with the stock compiler.
 
-## Not done: step 3
+## Step 3: Typing only what changed (`crystal watch`, in progress)
 
-Strict mode alone doesn't make rebuilds faster. The payoff is a resident
-compiler (`crystal watch`) that keeps the `Program`, re-types only the changed
-method's instantiations when the change is body-only (Phase 6 signatures),
-regenerates only their LLVM modules and relinks. Estimated 2-3 months.
+`crystal watch` keeps the typed program between builds in strict mode. When a
+change only edits method bodies, `IncrementalSemantic`
+(`semantic/incremental_semantic.cr`) types just those methods' instantiations
+again, then `Compiler#codegen_again` generates code from the kept program.
+
+How it decides:
+
+- A changed file must print the same with every method body removed
+  (`skeleton`), otherwise more than bodies changed: full compilation.
+- Each changed method must be strict code with a declared return type, and
+  not `initialize`, a macro def or a method taking a block (those are typed
+  together with their callers). Methods that only moved (lines added above
+  them) are typed again too, so their nodes get the new locations.
+- `Call#instantiate` records how each instantiation was made (self type,
+  argument types, match context) when `Program#instantiation_records` is set.
+  Typing again replaces the body of the same `Def` object (callers point at
+  it), after disconnecting the old body's nodes from the type graph, then runs
+  `FixMissingTypes` and the cleanup transformer on it.
+- The type must stay the same (the firewall guarantees it, except for
+  `NoReturn`). In strict code a method with a declared return type always
+  counts as raising, so a body that starts raising doesn't change how callers
+  call it.
+
+Codegen keeps state on the program (generated `fun`s are marked dead, consts
+and class vars remember whether they were read); `Program#save_codegen_state`
+records the values from before the first codegen and `restore_codegen_state`
+puts them back for the next one.
+
+Verification: `CRYSTAL_INCREMENTAL_SEMANTIC_VERIFY=1 crystal watch` types the
+sources from scratch after each incremental step and compares every typed
+method (type, location, typed body, call targets), with names macros generate
+randomly numbered in order of appearance. On crysterr: controller body,
+model body, lines added mid-file and a body edit after a full rebuild all
+match a full compilation (4435 typed methods), a signature change falls back
+to a full compilation, and the incrementally built server serves the edited
+page.
+
+Next: regenerate only the LLVM modules of the changed methods instead of the
+whole program.

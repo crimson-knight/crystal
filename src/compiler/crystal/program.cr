@@ -90,13 +90,37 @@ module Crystal
     # `crystal tool annotate`.
     property collected_def_instances : Array(Def)?
 
+    # When set, how each method instantiation was made, so that
+    # `IncrementalSemantic` can type it again with a new body. Keyed by the
+    # untyped def (compared by identity).
+    property instantiation_records : Hash(Def, Array(InstantiationRecord))?
+
+    record InstantiationRecord,
+      typed_def : Def,
+      self_type : Type?,
+      arg_types : Array(Type),
+      context : MatchContext,
+      call : Call
+
+    # Library code found through `CRYSTAL_PATH` (the standard library, shards)
+    # is never strict, even inside the root: in the compiler's own repository
+    # the standard library is `src/`.
+    private getter(strict_library_dirs : Array(String)) do
+      root = @strict_signatures_root
+      crystal_path.entries.compact_map do |entry|
+        dir = File.join(File.expand_path(entry), "")
+        dir unless root && File.join(root, "") == dir
+      end
+    end
+
     # Whether *filename* is strict code, see `strict_signatures_root`.
     def strict_file?(filename : String?) : Bool
       return false unless filename
       return false unless root = @strict_signatures_root
 
       @strict_files.put_if_absent(filename) do
-        filename.starts_with?(root) && !filename.starts_with?(File.join(root, "lib", ""))
+        filename.starts_with?(root) && !filename.starts_with?(File.join(root, "lib", "")) &&
+          strict_library_dirs.none? { |dir| filename.starts_with?(dir) }
       end
     end
 

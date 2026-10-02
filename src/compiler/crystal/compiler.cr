@@ -232,7 +232,8 @@ module Crystal
     property? incremental = false
 
     # Strict signatures mode, see `Program#strict_signatures_root`.
-    property? strict_signatures : Bool = ENV["CRYSTAL_STRICT_SIGNATURES"]? == "1"
+    # On unless `--no-strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=0`.
+    property? strict_signatures : Bool = ENV["CRYSTAL_STRICT_SIGNATURES"]? != "0"
 
     # If `true`, cache files are never read during compilation (forces recompile of
     # every module), but are still written. Mutually exclusive with `--incremental`.
@@ -385,6 +386,15 @@ module Crystal
       @current_cached_data = nil
 
       Result.new program, node
+    end
+
+    # Generates the executable again for a program whose methods
+    # `IncrementalSemantic` typed again, without the semantic pass.
+    def codegen_again(result : Result, sources : Array(Source), output_filename : String) : Nil
+      result.program.restore_codegen_state
+      units = codegen result.program, result.node, sources, output_filename
+      @progress_tracker.clear
+      print_codegen_stats(units)
     end
 
     # Runs the semantic pass on the given source, without generating an

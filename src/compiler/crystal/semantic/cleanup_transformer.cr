@@ -16,6 +16,12 @@ module Crystal
       node
     end
 
+    # Cleans up the new body of *a_def* (see `IncrementalSemantic`), and
+    # through it any method it now calls for the first time.
+    def cleanup_again(a_def : Def) : Nil
+      cleanup_transformer.transform_again(a_def)
+    end
+
     def cleanup_types
       transformer = self.cleanup_transformer
 
@@ -505,6 +511,16 @@ module Crystal
       end
 
       node
+    end
+
+    def transform_again(a_def : Def) : Nil
+      @transformed << a_def
+      current_def = @current_def
+      @current_def = a_def
+      @def_nest_count += 1
+      a_def.body = a_def.body.transform(self)
+      @def_nest_count -= 1
+      @current_def = current_def
     end
 
     def transform(node : Call)

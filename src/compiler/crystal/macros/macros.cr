@@ -187,6 +187,9 @@ class Crystal::Program
 
       # No need to generate debug info for macro run programs
       host_compiler.debug = Crystal::Debug::None
+
+      # Macro run programs are separate programs, not code being edited.
+      host_compiler.strict_signatures = false
     end
   end
 

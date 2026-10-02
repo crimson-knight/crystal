@@ -314,6 +314,8 @@ class Crystal::Command
   private def compile_no_codegen(command, wants_doc = false, hierarchy = false, no_cleanup = false, cursor_command = false, top_level = false, path_filter = false, unreachable_command = false, allowed_formats = ["text", "json"])
     config = create_compiler command, no_codegen: true, hierarchy: hierarchy, cursor_command: cursor_command, path_filter: path_filter, unreachable_command: unreachable_command, allowed_formats: allowed_formats
     config.compiler.no_codegen = true
+    # Tools only look at the code: they work on code that isn't migrated.
+    config.compiler.strict_signatures = false
     config.compiler.no_cleanup = no_cleanup
     config.compiler.wants_doc = wants_doc
     result = top_level ? config.top_level_semantic : config.compile
@@ -820,8 +822,11 @@ class Crystal::Command
 
     compiler.warnings.exclude_lib_path = true
 
-    opts.on("--strict-signatures", "Require return types in this directory's code (except lib/) and make them the type callers see (or CRYSTAL_STRICT_SIGNATURES=1)") do
+    opts.on("--strict-signatures", "Require return types in this directory's code (except lib/) and make them the type callers see (default)") do
       compiler.strict_signatures = true
+    end
+    opts.on("--no-strict-signatures", "Don't require return types (or CRYSTAL_STRICT_SIGNATURES=0)") do
+      compiler.strict_signatures = false
     end
   end
 

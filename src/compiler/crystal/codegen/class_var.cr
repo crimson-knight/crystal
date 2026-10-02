@@ -89,6 +89,7 @@ class Crystal::CodeGenVisitor
     # For unsafe class var we just initialize them without
     # using a flag to know if they were initialized
     if class_var.uninitialized? || !init_func || !class_var.read?
+      @program.save_codegen_state(class_var)
       class_var.no_init_flag = true
 
       global = declare_class_var(class_var)
@@ -156,6 +157,7 @@ class Crystal::CodeGenVisitor
       end
 
       if discard
+        @program.save_codegen_state(class_var)
         class_var.simple_initializer = true
         new_func.func.delete
         nil
@@ -181,6 +183,7 @@ class Crystal::CodeGenVisitor
   end
 
   def read_class_var_ptr(class_var : MetaTypeVar)
+    @program.save_codegen_state(class_var)
     class_var.read = true
 
     owner = class_var.owner

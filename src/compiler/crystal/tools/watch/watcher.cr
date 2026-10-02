@@ -17,6 +17,13 @@ module Crystal
       @color : Bool
       @interrupted : Bool = false
 
+      # With `--strict-signatures` the typed program is kept between builds,
+      # and a change that only edits method bodies types just those again
+      # (see `IncrementalSemantic`).
+      @result : Compiler::Result?
+      @incremental_semantic : IncrementalSemantic?
+      @changed = [] of String
+
       def initialize(
         @compiler : Compiler,
         @sources : Array(Compiler::Source),
@@ -52,7 +59,7 @@ module Crystal
         end
 
         begin
-          result = @compiler.compile(fresh_sources, @output_filename)
+          result = compile_incrementally(fresh_sources) || compile_fully(fresh_sources)
 
           # Extract watched files from program.requires
           watched_files = result.program.requires.dup
@@ -65,6 +72,8 @@ module Crystal
             spawn_run
           end
         rescue ex : Crystal::CodeError
+          # The kept program may be half updated: start over next time.
+          @incremental_semantic = nil
           ex.color = @color
           STDERR.puts ex
           print_error "Compilation failed (watching for changes...)"
@@ -83,12 +92,79 @@ module Crystal
 
         return if @interrupted
 
+        @changed = changed
         unless changed.empty?
           kill_running_process if @run_mode
           changed.each do |path|
             print_status "Changed: #{Crystal.relative_filename(path)}"
           end
           puts
+        end
+      end
+
+      private def compile_fully(sources : Array(Compiler::Source)) : Compiler::Result
+        @incremental_semantic = nil
+        strict = @compiler.strict_signatures?
+        result = @compiler.compile_configure_program(sources, @output_filename) do |program|
+          program.instantiation_records = {} of Def => Array(Program::InstantiationRecord) if strict
+        end
+        @result = result
+
+        if strict
+          program_sources = result.program.requires.to_h { |filename| {filename, File.read(filename)} }
+          sources.each { |source| program_sources[source.filename] = source.code }
+          @incremental_semantic = IncrementalSemantic.new(result.program, program_sources)
+        end
+        result
+      end
+
+      # Applies the changed files to the kept program when only method bodies
+      # changed. Returns `nil` when a full compilation is needed.
+      private def compile_incrementally(sources : Array(Compiler::Source)) : Compiler::Result?
+        incremental = @incremental_semantic
+        result = @result
+        return nil unless incremental && result && !@changed.empty?
+
+        start = Time.instant
+        begin
+          incremental.apply(@changed.to_h { |filename| {filename, File.read(filename)} })
+        rescue ex : IncrementalSemantic::Unsupported
+          print_status "Full compilation: #{ex.message}"
+          return nil
+        end
+        typing = start.elapsed
+
+        verify_incremental(sources, result.program) if ENV["CRYSTAL_INCREMENTAL_SEMANTIC_VERIFY"]? == "1"
+
+        @compiler.codegen_again(result, sources, @output_filename) unless @compiler.no_codegen?
+        print_status "Typed #{incremental.retyped.size} method instantiation#{incremental.retyped.size == 1 ? "" : "s"} again in #{typing.total_milliseconds.round(1)}ms, total #{start.elapsed.total_seconds.round(2)}s"
+        result
+      end
+
+      # Compares the incrementally updated program with typing the sources
+      # from scratch, and reports any difference.
+      private def verify_incremental(sources : Array(Compiler::Source), program : Program) : Nil
+        verifier = Compiler.new
+        verifier.flags = @compiler.flags.dup
+        verifier.prelude = @compiler.prelude
+        verifier.no_codegen = true
+        verifier.incremental = false
+        fresh = verifier.compile_configure_program(sources, @output_filename) do |fresh_program|
+          fresh_program.strict_signatures_root = program.strict_signatures_root
+          fresh_program.instantiation_records = {} of Def => Array(Program::InstantiationRecord)
+        end
+
+        root = program.strict_signatures_root.not_nil!
+        expected = IncrementalSemantic.typed_methods(fresh.program, root)
+        actual = IncrementalSemantic.typed_methods(program, root)
+        mismatches = expected.select { |key, description| actual[key]? != description }
+        if mismatches.empty?
+          print_success "Verified: #{expected.size} typed methods match a full compilation"
+        else
+          mismatches.each do |key, description|
+            STDERR.puts "MISMATCH #{key}\n--- full:\n#{description}\n--- incremental:\n#{actual[key]? || "(missing)"}"
+          end
+          print_error "Verification failed: #{mismatches.size} of #{expected.size} typed methods differ"
         end
       end
 
