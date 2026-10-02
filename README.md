@@ -6,66 +6,71 @@ second. On a ~8k line Amber app, a method body or template edit rebuilds in
 
 It's built for both ways of writing code today:
 
-- **By hand:** keep `crystal run` open in a terminal; save a file and the
-  program restarts with the change before you've switched windows. Declared
-  return types read as documentation and put type errors where you made them.
 - **With an LLM (Claude Code, other agents):** the agent edits several files
   without a build per step (`crystal watch hold`), then gets its errors in
   under a second (`crystal watch build`) instead of waiting for a full
   compile. Explicit signatures tell it what each method returns without
   reading the body.
+- **By hand:** keep `crystal run` open in a terminal; save a file and the
+  program restarts with the change before you've switched windows. Declared
+  return types read as documentation and put type errors where you made them.
 
 Both can work on the same project at once: the agent edits, you keep
 `crystal run` open, and it rebuilds once when the agent is done.
 
-## Quick start
+## Setup
 
-In a shard, commands find the main file from `shard.yml` (first target's
-`main`, else `src/<name>.cr`):
+1. **Install the compiler** (Linux; needs LLVM and the usual Crystal build
+   dependencies). From a checkout of this repository:
 
-```sh
-crystal run      # build, run, rebuild + restart on every change (in a terminal)
-crystal build    # build; skipped if nothing changed
-crystal spec
+   ```sh
+   make install release=1 interpreter=1 PREFIX=~/.local/opt/crystal-alpha
+   ln -sfn ~/.local/opt/crystal-alpha/bin/crystal ~/.local/bin/crystal
+   crystal watch --help | grep hold   # this fork is the one on PATH
+   ```
+
+   The man page step needs `asciidoctor`; if it fails, the compiler is still
+   installed. Keep your upstream `shards` binary (it works with this
+   compiler), and if linking programs fails on bundled libraries such as
+   `libgc`, copy `lib/` from your upstream Crystal install into the prefix.
+
+2. **Migrate your project** to strict signatures (every `def` declares its
+   return type), once:
+
+   ```sh
+   crystal tool annotate --dry-run   # the return types it would add
+   crystal tool annotate             # add them
+   crystal build                     # lists what's left to type by llm or hand
+   ```
+
+   Commit first, so the change is easy to review. Not ready? Use
+   `--no-strict-signatures` (or `CRYSTAL_STRICT_SIGNATURES=0`) meanwhile.
+
+## Prepare Claude Code (or another agent)
+
+Put these hooks in the project's `.claude/settings.json` (also printed by
+`crystal watch hooks`). They hold builds while Claude edits and release them
+when it stops, so a multi-file edit is built once:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [{ "type": "command", "command": "crystal watch hold claude" }]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "crystal watch release" }]
+      }
+    ]
+  }
+}
 ```
 
-`crystal run file.cr` runs once as before; `--watch` / `--no-watch` choose.
-`crystal watch` rebuilds without running.
-
-## Strict signatures (on by default)
-
-Every `def` in your project (not `lib/`, not the standard library) declares
-its return type, and that declared type is what callers see. That makes a
-body edit invisible to the rest of the program, so only that method is typed
-and code-generated again. Migrating a project:
-
-```sh
-crystal tool annotate --dry-run   # show the return types it would add
-crystal tool annotate             # add them; then type the methods it lists
-```
-
-Annotated code still compiles with upstream Crystal. Opt out with
-`--no-strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=0`.
-
-What rebuilds fast: method bodies, and templates (Slang, ECR) rendered inside
-a method. A signature change, a new method or type, or a file read by a
-top-level macro (e.g. i18n locales) rebuilds fully (~10s).
-
-## Coding agents and editors
-
-So that an agent's multi-file edit isn't compiled at every step, the watcher
-(`crystal run` / `crystal watch`) can be held:
-
-```sh
-crystal watch hold claude   # don't build while editing
-crystal watch release       # build what changed, once
-crystal watch build         # build now, wait, print errors (exit 0 ok, 1 failed, 2 no watcher)
-crystal watch status        # result of the last build
-crystal watch hooks         # Claude Code hooks that hold/release automatically
-```
-
-Add the output of `crystal watch hooks` to `.claude/settings.json`, and this
-to the project's `CLAUDE.md` (or `AGENTS.md`):
+And add this to the project's `CLAUDE.md` (or `AGENTS.md` for other agents):
 
 ~~~~markdown
 ## Crystal toolchain (crystal-alpha fork)
@@ -85,10 +90,57 @@ to the project's `CLAUDE.md` (or `AGENTS.md`):
 - Specs: `crystal spec [spec/file_spec.cr:LINE]`. Format: `crystal tool format`.
 ~~~~
 
+## Usage
+
+In a shard, commands find the main file from `shard.yml` (first target's
+`main`, else `src/<name>.cr`):
+
+```sh
+crystal run      # build, run, rebuild + restart on every change (in a terminal)
+crystal build    # build; skipped if nothing changed
+crystal spec
+```
+
+`crystal run file.cr` runs once as before; `--watch` / `--no-watch` choose.
+`crystal watch` rebuilds without running.
+
+While `crystal run` or `crystal watch` is running, other programs (the hooks
+above, an agent, a script) talk to it:
+
+```sh
+crystal watch hold claude   # don't build while editing
+crystal watch release       # build what changed, once
+crystal watch build         # build now, wait, print errors (exit 0 ok, 1 failed, 2 no watcher)
+crystal watch status        # result of the last build
+```
+
+What rebuilds fast: method bodies, and templates (Slang, ECR) rendered inside
+a method. A signature change, a new method or type, or a file read by a
+top-level macro (e.g. i18n locales) rebuilds fully (~10s).
+
+## Why strict signatures
+
+Every `def` in your project (not `lib/`, not the standard library) declares
+its return type, and that declared type is what callers see. A body edit then
+can't change any type elsewhere in the program, so only that method is typed
+and code-generated again. Annotated code still compiles with upstream Crystal.
+
 How it works: `IC_PHASE_8_STRICT_SIGNATURES.md`. Incremental caching and
 `--no-incremental`: `INCREMENTAL_PLAN.md`.
 
 ## What's different from upstream Crystal
+
+> [!WARNING]
+> **Strict signatures are a breaking language change for code you compile
+> as your own project.** Shards you depend on (in `lib/`) are exempt and
+> compile unchanged. But developing a shard, or an app, means annotating it:
+> of 43 popular shards whose specs we could compile, 42 had methods without a
+> return type (median 17, up to 847), and in 5 (amber, asset_pipeline,
+> lucky, shards, vips) existing return types broke callers that relied on
+> the narrower inferred type (point 2 below). `crystal tool annotate`
+> does most of the first part; the second needs a human (or an agent) to
+> make the declared types precise. Use `--no-strict-signatures` for code
+> you don't want to migrate.
 
 Things to check when switching a project or system to this compiler:
 
