@@ -233,8 +233,9 @@ edits (2× faster) and 0.08 s when nothing changed.
 
 The script checks after each edit that the server serves the new code.
 Crystal 1.21.0 varied between 48 and 57 s cold and 28 and 40 s per rebuild
-over three runs; the fork's times were stable. Linux, AMD Ryzen 7 PRO
-6850U (8 cores).
+over three runs; the fork's times were stable. Tested on Ubuntu 26.04.1
+LTS, x86_64 (Linux kernel 7.0.0-31-generic) with LLVM 21.1.8, AMD Ryzen 7
+PRO 6850U (8 cores).
 
 Check it yourself:
 
