@@ -51,7 +51,7 @@ jobs:
     name: "LLVM ${{ matrix.llvm_version || 'Nightly' }}"
     steps:
       - name: Checkout Crystal source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -67,7 +67,7 @@ jobs:
           sudo apt install -y llvm${{ matrix.llvm_version && format('-{0}', matrix.llvm_version) || '' }}-dev lld
 
       - name: Install Crystal
-        uses: crystal-lang/install-crystal@v1
+        uses: crystal-lang/install-crystal@d8ef131ecec0352ce0e39b81b0a6d95def58fe2f # v1
         with:
           crystal: "1.20.3"
 
