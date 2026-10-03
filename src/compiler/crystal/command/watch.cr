@@ -21,7 +21,7 @@ class Crystal::Command
     when "status"
       exit watch_status
     when "hooks"
-      puts WATCH_HOOKS
+      puts WATCH_HOOKS.gsub("crystal-alpha", watch_command_name)
       return
     end
 
@@ -36,12 +36,12 @@ class Crystal::Command
 
     option_parser = parse_with_crystal_opts do |opts|
       opts.banner = <<-USAGE
-        Usage: crystal watch [options] [programfile] [--] [arguments]
-               crystal watch hold [reason]   # don't build until released (before editing)
-               crystal watch release         # build what changed meanwhile
-               crystal watch build           # build now, wait, print errors (exit 0/1)
-               crystal watch status          # state of the last build
-               crystal watch hooks           # Claude Code hooks doing hold/release
+        Usage: crystal-alpha watch [options] [programfile] [--] [arguments]
+               crystal-alpha watch hold [reason]   # don't build until released (before editing)
+               crystal-alpha watch release         # build what changed meanwhile
+               crystal-alpha watch build           # build now, wait, print errors (exit 0/1)
+               crystal-alpha watch status          # state of the last build
+               crystal-alpha watch hooks           # Claude Code hooks doing hold/release
 
         Options:
         USAGE
@@ -134,7 +134,7 @@ class Crystal::Command
     watcher.run
   end
 
-  # `crystal watch build`: makes the watcher of this directory build what
+  # `crystal-alpha watch build`: makes the watcher of this directory build what
   # changed (lifting a hold), waits for it and prints the result.
   private def watch_build : Int32
     root = Dir.current
@@ -145,7 +145,7 @@ class Crystal::Command
 
     status = Watch::Coordination.read_status(root)
     unless status && watcher_alive?(status)
-      STDERR.puts "No `crystal watch` or `crystal run` is watching #{root}"
+      STDERR.puts "No `crystal-alpha watch` or `crystal-alpha run` is watching #{root}"
       return 2
     end
 
@@ -196,18 +196,23 @@ class Crystal::Command
     Process.exists?(status.pid)
   end
 
+  private def watch_command_name : String
+    invoked_name = File.basename(PROGRAM_NAME)
+    invoked_name.in?("crystal-alpha", "acrystal") ? invoked_name : "crystal-alpha"
+  end
+
   WATCH_HOOKS = <<-JSON
     {
       "hooks": {
         "PreToolUse": [
           {
             "matcher": "Edit|Write|MultiEdit|NotebookEdit",
-            "hooks": [{ "type": "command", "command": "crystal watch hold claude" }]
+            "hooks": [{ "type": "command", "command": "crystal-alpha watch hold claude" }]
           }
         ],
         "Stop": [
           {
-            "hooks": [{ "type": "command", "command": "crystal watch release" }]
+            "hooks": [{ "type": "command", "command": "crystal-alpha watch release" }]
           }
         ]
       }

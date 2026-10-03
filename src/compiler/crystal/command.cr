@@ -915,10 +915,10 @@ class Crystal::Command
 
     compiler.warnings.exclude_lib_path = true
 
-    opts.on("--strict-signatures", "Require return types in this directory's code (except lib/) and make them the type callers see (default)") do
+    opts.on("--strict-signatures", "Require return types in this directory's code (except lib/) and make them the type callers see (or CRYSTAL_STRICT_SIGNATURES=1)") do
       compiler.strict_signatures = true
     end
-    opts.on("--no-strict-signatures", "Don't require return types (or CRYSTAL_STRICT_SIGNATURES=0)") do
+    opts.on("--no-strict-signatures", "Don't require return types (default, or CRYSTAL_STRICT_SIGNATURES=0)") do
       compiler.strict_signatures = false
     end
   end

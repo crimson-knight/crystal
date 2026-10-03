@@ -5,7 +5,7 @@
 Make the edit-compile loop fast without making Crystal a different language.
 Two parts: remove the fixed costs every rebuild paid (step 0), and add an
 opt-in language mode that makes a method body change local to that method
-(step 1), the precondition for re-typing only what changed (step 3, not done).
+(step 1), enabling the fastest retyping path (step 3).
 
 Reference project: `~/apps/archive/crysterr` (Amber 2 + Grant + Slang + ECR +
 i18n, ~8k lines of own code, 13 shards).
@@ -29,14 +29,15 @@ crysterr, release compilers, same machine (old = installed fork `042293a`):
 | Method body edit | 19.6s | 11.9s |
 | Slang template edit | 19.2s | 11.4s |
 
-## Step 1: Strict signatures (default; `--no-strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=0` opt out)
+## Step 1: Strict signatures (opt in with `--strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=1`)
 
 Applies to the code under the current directory, except `lib/` and anything
 found through `CRYSTAL_PATH` (the standard library, shards): they aren't
-edited, so they don't need it. Also off for macro `run` programs (separate
-programs), for tools that only read code (`crystal docs`, `crystal tool
-hierarchy`, ...), and in `bin/crystal`, since the compiler's own code and specs
-aren't annotated.
+edited, so they don't need it. `--no-strict-signatures` overrides an
+environment opt-in. Strict mode is also off for macro `run` programs (separate
+programs), for tools that only read code (`crystal-alpha docs`,
+`crystal-alpha tool hierarchy`, ...), and in `bin/crystal`, since the
+compiler's own code and specs aren't annotated.
 
 - **R1, return type firewall.** A declared return type is the type callers
   see, not the (possibly narrower) type of the body. `def foo : Int32 | String;
@@ -56,7 +57,7 @@ declaration results), so requiring them would only add migration work.
 
 Annotated code stays valid Crystal: it compiles with an upstream compiler.
 
-### `crystal tool annotate`
+### `crystal-alpha tool annotate`
 
 Compiles the program, takes the types of each method's instantiations and
 writes them as return types. Prefers a concrete type, uses `self` and type
@@ -71,10 +72,10 @@ specs), and one existing declaration made precise (`to_db(Time) : DB::Any` →
 `: String`, since callers now see the declared type). 115/115 specs pass both
 with `--strict-signatures` and with the stock compiler.
 
-## Step 3: Typing only what changed (`crystal watch`, in progress)
+## Step 3: Typing only what changed (`crystal-alpha watch`, in progress)
 
-`crystal watch` keeps the typed program between builds in strict mode. When a
-change only edits method bodies, `IncrementalSemantic`
+`crystal-alpha watch` keeps the typed program between builds. When a change only
+edits method bodies, `IncrementalSemantic`
 (`semantic/incremental_semantic.cr`) types just those methods' instantiations
 again, then `Compiler#codegen_again` generates code from the kept program.
 
@@ -82,26 +83,28 @@ How it decides:
 
 - A changed file must print the same with every method body removed
   (`skeleton`), otherwise more than bodies changed: full compilation.
-- Each changed method must be strict code with a declared return type, and
-  not `initialize`, a macro def or a method taking a block (those are typed
-  together with their callers). Methods that only moved (lines added above
-  them) are typed again too, so their nodes get the new locations.
+- A changed method may have an inferred return type. The incremental path
+  checks that its type and raising behavior stay the same; otherwise it falls
+  back to a full compilation. `initialize`, macro defs and methods taking a
+  block are typed with their callers, so they also require a full compilation.
+  Methods that only moved are typed again to update their locations.
 - `Call#instantiate` records how each instantiation was made (self type,
   argument types, match context) when `Program#instantiation_records` is set.
   Typing again replaces the body of the same `Def` object (callers point at
   it), after disconnecting the old body's nodes from the type graph, then runs
   `FixMissingTypes` and the cleanup transformer on it.
-- The type must stay the same (the firewall guarantees it, except for
-  `NoReturn`). In strict code a method with a declared return type always
-  counts as raising, so a body that starts raising doesn't change how callers
-  call it.
+- The type must stay the same (the firewall guarantees it in strict code,
+  except for `NoReturn`). In strict code a method with a declared return type
+  always counts as raising, so a body that starts raising doesn't change how
+  callers call it. Without strict mode, a new raising behavior requires a
+  full compilation.
 
 Codegen keeps state on the program (generated `fun`s are marked dead, consts
 and class vars remember whether they were read); `Program#save_codegen_state`
 records the values from before the first codegen and `restore_codegen_state`
 puts them back for the next one.
 
-Verification: `CRYSTAL_INCREMENTAL_SEMANTIC_VERIFY=1 crystal watch` types the
+Verification: `CRYSTAL_INCREMENTAL_SEMANTIC_VERIFY=1 crystal-alpha watch` types the
 sources from scratch after each incremental step and compares every typed
 method (type, location, typed body, call targets), with names macros generate
 randomly numbered in order of appearance. On crysterr: controller body,
@@ -143,7 +146,7 @@ module's object from the last build is reused (`CompilationUnit` with
 - A full `codegen_again` assigns the type ids again, since a type created
   after they were assigned gets an id outside its hierarchy's range.
 
-crysterr, release compiler, `crystal watch`:
+crysterr, release compiler, `crystal-alpha watch`:
 
 | Change | Before phase 8 | Typing only | Partial codegen |
 |--------|----------------|-------------|-----------------|
@@ -157,18 +160,18 @@ The partially built server serves the edited pages.
 
 In a shard, commands find the main file themselves: the `main` of the first
 target in `shard.yml`, otherwise `src/<name>.cr` (`Crystal.project_main_file`).
-So `crystal build`, `crystal run`, `crystal watch` and `crystal tool annotate`
-need no file argument.
+So `crystal-alpha build`, `crystal-alpha run`, `crystal-alpha watch` and
+`crystal-alpha tool annotate` need no file argument.
 
-`crystal run` without a file, in a terminal, keeps running like
-`crystal watch --run`: on each change it rebuilds (incrementally when only
+`crystal-alpha run` without a file, in a terminal, keeps running like
+`crystal-alpha watch --run`: on each change it rebuilds (incrementally when only
 method bodies changed) and restarts the program. `--watch` does this for an
 explicit file too, `--no-watch` runs once. Scripts, pipes and CI (no
 terminal) run once as before.
 
 ### Templates and other macro inputs
 
-`crystal watch` and `crystal run` also watch the files macros read
+`crystal-alpha watch` and `crystal-alpha run` also watch the files macros read
 (templates, `run` programs' data). `Program#record_external_macro_input`
 records which method's body expanded the macro that read each one; when such
 a file changes, those methods are typed again (expanding the macro again) and
@@ -182,32 +185,32 @@ An agent editing several files shouldn't trigger a build per intermediate
 state. `.crystal-watch/` in the project (ignored by git) coordinates:
 
 ```
-crystal watch hold [reason]   # don't build until released; renew before each edit
-crystal watch release         # build what changed meanwhile (once)
-crystal watch build           # build now, wait, print errors; exit 0 ok, 1 failed, 2 no watcher
-crystal watch status          # state of the last build
-crystal watch hooks           # Claude Code hooks: hold before Edit/Write, release on Stop
+crystal-alpha watch hold [reason]   # don't build until released; renew before each edit
+crystal-alpha watch release         # build what changed meanwhile (once)
+crystal-alpha watch build           # build now, wait, print errors; exit 0 ok, 1 failed, 2 no watcher
+crystal-alpha watch status          # state of the last build
+crystal-alpha watch hooks           # Claude Code hooks: hold before Edit/Write, release on Stop
 ```
 
 While held, changes pile up; on release the watcher compares contents with
 the last build (not events), so it builds once, and builds nothing if nothing
 changed. A hold not renewed for 10 minutes is ignored. The watcher writes
 `.crystal-watch/status.json` (state, build number, answered request, errors)
-after each step, so `crystal watch build` gives an agent the result of its
+after each step, so `crystal-alpha watch build` gives an agent the result of its
 edit without compiling itself.
 
 ### Specs, builds, errors and added methods
 
-- `crystal run` / `crystal spec` keep the executable they run in the cache
-  directory (with incremental compilation), so an unchanged program skips
-  the build: `crystal spec` with nothing changed went from 15s to 1.5s.
-- With a watcher running, `crystal spec` asks it for the spec program
+- `crystal-alpha run` / `crystal-alpha spec` keep their executable in the
+  cache directory (with incremental compilation), so an unchanged program skips
+  the build: `crystal-alpha spec` with nothing changed went from 15s to 1.5s.
+- With a watcher running, `crystal-alpha spec` asks it for the spec program
   (`kind: spec` request, answered in `.crystal-watch/response-<token>.json`).
   The watcher keeps one `SpecBuild` per set of spec files, compiled once and
   then edited incrementally: on crysterr a body edit's specs build in ~1s
-  (13.5s before). `crystal build` without flags of its own takes the
+  (13.5s before). `crystal-alpha build` without flags of its own takes the
   watcher's executable when it builds the same main file.
-- `crystal spec --affected` runs only the examples reaching a changed method
+- `crystal-alpha spec --affected` runs only the examples reaching a changed method
   (`AffectedExamples`): the callers of every method and proc type are
   collected from the typed program; the body of a proc or captured block is
   attributed to its proc type (called by `call` on that type); `it` blocks
@@ -233,4 +236,3 @@ edit without compiling itself.
 - The watcher ignores its own writes in `.crystal-watch/` (writing the status
   there used to wake it up again in a loop) and writes a "no changes" status
   only to answer a request.
-

@@ -236,8 +236,8 @@ module Crystal
     property? keep_typed_program = false
 
     # Strict signatures mode, see `Program#strict_signatures_root`.
-    # On unless `--no-strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=0`.
-    property? strict_signatures : Bool = ENV["CRYSTAL_STRICT_SIGNATURES"]? != "0"
+    # Opt in with `--strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=1`.
+    property? strict_signatures : Bool = ENV["CRYSTAL_STRICT_SIGNATURES"]? == "1"
 
     # If `true`, cache files are never read during compilation (forces recompile of
     # every module), but are still written. Mutually exclusive with `--incremental`.

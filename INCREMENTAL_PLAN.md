@@ -5,14 +5,14 @@
 | Phase | Status | Description |
 |-------|--------|-------------|
 | [Phase 0: Documentation](IC_PHASE_0_DOCS.md) | [x] Complete | Project docs, Obsidian canvas, phase articles |
-| [Phase 1: Watch Command](IC_PHASE_1_WATCH.md) | [x] Complete | `crystal watch` with cross-platform file watching |
+| [Phase 1: Watch Command](IC_PHASE_1_WATCH.md) | [x] Complete | `crystal-alpha watch` with cross-platform file watching |
 | [Phase 2: Cache Foundation](IC_PHASE_2_CACHE.md) | [x] Complete | File fingerprinting + in-memory parse cache |
 | [Phase 3: Parallel Parsing](IC_PHASE_3_PARALLEL_PARSE.md) | [x] Complete | Multi-threaded file parsing |
 | [Phase 4: Codegen Caching](IC_PHASE_4_CODEGEN_CACHE.md) | [x] Complete | Skip LLVM IR for unchanged modules |
 | [Phase 5: Parallel Checks](IC_PHASE_5_PARALLEL_CHECKS.md) | [x] Complete | Parallelize read-only semantic sub-phases |
 | [Phase 6: Signature Tracking](IC_PHASE_6_SIGNATURES.md) | [x] Complete | Track body-only vs structural changes per file |
 | [Phase 7: Semantic Parallelism](IC_PHASE_7_SEMANTIC.md) | [x] Complete | Research foundation: parallelism analysis, coordinator, documentation |
-| [Phase 8: Strict Signatures](IC_PHASE_8_STRICT_SIGNATURES.md) | [~] Steps 0-1, step 3 in progress | posix_spawn, verifiable `run` macros, strict signatures (default), `crystal tool annotate`, `IncrementalSemantic` in `crystal watch` |
+| [Phase 8: Strict Signatures](IC_PHASE_8_STRICT_SIGNATURES.md) | [~] Steps 0-1, step 3 in progress | posix_spawn, verifiable `run` macros, strict signatures (opt-in), `crystal-alpha tool annotate`, `IncrementalSemantic` in `crystal-alpha watch` |
 
 ## Architecture Overview
 
@@ -125,8 +125,8 @@ time bin/crystal build src/compiler/crystal.cr --stats -o /dev/null
 | `CRYSTAL_PARALLEL_PARSE` | Set to `0` to disable parallel parsing (Phase 3) |
 | `CRYSTAL_INCREMENTAL` | Set to `0` to disable incremental compilation (on by default) |
 | `CRYSTAL_INCREMENTAL_MODULE_SKIP` | Set to `1` to enable experimental per-module codegen skipping (Phase 4) |
-| `CRYSTAL_STRICT_SIGNATURES` | Set to `0` for `--no-strict-signatures` (strict is the default; `bin/crystal` sets `0` for work on the compiler) (Phase 8) |
-| `CRYSTAL_INCREMENTAL_SEMANTIC_VERIFY` | Set to `1` to have `crystal watch` compare each incremental typing with a full one (Phase 8) |
+| `CRYSTAL_STRICT_SIGNATURES` | Set to `1` to opt in to strict signatures; `bin/crystal` defaults it to `0` while working on the compiler (Phase 8) |
+| `CRYSTAL_INCREMENTAL_SEMANTIC_VERIFY` | Set to `1` to have `crystal-alpha watch` compare each incremental typing with a full one (Phase 8) |
 | `CRYSTAL_MACRO_RUN_TRUST` | Set to `0` to never skip a build that used a `run` macro (Phase 8) |
 | `CRYSTAL_MACRO_RUN_DEPFILE` | Set by the compiler for `run` programs: they may list extra files they read, one per line (Phase 8) |
 
@@ -145,7 +145,8 @@ time bin/crystal build src/compiler/crystal.cr --stats -o /dev/null
 | 2026-10-02 | `run` macro inputs recorded instead of disabling the whole-build skip | ECR/Slang/i18n made every rebuild of a web app a full one (crysterr: 19s → 0.07s for no change) |
 | 2026-10-02 | `posix_spawn` on Linux glibc | `fork` from the compiler cost ~0.1s per subprocess (pkg-config, linker) |
 | 2026-10-02 | Strict signatures scoped to the project's own code | Applying R1 globally broke the standard library (`HTTP::Headers`, event loop), which relies on narrowed return types; only edited code needs the firewall |
-| 2026-10-02 | Strict signatures on by default, `--no-strict-signatures` opts out | The user migrates their projects; tools, macro run programs and `CRYSTAL_PATH` libraries are exempt |
+| 2026-10-02 | Priit's original default: strict signatures on; `--no-strict-signatures` opts out | Superseded below for crystal-alpha; tools, macro run programs and `CRYSTAL_PATH` libraries remain exempt |
+| 2026-10-03 | Strict signatures off by default in crystal-alpha; `--strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=1` opts in | Default-on breaks Amber V2, Grant, and asset_pipeline compiled as project source; strict-off edits retype safely or fall back to a full compilation |
 | 2026-10-02 | Strict methods with a declared return type always count as raising | Whether a callee raises decides how callers inside `begin`/`rescue` call it; this keeps a body edit from affecting callers' code |
 | 2026-10-02 | No explicit ivar declarations in strict mode | Guessed ivar type changes can be detected in step 3; requiring them would only add migration work |
 | 2026-10-02 | Phase 4 module skipping made opt-in | A changed file can add/remove instantiations in an unchanged type's module, so skipping it linked stale objects (`undefined symbol`); measured gain ~5% on the compiler itself |

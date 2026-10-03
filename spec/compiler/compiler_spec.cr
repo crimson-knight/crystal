@@ -29,6 +29,37 @@ describe "Compiler" do
     end
   end
 
+  it "accepts an unannotated method by default and enforces opt-in strict signatures" do
+    compiler_executable = File.expand_path(".build/crystal")
+    with_tempdir("compiler_strict_opt_in") do
+      File.write("main.cr", "def answer\n  42\nend\nputs answer\n")
+
+      with_env("CRYSTAL_STRICT_SIGNATURES": nil) do
+        errors = IO::Memory.new
+        status = Process.run(compiler_executable, ["build", "main.cr", "-o", "main"], error: errors)
+        status.success?.should be_true, errors.to_s
+        Process.capture("./main").should eq("42\n")
+
+        errors.clear
+        status = Process.run(compiler_executable, ["build", "--strict-signatures", "main.cr", "-o", "main"], error: errors)
+        status.success?.should be_false
+        errors.to_s.should contain("strict signatures")
+      end
+
+      with_env("CRYSTAL_STRICT_SIGNATURES": "1") do
+        errors = IO::Memory.new
+        status = Process.run(compiler_executable, ["build", "main.cr", "-o", "main"], error: errors)
+        status.success?.should be_false
+        errors.to_s.should contain("strict signatures")
+
+        errors.clear
+        status = Process.run(compiler_executable, ["build", "--no-strict-signatures", "main.cr", "-o", "main"], error: errors)
+        status.success?.should be_true, errors.to_s
+        Process.capture("./main").should eq("42\n")
+      end
+    end
+  end
+
   describe "incremental compilation (on by default)" do
     it "rebuilds when the output was replaced by another build" do
       with_tempfile("incremental_a.cr", "incremental_b.cr") do |a, b|
