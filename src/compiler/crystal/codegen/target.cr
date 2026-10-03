@@ -234,23 +234,7 @@ class Crystal::Codegen::Target
 
   def to_target_machine(cpu = "", features = "", optimization_mode = Compiler::OptimizationMode::O0,
                         code_model = LLVM::CodeModel::Default) : LLVM::TargetMachine
-    # Auto-detect host CPU when building for the same architecture and no
-    # explicit CPU was requested. This allows LLVM to use native instruction
-    # scheduling and feature detection for the host machine.
-    if cpu.empty?
-      host_triple = LLVM.default_target_triple
-      host_arch = host_triple.split('-', 2).first
-      # Normalize host architecture the same way we normalize @architecture
-      host_arch = case host_arch
-                  when "i486", "i586", "i686" then "i386"
-                  when "amd64"                then "x86_64"
-                  when "arm64"                then "aarch64"
-                  else                             host_arch
-                  end
-      if host_arch == @architecture
-        cpu = LLVM.host_cpu_name
-      end
-    end
+    cpu, features = resolve_cpu_and_features(cpu, features)
 
     case @architecture
     when "i386", "x86_64"
@@ -326,8 +310,8 @@ class Crystal::Codegen::Target
         m
       end
     {% else %}
-      target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
-    {% end %}
+                target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
+              {% end %}
 
     # FIXME: We need to disable global isel until https://reviews.llvm.org/D80898 is released,
     # or we fixed generating values for 0 sized types.
@@ -346,6 +330,16 @@ class Crystal::Codegen::Target
     end
 
     machine
+  end
+
+  private def resolve_cpu_and_features(cpu : String, features : String) : Tuple(String, String)
+    return {cpu, features} unless cpu == "native"
+
+    host_features = LLVM.host_cpu_features
+    unless features.empty?
+      host_features = host_features.empty? ? features : "#{host_features},#{features}"
+    end
+    {LLVM.host_cpu_name, host_features}
   end
 
   def to_s(io : IO) : Nil
