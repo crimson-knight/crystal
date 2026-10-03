@@ -322,6 +322,34 @@ describe IncrementalSemantic do
         CRYSTAL
   end
 
+  # https://forum.crystal-lang.org/t/8718/10
+  it "types a body that starts returning nil, as declared" do
+    assert_incremental(
+      {"main.cr" => <<-CRYSTAL},
+        require "primitives"
+
+        def foo(x : Int32) : Int32?
+          x + 1
+        end
+
+        if y = foo(3)
+          y + 1
+        end
+        CRYSTAL
+      {"main.cr" => <<-CRYSTAL})
+        require "primitives"
+
+        def foo(x : Int32) : Int32?
+          return nil if x == 0
+          x + 1
+        end
+
+        if y = foo(3)
+          y + 1
+        end
+        CRYSTAL
+  end
+
   it "types the instantiations of each owner and argument types" do
     assert_incremental(
       {"main.cr" => <<-CRYSTAL},

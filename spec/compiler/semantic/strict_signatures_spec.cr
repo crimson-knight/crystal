@@ -114,6 +114,27 @@ describe "Semantic: strict signatures" do
     end
   end
 
+  # https://forum.crystal-lang.org/t/8718/10: upstream, `foo(3)` is an
+  # `Int32` until the body returns `nil`, then callers break. Here they see
+  # `Int32?` either way, so a body edit can't break them.
+  it "makes callers handle a declared nil the body doesn't return" do
+    expect_raises(Crystal::TypeException, "undefined method 'succ' for Nil") do
+      strict_semantic(<<-CRYSTAL)
+        struct Int32
+          def succ : Int32
+            self
+          end
+        end
+
+        def foo(x : Int32) : Int32?
+          x
+        end
+
+        foo(3).succ
+        CRYSTAL
+    end
+  end
+
   it "errors on methods without a return type" do
     expect_raises(Crystal::TypeException, "strict signatures: 2 methods without a return type") do
       strict_semantic(<<-CRYSTAL)
