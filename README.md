@@ -2,7 +2,18 @@
 
 A Crystal compiler fork where editing a method rebuilds in a fraction of a
 second. On a ~8k line Amber app, a method body or template edit rebuilds in
-**~0.3s** instead of 12s, and a rebuild without changes is skipped (0.07s).
+~0.3s instead of 12s, and a rebuild without changes is skipped (0.07s).
+
+Even in an LLM-driven world, clear and maintainable source code is still
+valuable. I'm not a big fan of LLMs blindly turning everything into very
+verbose Assembly or low-level Rust. The compiler should handle the lower-level
+complexity deterministically, producing the exact same result every time.
+
+The goal is to make Crystal fast enough for an LLM-heavy development workflow
+without sacrificing readability. Current Crystal compilation is effectively 
+unusable in an LLM-driven workflow: LLMs need fast feedback and multiple 
+quick development cycles, while a large Crystal project can spend hours
+compiling instead of iterating.
 
 It's built for both ways of writing code today:
 
@@ -15,7 +26,7 @@ It's built for both ways of writing code today:
   program restarts with the change before you've switched windows. Declared
   return types read as documentation and put type errors where you made them.
 
-Both can work on the same project at once: the agent edits, you keep
+Both can work on the same project at once if needed: the agent edits, you keep
 `crystal run` open, and it rebuilds once when the agent is done.
 
 ## Setup
@@ -85,9 +96,12 @@ And add this to the project's `CLAUDE.md` (or `AGENTS.md` for other agents):
   (usually under a second) and prints the errors; exit 1 = fix them.
   Exit 2 = no watcher: use `crystal build --no-codegen` to type check.
 - Without the hooks, run `crystal watch hold claude` before editing.
-- Prefer editing method bodies; changing signatures or adding methods or
-  types is fine but triggers a full rebuild (~10s).
-- Specs: `crystal spec [spec/file_spec.cr:LINE]`. Format: `crystal tool format`.
+- Specs: `crystal spec --affected` runs just the examples your edits reach
+  (fast with the watcher); run plain `crystal spec` before finishing.
+  A single file or example: `crystal spec [spec/file_spec.cr:LINE]`.
+- Editing method bodies and adding methods is fastest; changing signatures,
+  removing methods or adding types is fine but rebuilds fully (~10s).
+- Format: `crystal tool format`.
 ~~~~
 
 ## Usage
@@ -98,24 +112,30 @@ In a shard, commands find the main file from `shard.yml` (first target's
 ```sh
 crystal run      # build, run, rebuild + restart on every change (in a terminal)
 crystal build    # build; skipped if nothing changed
-crystal spec
+crystal spec     # run the specs; skipped build if nothing changed
 ```
 
 `crystal run file.cr` runs once as before; `--watch` / `--no-watch` choose.
 `crystal watch` rebuilds without running.
 
-While `crystal run` or `crystal watch` is running, other programs (the hooks
-above, an agent, a script) talk to it:
+While `crystal run` or `crystal watch` is running, the other commands use it:
+`crystal build` gets its up to date executable, and `crystal spec` has it keep
+the spec program typed too, so after an edit the specs rebuild in about a
+second instead of compiling from scratch. Other programs (the hooks above, an
+agent, a script) talk to it as well:
 
 ```sh
+crystal spec --affected     # run only the examples reaching code changed since the last spec run
 crystal watch hold claude   # don't build while editing
 crystal watch release       # build what changed, once
 crystal watch build         # build now, wait, print errors (exit 0 ok, 1 failed, 2 no watcher)
 crystal watch status        # result of the last build
 ```
 
-What rebuilds fast: method bodies, and templates (Slang, ECR) rendered inside
-a method. A signature change, a new method or type, or a file read by a
+What rebuilds fast (~0.3s): method bodies, methods added to a class, struct or
+module (unless they override another or a macro lists the type's methods),
+templates (Slang, ECR) rendered inside a method, and the fix after a type
+error. A signature change, a new type, a removed method, or a file read by a
 top-level macro (e.g. i18n locales) rebuilds fully (~10s).
 
 ## Why strict signatures

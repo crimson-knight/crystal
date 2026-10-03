@@ -2,6 +2,7 @@ require "./file_watcher"
 require "./kqueue_watcher"
 require "./inotify_watcher"
 require "./coordination"
+require "./spec_build"
 
 module Crystal
   module Watch
@@ -18,9 +19,8 @@ module Crystal
       @color : Bool
       @interrupted : Bool = false
 
-      # With `--strict-signatures` the typed program is kept between builds,
-      # and a change that only edits method bodies types just those again
-      # (see `IncrementalSemantic`).
+      # The typed program is kept between builds, and a change that only
+      # edits method bodies types just those again (see `IncrementalSemantic`).
       @result : Compiler::Result?
       @incremental_semantic : IncrementalSemantic?
       @changed = [] of String
@@ -30,6 +30,8 @@ module Crystal
       @root : String = Dir.current
       @build = 0
       @request : String? = nil
+      @answered_request : String? = nil
+      @spec_builds = {} of Array(String) => SpecBuild
       @last_state = "compiling"
       @last_errors : String? = nil
 
@@ -50,6 +52,7 @@ module Crystal
         setup_signal_handler
         Coordination.setup(@root)
         @request = Coordination.requested(@root)
+        @answered_request = @request
 
         loop do
           break if @interrupted
@@ -88,8 +91,9 @@ module Crystal
             spawn_run
           end
         rescue ex : Crystal::CodeError
-          # The kept program may be half updated: start over next time.
-          @incremental_semantic = nil
+          # The kept program may be half updated: start over next time,
+          # unless the error's edit was undone (see `IncrementalSemantic`).
+          @incremental_semantic = nil unless @incremental_semantic.try(&.consistent?)
           ex.color = false
           errors = ex.to_s
           ex.color = @color
@@ -131,6 +135,11 @@ module Crystal
           events = @file_watcher.wait_for_changes(@debounce)
           return [] of String if @interrupted
 
+          # The watcher's own writes (status, responses) aren't changes;
+          # reacting to them would loop forever.
+          events.reject! { |path| own_file?(path) }
+          next if events.empty?
+
           if reason = Coordination.held?(@root)
             print_status "Held by #{reason}: building when released (crystal watch release)"
             write_status "held", "Held by #{reason}"
@@ -141,13 +150,61 @@ module Crystal
             @file_watcher.drain
           end
 
-          # A request answered by the next build is the one made by now.
-          @request = Coordination.requested(@root)
-          changed = changes_since_last_build(events)
-          return changed unless changed.empty?
+          request = Coordination.read_request(@root)
+          request = nil if request && request.token == @answered_request
+          if request && request.kind == "spec"
+            @answered_request = request.token
+            answer_spec_request(request)
+            request = nil
+          end
 
-          write_status @last_state, "No changes since the last build", @last_errors
+          changed = changes_since_last_build(events)
+          if !changed.empty? || request
+            # The next build (or a "no changes" status) answers the request
+            if request
+              @request = request.token
+              @answered_request = request.token
+            end
+            return changed unless changed.empty?
+
+            write_status @last_state, "No changes since the last build", @last_errors
+          end
         end
+      end
+
+      # Builds the spec program of a `crystal spec` run (see `SpecBuild`) and
+      # writes the answer for it.
+      private def answer_spec_request(request : Coordination::Request) : Nil
+        files = request.files.sort
+        print_status "Compiling specs (#{files.size} file#{files.size == 1 ? "" : "s"})..."
+        start = Time.instant
+        spec_build = @spec_builds[files] ||= SpecBuild.new(files)
+        response =
+          begin
+            affected = spec_build.build(@compiler)
+            print_success "Specs compiled in #{start.elapsed.total_seconds.round(2)}s"
+            Coordination::Response.new(true, spec_build.output, "Specs compiled", nil, affected)
+          rescue ex : Crystal::CodeError
+            ex.color = false
+            errors = ex.to_s
+            ex.color = @color
+            STDERR.puts ex
+            print_error "Spec compilation failed"
+            Coordination::Response.new(false, nil, "Compilation failed", errors)
+          rescue ex : Crystal::Error | IO::Error
+            STDERR.puts ex.message
+            print_error "Spec compilation failed"
+            Coordination::Response.new(false, nil, "Compilation failed", ex.message)
+          end
+        Coordination.write_response(@root, request.token, response)
+      end
+
+      # Files the watcher writes itself in `.crystal-watch/`: everything but
+      # the `hold` and `request` files other programs write.
+      private def own_file?(path : String) : Bool
+        control = Coordination.dir(@root)
+        return false unless path.starts_with?(File.join(control, ""))
+        !File.basename(path).in?("hold", "request")
       end
 
       # What changed since the last build: by content when the program is
@@ -155,6 +212,10 @@ module Crystal
       # change, builds nothing); otherwise any watched file that changed.
       private def changes_since_last_build(events : Array(String)) : Array(String)
         control = Coordination.dir(@root)
+        # The executable was removed: build it again (the main file, unchanged,
+        # makes an incremental build relink)
+        return [@sources.first.filename] if @last_state == "ok" && !File.exists?(@output_filename)
+
         if incremental = @incremental_semantic
           incremental.changed_files
         elsif @last_state == "failed" || events.any? { |path| path != control && !path.starts_with?(File.join(control, "")) }
@@ -174,25 +235,20 @@ module Crystal
       private def write_status(state : String, message : String, errors : String? = nil) : Nil
         Coordination.write_status(@root, Coordination::Status.new(
           state: state, build: @build, request: @request, pid: Process.pid.to_i64,
-          updated_at: Time.utc, message: message, errors: errors))
+          updated_at: Time.utc, message: message, errors: errors,
+          main: @sources.first?.try(&.filename), binary: @output_filename))
       end
 
       private def compile_fully(sources : Array(Compiler::Source)) : Compiler::Result
         @incremental_semantic = nil
-        strict = @compiler.strict_signatures?
+        @compiler.keep_typed_program = true
         result = @compiler.compile_configure_program(sources, @output_filename) do |program|
-          if strict
-            program.instantiation_records = {} of Def => Array(Program::InstantiationRecord)
-            program.codegen_snapshot = Program::CodegenSnapshot.new
-          end
+          program.instantiation_records = {} of Def => Array(Program::InstantiationRecord)
+          program.codegen_snapshot = Program::CodegenSnapshot.new
         end
         @result = result
 
-        if strict
-          program_sources = result.program.requires.to_h { |filename| {filename, File.read(filename)} }
-          sources.each { |source| program_sources[source.filename] = source.code }
-          @incremental_semantic = IncrementalSemantic.new(result.program, program_sources)
-        end
+        @incremental_semantic = IncrementalSemantic.new(result.program, IncrementalSemantic.file_sources(result.program))
         result
       end
 
@@ -246,14 +302,14 @@ module Crystal
         verifier.prelude = @compiler.prelude
         verifier.no_codegen = true
         verifier.incremental = false
+        verifier.strict_signatures = @compiler.strict_signatures?
         fresh = verifier.compile_configure_program(sources, @output_filename) do |fresh_program|
           fresh_program.strict_signatures_root = program.strict_signatures_root
           fresh_program.instantiation_records = {} of Def => Array(Program::InstantiationRecord)
         end
 
-        root = program.strict_signatures_root.not_nil!
-        expected = IncrementalSemantic.typed_methods(fresh.program, root)
-        actual = IncrementalSemantic.typed_methods(program, root)
+        expected = IncrementalSemantic.typed_methods(fresh.program, @root)
+        actual = IncrementalSemantic.typed_methods(program, @root)
         mismatches = expected.select { |key, description| actual[key]? != description }
         if mismatches.empty?
           print_success "Verified: #{expected.size} typed methods match a full compilation"

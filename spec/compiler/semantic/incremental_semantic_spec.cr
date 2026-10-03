@@ -4,7 +4,7 @@ require "../../spec_helper"
 # `IncrementalSemantic` must give the same typed methods as typing the
 # edited program from scratch.
 
-private def compile_typed(dir : String, files : Hash(String, String), prelude = "empty") : Program
+private def compile_typed(dir : String, files : Hash(String, String), prelude = "empty", strict = true) : Program
   files.each do |name, source|
     path = File.join(dir, name)
     Dir.mkdir_p(File.dirname(path))
@@ -18,7 +18,7 @@ private def compile_typed(dir : String, files : Hash(String, String), prelude = 
   compiler.incremental = false
   compiler.color = false
   result = compiler.compile_configure_program(Compiler::Source.new(main, File.read(main)), "fake-no-build") do |program|
-    program.strict_signatures_root = dir
+    program.strict_signatures_root = dir if strict
     program.instantiation_records = {} of Def => Array(Program::InstantiationRecord)
   end
   result.program
@@ -26,16 +26,16 @@ end
 
 # Types *before*, applies the edit to *after* incrementally and compares with
 # typing *after* from scratch.
-private def assert_incremental(before : Hash(String, String), after : Hash(String, String), prelude = "empty", file = __FILE__, line = __LINE__)
+private def assert_incremental(before : Hash(String, String), after : Hash(String, String), prelude = "empty", strict = true, file = __FILE__, line = __LINE__)
   with_tempfile("incremental_semantic") do |dir|
     Dir.mkdir_p(dir)
-    program = compile_typed(dir, before, prelude)
+    program = compile_typed(dir, before, prelude, strict)
     sources = before.to_h { |name, source| {File.join(dir, name), source} }
 
     incremental = IncrementalSemantic.new(program, sources)
     incremental.apply(after.to_h { |name, source| {File.join(dir, name), source} })
 
-    expected = IncrementalSemantic.typed_methods(compile_typed(dir, after, prelude), dir)
+    expected = IncrementalSemantic.typed_methods(compile_typed(dir, after, prelude, strict), dir)
     actual = IncrementalSemantic.typed_methods(program, dir)
     expected.should_not be_empty
 
@@ -47,10 +47,10 @@ private def assert_incremental(before : Hash(String, String), after : Hash(Strin
   end
 end
 
-private def assert_unsupported(before : Hash(String, String), after : Hash(String, String), message : String, file = __FILE__, line = __LINE__)
+private def assert_unsupported(before : Hash(String, String), after : Hash(String, String), message : String, strict = true, file = __FILE__, line = __LINE__)
   with_tempfile("incremental_semantic") do |dir|
     Dir.mkdir_p(dir)
-    program = compile_typed(dir, before)
+    program = compile_typed(dir, before, strict: strict)
     sources = before.to_h { |name, source| {File.join(dir, name), source} }
     expect_raises(IncrementalSemantic::Unsupported, message, file: file, line: line) do
       IncrementalSemantic.new(program, sources).apply(after.to_h { |name, source| {File.join(dir, name), source} })
@@ -124,6 +124,150 @@ describe IncrementalSemantic do
         CRYSTAL
     # `foo(1)` uses an expansion with a copy of the body, `foo(x: 1, y: 3)` the def
     incremental.retyped.map(&.name).should eq(["foo", "foo"])
+  end
+
+  it "undoes an edit with an error, so the fix is incremental too" do
+    with_tempfile("incremental_semantic_undo") do |dir|
+      Dir.mkdir_p(dir)
+      main = File.join(dir, "main.cr")
+      source = ->(body : String) { %(require "primitives"\n\ndef foo(x : Int32) : Int32\n  #{body}\nend\n\nfoo(1)\n) }
+      program = compile_typed(dir, {"main.cr" => source.call("x + 1")})
+      incremental = IncrementalSemantic.new(program, {main => source.call("x + 1")})
+
+      expect_raises(Crystal::CodeError) do
+        incremental.apply({main => source.call("x.no_such_method")})
+      end
+      incremental.consistent?.should be_true
+
+      incremental.apply({main => source.call("x * 2")})
+      incremental.retyped.size.should eq(1)
+
+      expected = IncrementalSemantic.typed_methods(compile_typed(dir, {"main.cr" => source.call("x * 2")}), dir)
+      IncrementalSemantic.typed_methods(program, dir).should eq(expected)
+    end
+  end
+
+  it "adds a method and types the body that calls it" do
+    incremental = assert_incremental(
+      {"main.cr" => <<-CRYSTAL},
+        require "primitives"
+
+        class Calc
+          def run : Int32
+            1
+          end
+        end
+
+        Calc.new.run
+        CRYSTAL
+      {"main.cr" => <<-CRYSTAL})
+        require "primitives"
+
+        class Calc
+          def run : Int32
+            twice(1)
+          end
+
+          private def twice(x : Int32) : Int32
+            x * 2
+          end
+        end
+
+        Calc.new.run
+        CRYSTAL
+    incremental.retyped.map(&.name).should eq(["run"])
+  end
+
+  it "adds a method to a module between others" do
+    assert_incremental(
+      {"main.cr" => <<-CRYSTAL},
+        require "primitives"
+
+        module Outer
+          module Util
+            extend self
+
+            def a(x : Int32) : Int32
+              x
+            end
+
+            def b(x : Int32) : Int32
+              x
+            end
+          end
+        end
+
+        Outer::Util.a(1)
+        CRYSTAL
+      {"main.cr" => <<-CRYSTAL})
+        require "primitives"
+
+        module Outer
+          module Util
+            extend self
+
+            def a(x : Int32) : Int32
+              c(x)
+            end
+
+            def c(x : Int32) : Int32
+              x + 1
+            end
+
+            def b(x : Int32) : Int32
+              x
+            end
+          end
+        end
+
+        Outer::Util.a(1)
+        CRYSTAL
+  end
+
+  it "needs a full compilation for an added method overriding another" do
+    assert_unsupported(
+      {"main.cr" => %(require "primitives"\nclass A\n  def foo : Int32\n    1\n  end\nend\nclass B < A\nend\nB.new.foo\n)},
+      {"main.cr" => %(require "primitives"\nclass A\n  def foo : Int32\n    1\n  end\nend\nclass B < A\n  def foo : Int32\n    2\n  end\nend\nB.new.foo\n)},
+      "overrides or overloads")
+  end
+
+  it "needs a full compilation for an added method checked with responds_to?" do
+    assert_unsupported(
+      {"main.cr" => %(require "primitives"\nclass A\nend\nA.new.responds_to?(:foo)\n)},
+      {"main.cr" => %(require "primitives"\nclass A\n  def foo : Int32\n    1\n  end\nend\nA.new.responds_to?(:foo)\n)},
+      "responds_to?")
+  end
+
+  it "needs a full compilation for an added method of a type macros look at" do
+    assert_unsupported(
+      {"main.cr" => %(require "primitives"\nclass A\n  def bar : Int32\n    {{ @type.methods.size }}\n  end\nend\nA.new.bar\n)},
+      {"main.cr" => %(require "primitives"\nclass A\n  def bar : Int32\n    {{ @type.methods.size }}\n  end\n\n  def foo : Int32\n    1\n  end\nend\nA.new.bar\n)},
+      "looks at the methods")
+  end
+
+  it "needs a full compilation when an edit assigns an instance variable a new type" do
+    assert_unsupported(
+      {"main.cr" => %(require "primitives"\nclass A\n  @x = 1\n  def set : Nil\n    @x = 2\n  end\nend\nA.new.set\n)},
+      {"main.cr" => %(require "primitives"\nclass A\n  @x = 1\n  def set : Nil\n    @x = 'a'\n  end\nend\nA.new.set\n)},
+      "new type")
+  end
+
+  it "finds a moved method by its new location on the next edit" do
+    with_tempfile("incremental_semantic_moved") do |dir|
+      Dir.mkdir_p(dir)
+      main = File.join(dir, "main.cr")
+      v1 = %(require "primitives"\ndef a : Int32\n  1\nend\ndef b : Int32\n  2\nend\na\nb\n)
+      v2 = %(require "primitives"\ndef a : Int32\n  x = 1\n  x\nend\ndef b : Int32\n  2\nend\na\nb\n)
+      v3 = %(require "primitives"\ndef a : Int32\n  x = 1\n  x\nend\ndef b : Int32\n  3\nend\na\nb\n)
+      program = compile_typed(dir, {"main.cr" => v1})
+      incremental = IncrementalSemantic.new(program, {main => v1})
+      incremental.apply({main => v2})
+      incremental.apply({main => v3})
+      incremental.retyped.map(&.name).should eq(["b"])
+
+      expected = IncrementalSemantic.typed_methods(compile_typed(dir, {"main.cr" => v3}), dir)
+      IncrementalSemantic.typed_methods(program, dir).should eq(expected)
+    end
   end
 
   it "instantiates methods the new body calls" do
@@ -301,11 +445,56 @@ describe IncrementalSemantic do
       "more than method bodies changed")
   end
 
-  it "needs a full compilation for code outside strict mode" do
-    assert_unsupported(
+  it "types again a method outside strict code when its type stays" do
+    assert_incremental(
       {"main.cr" => %(require "primitives"\nrequire "./lib/dep"\nfoo), "lib/dep.cr" => %(def foo : Int32\n  1\nend)},
-      {"main.cr" => %(require "primitives"\nrequire "./lib/dep"\nfoo), "lib/dep.cr" => %(def foo : Int32\n  2\nend)},
-      "isn't strict code")
+      {"main.cr" => %(require "primitives"\nrequire "./lib/dep"\nfoo), "lib/dep.cr" => %(def foo : Int32\n  2\nend)})
+  end
+
+  it "types again a method without a return type when its type stays" do
+    incremental = assert_incremental(
+      {"main.cr" => <<-CRYSTAL},
+        require "primitives"
+
+        def foo(x)
+          x + 1
+        end
+
+        def bar
+          foo(1) * 2
+        end
+
+        bar
+        CRYSTAL
+      {"main.cr" => <<-CRYSTAL}, strict: false)
+        require "primitives"
+
+        def foo(x)
+          x * 3
+        end
+
+        def bar
+          foo(1) * 2
+        end
+
+        bar
+        CRYSTAL
+    incremental.retyped.map(&.name).should eq(["foo"])
+    incremental.full_codegen_reason.should be_nil
+  end
+
+  it "needs a full compilation when an inferred return type changes" do
+    assert_unsupported(
+      {"main.cr" => %(require "primitives"\ndef foo(x)\n  x + 1\nend\nfoo(1)\n)},
+      {"main.cr" => %(require "primitives"\ndef foo(x)\n  x > 0 ? x : nil\nend\nfoo(1)\n)},
+      "now has type", strict: false)
+  end
+
+  it "needs a full codegen for a trivial body without the firewall" do
+    incremental = assert_incremental(
+      {"main.cr" => %(require "primitives"\ndef foo\n  1\nend\nfoo\n)},
+      {"main.cr" => %(require "primitives"\ndef foo\n  2\nend\nfoo\n)}, strict: false)
+    incremental.full_codegen_reason.should_not be_nil
   end
 
   it "needs a full compilation for a method that yields" do

@@ -2143,10 +2143,13 @@ module Crystal
           TypeNode.has_constant?(type, value)
         end
       when "methods"
+        type.program.types_with_reflected_methods << type
         interpret_check_args { TypeNode.methods(type) }
       when "all_methods"
+        type.program.types_with_reflected_methods << type
         interpret_check_args { TypeNode.all_methods(type) }
       when "has_method?"
+        type.program.types_with_reflected_methods << type
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#has_method?'")
           TypeNode.has_method?(type, value)

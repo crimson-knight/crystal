@@ -148,11 +148,10 @@
               name = String.new(name_bytes[0, null_idx])
               full_path = File.join(dir, name)
 
-              if @watched_files.includes?(full_path)
+              # A watched file, or any file in a watched directory (one added
+              # or removed, too)
+              if @watched_files.includes?(full_path) || @watched_files.includes?(dir)
                 changed << full_path
-              elsif @watched_files.includes?(dir) && Dir.exists?(dir)
-                # A file added, removed or changed in a watched directory
-                changed << dir
               end
             end
 

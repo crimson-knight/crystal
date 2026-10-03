@@ -347,7 +347,27 @@ module Crystal
   end
 
   class Def
+    # While `IncrementalSemantic` types this def's body again, the type it
+    # had: callers keep seeing it, so the body's intermediate types don't
+    # spread through the program. Afterwards the new type is compared with
+    # it (see `type_from_body`).
+    property retyping_type : Type?
+
     def map_type(type)
+      mapped = map_body_type(type)
+      if (retyping_type = @retyping_type) && mapped.implements?(retyping_type)
+        retyping_type
+      else
+        mapped
+      end
+    end
+
+    # The type this def gets from its body's (and returns') types, by itself.
+    def type_from_body : Type?
+      type_from_dependencies.try { |type| map_body_type(type) }
+    end
+
+    private def map_body_type(type)
       freeze_type = self.freeze_type
       return type unless freeze_type
 

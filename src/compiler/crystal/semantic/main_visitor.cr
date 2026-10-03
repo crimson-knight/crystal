@@ -1943,6 +1943,7 @@ module Crystal
     end
 
     def end_visit(node : RespondsTo)
+      program.responds_to_names << node.name
       node.type = program.bool
       if needs_type_filters? && (var = get_expression_var(node.obj))
         @type_filters = TypeFilters.new var, RespondsToTypeFilter.new(node.name)

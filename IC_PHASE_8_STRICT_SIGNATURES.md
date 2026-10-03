@@ -196,3 +196,41 @@ changed. A hold not renewed for 10 minutes is ignored. The watcher writes
 after each step, so `crystal watch build` gives an agent the result of its
 edit without compiling itself.
 
+### Specs, builds, errors and added methods
+
+- `crystal run` / `crystal spec` keep the executable they run in the cache
+  directory (with incremental compilation), so an unchanged program skips
+  the build: `crystal spec` with nothing changed went from 15s to 1.5s.
+- With a watcher running, `crystal spec` asks it for the spec program
+  (`kind: spec` request, answered in `.crystal-watch/response-<token>.json`).
+  The watcher keeps one `SpecBuild` per set of spec files, compiled once and
+  then edited incrementally: on crysterr a body edit's specs build in ~1s
+  (13.5s before). `crystal build` without flags of its own takes the
+  watcher's executable when it builds the same main file.
+- `crystal spec --affected` runs only the examples reaching a changed method
+  (`AffectedExamples`): the callers of every method and proc type are
+  collected from the typed program; the body of a proc or captured block is
+  attributed to its proc type (called by `call` on that type); `it` blocks
+  are examples; `describe`/`context` bodies, hooks and other top-level code
+  mean all examples. On crysterr a `sha1` edit runs 63 of 115 examples, a
+  controller edit 40 (request specs go through the router).
+  `CRYSTAL_AFFECTED_DEBUG=1` prints the call chain that made it all.
+- An edit with a type error is undone (the old bodies typed again), so the
+  fix applies incrementally too. An error assigning an instance or class
+  variable a new type falls back to a full compilation instead: the type
+  guessed from every assignment may widen there.
+- Methods added to an existing class, struct or module are declared by
+  reopening the enclosing types with just that method (`TopLevelVisitor`),
+  when nothing could observe the addition: no method of that name along the
+  hierarchy (override, overload), the name isn't checked with `responds_to?`,
+  no macro looked at the type's methods (`@type.methods`, `has_method?`; Grant
+  models do), no `method_missing`/`method_added` macro. Not `initialize`
+  (it defines `new`). Moved methods are found by their new location on the
+  next edit.
+- A watcher's full compilation always types the program (`Compiler#keep_typed_program`):
+  when nothing changed only codegen is skipped, else there'd be no typed
+  program to edit.
+- The watcher ignores its own writes in `.crystal-watch/` (writing the status
+  there used to wake it up again in a loop) and writes a "no changes" status
+  only to answer a request.
+

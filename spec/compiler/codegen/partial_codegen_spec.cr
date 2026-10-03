@@ -4,7 +4,7 @@ require "../../spec_helper"
 # code again with `Compiler#codegen_again` and runs the result. Returns the
 # reason a full codegen was needed (`nil` if only the changed modules were
 # generated) and the program's output.
-private def rebuild_partially(before : String, after : String) : {String?, String}
+private def rebuild_partially(before : String, after : String, strict = true) : {String?, String}
   with_tempfile("partial_codegen_sources") do |dir|
     Dir.mkdir_p(dir)
     main = File.join(dir, "main.cr")
@@ -15,7 +15,7 @@ private def rebuild_partially(before : String, after : String) : {String?, Strin
       compiler.incremental = false
       sources = [Compiler::Source.new(main, before)]
       result = compiler.compile_configure_program(sources, output) do |program|
-        program.strict_signatures_root = dir
+        program.strict_signatures_root = dir if strict
         program.instantiation_records = {} of Def => Array(Program::InstantiationRecord)
         program.codegen_snapshot = Program::CodegenSnapshot.new
       end
@@ -187,6 +187,62 @@ describe "Code gen: partial codegen" do
       CRYSTAL
     reason.should_not be_nil
     output.should eq("<X>\n")
+  end
+
+  it "generates only the changed module without strict signatures" do
+    reason, output = rebuild_partially(<<-CRYSTAL, <<-CRYSTAL, strict: false)
+      class Greeter
+        def greet(name)
+          "Hello, " + name
+        end
+      end
+
+      puts Greeter.new.greet("x")
+      CRYSTAL
+      class Greeter
+        def greet(name)
+          "Bye, " + name
+        end
+      end
+
+      puts Greeter.new.greet("x")
+      CRYSTAL
+    reason.should be_nil
+    output.should eq("Bye, x\n")
+  end
+
+  it "regenerates the callers of an inlined literal without strict signatures" do
+    reason, output = rebuild_partially(<<-CRYSTAL, <<-CRYSTAL, strict: false)
+      class Model
+        def name
+          "old"
+        end
+      end
+
+      class View
+        def render(model)
+          "<" + model.name + ">"
+        end
+      end
+
+      puts View.new.render(Model.new)
+      CRYSTAL
+      class Model
+        def name
+          "new"
+        end
+      end
+
+      class View
+        def render(model)
+          "<" + model.name + ">"
+        end
+      end
+
+      puts View.new.render(Model.new)
+      CRYSTAL
+    reason.should_not be_nil
+    output.should eq("<new>\n")
   end
 
   it "falls back to a full codegen for a new symbol" do

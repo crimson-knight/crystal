@@ -231,6 +231,10 @@ module Crystal
     # file fingerprinting, parse caching, and cache persistence.
     property? incremental = false
 
+    # Whether a build skipped because nothing changed still types the program
+    # (skipping only codegen), for `crystal watch` to keep it.
+    property? keep_typed_program = false
+
     # Strict signatures mode, see `Program#strict_signatures_root`.
     # On unless `--no-strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=0`.
     property? strict_signatures : Bool = ENV["CRYSTAL_STRICT_SIGNATURES"]? != "0"
@@ -348,7 +352,13 @@ module Crystal
       end
 
       # The skip check above only needs the cached file list, so a skipped
-      # build doesn't parse the program at all.
+      # build doesn't parse the program at all, unless the typed program is
+      # wanted anyway (`crystal watch` keeps it to type edits incrementally):
+      # then only codegen is skipped.
+      if compilation_skipped && keep_typed_program?
+        compilation_skipped = false
+        skip_codegen = true
+      end
       node = compilation_skipped ? Nop.new : parse(program, source)
 
       unless compilation_skipped
@@ -358,9 +368,9 @@ module Crystal
           program.macro_expansion_error_hook.try &.call(ex.cause)
         end
 
-        units = codegen program, node, source, output_filename unless @no_codegen
+        units = codegen program, node, source, output_filename unless @no_codegen || skip_codegen
 
-        if @incremental
+        if @incremental && !skip_codegen
           @progress_tracker.stage("Signatures") do
             extract_and_compare_signatures(program, source)
           end

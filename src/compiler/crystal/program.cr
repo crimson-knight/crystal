@@ -132,6 +132,13 @@ module Crystal
     # own (see `Call#instantiate`).
     getter defs_typed_with_callers = Set(Def).new.compare_by_identity
 
+    # Names checked with `responds_to?`, and types whose methods a macro
+    # looked at (`@type.methods`, `has_method?`): adding a method with such a
+    # name, or to such a type, changes existing code (see
+    # `IncrementalSemantic`).
+    getter responds_to_names = Set(String).new
+    getter types_with_reflected_methods = Set(Type).new.compare_by_identity
+
     # Library code found through `CRYSTAL_PATH` (the standard library, shards)
     # is never strict, even inside the root: in the compiler's own repository
     # the standard library is `src/`.

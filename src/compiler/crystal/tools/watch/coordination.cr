@@ -61,13 +61,78 @@ module Crystal::Watch
       reason.presence || "held"
     end
 
+    # A request to the watcher: build the main program (`build`), or build
+    # the spec program of *files* (`spec`) and answer in `response_file`.
+    struct Request
+      include JSON::Serializable
+
+      getter token : String
+      getter kind : String = "build"
+      getter files : Array(String) = [] of String
+
+      def initialize(@token, @kind = "build", @files = [] of String)
+      end
+    end
+
     def self.request(root : String, token : String) : Nil
+      request(root, Request.new(token))
+    end
+
+    def self.request(root : String, request : Request) : Nil
       setup(root)
-      File.write(request_file(root), token)
+      File.write(request_file(root), request.to_json)
+    end
+
+    # The last request made, `nil` if none.
+    def self.read_request(root : String) : Request?
+      raw = (File.read(request_file(root)) rescue nil).try(&.strip.presence)
+      return nil unless raw
+      raw.starts_with?('{') ? Request.from_json(raw) : Request.new(raw)
+    rescue JSON::ParseException
+      nil
     end
 
     def self.requested(root : String) : String?
-      (File.read(request_file(root)) rescue nil).try(&.strip.presence)
+      read_request(root).try(&.token)
+    end
+
+    # The answer to a `spec` request.
+    struct Response
+      include JSON::Serializable
+
+      property ok : Bool
+      property binary : String?
+      property message : String
+      property errors : String?
+      # Locations (`file:line`) of the examples affected by what changed since
+      # the previous build of the same specs; `nil` when unknown (the spec
+      # program was compiled from scratch).
+      property affected : Array(String)?
+
+      def initialize(@ok, @binary, @message, @errors = nil, @affected = nil)
+      end
+    end
+
+    def self.response_file(root : String, token : String) : String
+      File.join(dir(root), "response-#{token}.json")
+    end
+
+    def self.write_response(root : String, token : String, response : Response) : Nil
+      path = response_file(root, token)
+      temp = "#{path}.tmp"
+      File.write(temp, response.to_json)
+      File.rename(temp, path)
+    rescue IO::Error
+    end
+
+    # Takes the response to the request *token*, `nil` while there's none.
+    def self.take_response(root : String, token : String) : Response?
+      path = response_file(root, token)
+      response = Response.from_json(File.read(path))
+      File.delete?(path)
+      response
+    rescue IO::Error | JSON::ParseException
+      nil
     end
 
     struct Status
@@ -84,8 +149,11 @@ module Crystal::Watch
       property message : String?
       # Errors of the last build, without colors.
       property errors : String?
+      # The program file built, and where its executable is.
+      property main : String?
+      property binary : String?
 
-      def initialize(@state, @build, @request, @pid, @updated_at, @message = nil, @errors = nil)
+      def initialize(@state, @build, @request, @pid, @updated_at, @message = nil, @errors = nil, @main = nil, @binary = nil)
       end
 
       def finished? : Bool

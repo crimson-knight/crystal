@@ -119,7 +119,7 @@ time bin/crystal build src/compiler/crystal.cr --stats -o /dev/null
 ### Environment Variables
 | Variable | Purpose |
 |----------|---------|
-| `CRYSTAL_WORKERS` | Number of codegen threads (default: 8) |
+| `CRYSTAL_WORKERS` | Number of codegen threads (default: the CPU count) |
 | `CRYSTAL_CACHE_DIR` | Override cache directory location |
 | `CRYSTAL_LIBRARY_PATH` | Library search path (needed for WASM) |
 | `CRYSTAL_PARALLEL_PARSE` | Set to `0` to disable parallel parsing (Phase 3) |
