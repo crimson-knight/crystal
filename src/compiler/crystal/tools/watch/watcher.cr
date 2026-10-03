@@ -322,7 +322,9 @@ module Crystal
       end
 
       private def spawn_run : Nil
-        executable = @output_filename
+        # `crystal watch --run app.cr` writes `app` here: a bare name would be
+        # looked up in PATH.
+        executable = File.expand_path(@output_filename)
 
         if wasm_target?
           wasmtime = find_wasmtime
@@ -404,9 +406,13 @@ module Crystal
       private def setup_signal_handler
         {% unless flag?(:wasm32) %}
           watcher = self
-          Signal::INT.trap do
-            watcher.handle_interrupt
-          end
+          # Ctrl-C, `kill` and a closed terminal all stop the running program
+          # too, so it doesn't keep its port.
+          {% unless flag?(:win32) %}
+            {Signal::INT, Signal::TERM, Signal::HUP}.each &.trap { watcher.handle_interrupt }
+          {% else %}
+            Signal::INT.trap { watcher.handle_interrupt }
+          {% end %}
         {% end %}
       end
 
