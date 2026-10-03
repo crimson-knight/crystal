@@ -15,8 +15,8 @@ What any option has to handle:
 - Ubuntu 24.04 users also need `apt.llvm.org` (`llvm-toolchain-noble-21`), because
   `libllvm21` is not in the 24.04 archive. The package declares the dependency;
   the install page must say so.
-- Package size: each `.deb` carries the compiler (about 25 MB) plus the stdlib, so
-  expect tens of MB per package, four packages per release.
+- Package size: each `.deb` is about 5 to 10 MB (measured on the first CI run), four
+  packages per release, so a few dozen MB per release in the repository.
 
 ## Options
 
@@ -42,7 +42,8 @@ HTTPS. `reprepro` is simpler to script for a fixed set of suites; `aptly` has
 snapshots, which fits our pinning habits but adds state to keep.
 
 Strengths: free, no third party, files are static and portable, the whole thing
-is auditable in git. Weakness: the 1 GB Pages limit. Keep only the newest few
+is auditable in git. Weakness: the 1 GB Pages limit, which at this package size
+holds dozens of releases but still needs pruning eventually. Keep only the newest few
 versions per suite (`reprepro` `Limit:` in `conf/distributions`) and older ones
 stay available on the GitHub releases.
 
