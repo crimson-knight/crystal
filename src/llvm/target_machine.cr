@@ -24,6 +24,11 @@ class LLVM::TargetMachine
     LLVM.string_and_dispose(cpu_c)
   end
 
+  def features : String
+    features_c = LibLLVM.get_target_machine_feature_string(self)
+    LLVM.string_and_dispose(features_c)
+  end
+
   def emit_obj_to_file(llvm_mod, filename)
     emit_to_file llvm_mod, filename, LLVM::CodeGenFileType::ObjectFile
   end

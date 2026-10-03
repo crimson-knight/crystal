@@ -298,7 +298,7 @@ module Crystal
       if @incremental && !@no_cache
         output_dir_for_cache = CacheDir.instance.directory_for(source)
         @current_cached_data = IncrementalCache.load(
-          output_dir_for_cache, Config.version, @codegen_target.to_s, @flags, @prelude
+          output_dir_for_cache, Config.version, @codegen_target.to_s, @flags, @prelude, codegen_cache_key
         )
       else
         @current_cached_data = nil
@@ -565,7 +565,7 @@ module Crystal
 
     private def bc_flags_changed?(output_dir)
       bc_flags_changed = true
-      current_bc_flags = "#{@codegen_target}|#{@mcpu}|#{@mattr}|#{@link_flags}|#{@mcmodel}"
+      current_bc_flags = codegen_cache_key
       bc_flags_filename = "#{output_dir}/bc_flags#{optimization_mode.suffix}"
       if File.file?(bc_flags_filename)
         previous_bc_flags = File.read(bc_flags_filename).strip
@@ -573,6 +573,12 @@ module Crystal
       end
       File.write(bc_flags_filename, current_bc_flags)
       bc_flags_changed
+    end
+
+    private def codegen_cache_key : String
+      machine = target_machine
+      # The version also invalidates objects built before the portable default.
+      "cpu-features-v1|#{@codegen_target}|#{machine.cpu}|#{machine.features}|#{@link_flags}|#{@mcmodel}"
     end
 
     private def codegen(program, node : ASTNode, sources, output_filename)
@@ -1410,16 +1416,17 @@ module Crystal
 
       # Capture file-level dependencies (convert Set to sorted Array for JSON)
       file_deps = unless program.file_dependencies.empty?
-                    result = {} of String => Array(String)
-                    program.file_dependencies.each do |user_file, provider_set|
-                      result[user_file] = provider_set.to_a.sort
-                    end
-                    result
-                  end
+        result = {} of String => Array(String)
+        program.file_dependencies.each do |user_file, provider_set|
+          result[user_file] = provider_set.to_a.sort
+        end
+        result
+      end
 
       data = IncrementalCacheData.new(
         compiler_version: Config.version,
         codegen_target: @codegen_target.to_s,
+        codegen_options: codegen_cache_key,
         flags: @flags.dup,
         prelude: @prelude,
         file_fingerprints: fingerprints,

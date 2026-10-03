@@ -16,6 +16,7 @@ lib LibLLVM
   fun get_target_machine_target = LLVMGetTargetMachineTarget(t : TargetMachineRef) : TargetRef
   fun get_target_machine_triple = LLVMGetTargetMachineTriple(t : TargetMachineRef) : Char*
   fun get_target_machine_cpu = LLVMGetTargetMachineCPU(t : TargetMachineRef) : Char*
+  fun get_target_machine_feature_string = LLVMGetTargetMachineFeatureString(t : TargetMachineRef) : Char*
   fun create_target_data_layout = LLVMCreateTargetDataLayout(t : TargetMachineRef) : TargetDataRef
   {% unless LibLLVM::IS_LT_180 %}
     fun set_target_machine_global_isel = LLVMSetTargetMachineGlobalISel(t : TargetMachineRef, enable : Bool)
@@ -25,6 +26,7 @@ lib LibLLVM
   fun get_default_target_triple = LLVMGetDefaultTargetTriple : Char*
   fun normalize_target_triple = LLVMNormalizeTargetTriple(triple : Char*) : Char*
   fun get_host_cpu_name = LLVMGetHostCPUName : Char*
+  fun get_host_cpu_features = LLVMGetHostCPUFeatures : Char*
 
   {% unless LibLLVM::IS_LT_180 %}
     # TargetMachineOptions API (LLVM 18+)

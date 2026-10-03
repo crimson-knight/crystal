@@ -98,7 +98,11 @@ module LLVM
   end
 
   def self.host_cpu_name : String
-    String.new LibLLVM.get_host_cpu_name
+    string_and_dispose LibLLVM.get_host_cpu_name
+  end
+
+  def self.host_cpu_features : String
+    string_and_dispose LibLLVM.get_host_cpu_features
   end
 
   def self.normalize_triple(triple : String) : String

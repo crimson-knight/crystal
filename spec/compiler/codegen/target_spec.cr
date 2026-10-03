@@ -25,4 +25,30 @@ describe Crystal::Codegen::Target do
     Target.new("x86_64-unknown-freebsd8.0").freebsd_version.should eq(8)
     Target.new("x86_64-unknown-freebsd11.0").freebsd_version.should eq(11)
   end
+
+  describe "#to_target_machine" do
+    it "uses a portable CPU by default" do
+      target = Target.new(LLVM.default_target_triple)
+      machine = target.to_target_machine
+      machine.cpu.should eq("")
+      machine.features.should eq("")
+    end
+
+    it "resolves native to the host CPU and detected features" do
+      compiler = Crystal::Compiler.new
+      compiler.mcpu = "native"
+      machine = compiler.create_target_machine
+      machine.cpu.should eq(LLVM.host_cpu_name)
+      machine.features.should eq(LLVM.host_cpu_features)
+    end
+
+    it "applies explicit feature overrides after the native feature set" do
+      target = Target.new(LLVM.default_target_triple)
+      machine = target.to_target_machine("native", "-aes")
+      machine.cpu.should eq(LLVM.host_cpu_name)
+      host_features = LLVM.host_cpu_features
+      expected_features = host_features.empty? ? "-aes" : "#{host_features},-aes"
+      machine.features.should eq(expected_features)
+    end
+  end
 end

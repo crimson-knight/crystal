@@ -78,6 +78,8 @@ module Crystal
 
     getter compiler_version : String
     getter codegen_target : String
+    # Nil in older cache files, which must be rebuilt with current CPU features.
+    getter codegen_options : String?
     getter flags : Array(String)
     getter prelude : String
     getter file_fingerprints : Hash(String, FileFingerprint)
@@ -119,7 +121,8 @@ module Crystal
                    @module_file_mapping : Hash(String, Array(String))? = nil,
                    @file_signatures : Hash(String, FileTopLevelSignature)? = nil,
                    @allocation_hints : AllocationHints? = nil,
-                   @file_dependencies : Hash(String, Array(String))? = nil)
+                   @file_dependencies : Hash(String, Array(String))? = nil,
+                   @codegen_options : String? = nil)
     end
   end
 
@@ -130,16 +133,17 @@ module Crystal
     CACHE_FILENAME = "incremental_cache.json"
 
     # Load cache data from disk. Returns nil if missing, corrupt, or
-    # version/target/flags mismatch.
-    def self.load(cache_dir : String, compiler_version : String, codegen_target : String, flags : Array(String), prelude : String) : IncrementalCacheData?
+    # version, target, codegen options, or flags mismatch.
+    def self.load(cache_dir : String, compiler_version : String, codegen_target : String, flags : Array(String), prelude : String, codegen_options : String) : IncrementalCacheData?
       path = File.join(cache_dir, CACHE_FILENAME)
       return nil unless File.exists?(path)
 
       data = IncrementalCacheData.from_json(File.read(path))
 
-      # Invalidate if compiler version, target, flags, or prelude changed
+      # Invalidate if compiler version, target, codegen options, flags, or prelude changed
       return nil unless data.compiler_version == compiler_version
       return nil unless data.codegen_target == codegen_target
+      return nil unless data.codegen_options == codegen_options
       return nil unless data.flags == flags
       return nil unless data.prelude == prelude
 
@@ -641,7 +645,7 @@ module Crystal
     def self.classify_changes(
       changed_files : Set(String),
       old_signatures : Hash(String, FileTopLevelSignature)?,
-      new_signatures : Hash(String, FileTopLevelSignature)
+      new_signatures : Hash(String, FileTopLevelSignature),
     ) : {Set(String), Set(String)}
       body_only = Set(String).new
       structural = Set(String).new
