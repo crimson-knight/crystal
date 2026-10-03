@@ -1,0 +1,27 @@
+pkgbase = crystal-alpha
+	pkgdesc = Crystal compiler fork with incremental compilation (crystal-alpha, alias acrystal)
+	pkgver = 1.21.0.incremental1
+	pkgrel = 1
+	url = https://github.com/crimson-knight/crystal/tree/incremental-compilation
+	arch = x86_64
+	license = Apache-2.0
+	makedepends = llvm21
+	depends = llvm21-libs
+	depends = gc
+	depends = pcre2
+	depends = libevent
+	depends = libyaml
+	depends = gmp
+	depends = openssl
+	depends = libffi
+	depends = zlib
+	depends = libxml2
+	depends = pkgconf
+	depends = gcc
+	options = !lto
+	source = crystal-alpha-v1.21.0-incremental-1.tar.gz::https://github.com/crimson-knight/crystal/archive/refs/tags/v1.21.0-incremental-1.tar.gz
+	sha256sums = 2c85084ce5ed4973d7f1f73987ba990b7b16381f60dd8ccc8a92b2bec1203b05
+	source_x86_64 = crystal-1.20.0-1-linux-x86_64.tar.gz::https://github.com/crystal-lang/crystal/releases/download/1.20.0/crystal-1.20.0-1-linux-x86_64.tar.gz
+	sha256sums_x86_64 = e7138481c02a38966e642d9c17550da62a2a18685d94e7841f763055990d91ee
+
+pkgname = crystal-alpha

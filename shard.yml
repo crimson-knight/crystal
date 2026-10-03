@@ -12,6 +12,7 @@ crystal: ">= 1.0"
 dependencies:
   markd:
     github: icyleaf/markd
+    version: 0.5.0
   reply:
     github: I3oris/reply
     commit: 13f7eba083f138dd063c68b859c8e315f44fb523

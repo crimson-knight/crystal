@@ -1,0 +1,89 @@
+# Maintainer: crimson-knight <noreply@users.noreply.github.com>
+#
+# crystal-alpha: the crimson-knight Crystal fork with incremental compilation.
+# Installs as `crystal-alpha` (alias `acrystal`) under /usr/lib/crystal-alpha and
+# does not provide /usr/bin/crystal, so it coexists with the `crystal` package.
+# Build only needs the official Crystal 1.20.0-1 release as a bootstrap compiler,
+# fetched and verified below (it never touches the installed `crystal`).
+
+pkgname=crystal-alpha
+pkgver=1.21.0.incremental1
+pkgrel=1
+_tag=v1.21.0-incremental-1
+_commit=9c1e8ec64f6be6343e90d3979bc9536c4b050292
+_boot=1.20.0-1
+_bootrel=1.20.0
+pkgdesc='Crystal compiler fork with incremental compilation (crystal-alpha, alias acrystal)'
+arch=('x86_64')
+url='https://github.com/crimson-knight/crystal/tree/incremental-compilation'
+license=('Apache-2.0')
+# llvm21-libs (not llvm-libs): the compiler needs LLVM 21.1.x and links it dynamically.
+depends=('llvm21-libs' 'gc' 'pcre2' 'libevent' 'libyaml' 'gmp' 'openssl' 'libffi'
+         'zlib' 'libxml2' 'pkgconf' 'gcc')
+makedepends=('llvm21')
+options=('!lto')
+source=("$pkgname-$_tag.tar.gz::https://github.com/crimson-knight/crystal/archive/refs/tags/$_tag.tar.gz")
+source_x86_64=("crystal-$_boot-linux-x86_64.tar.gz::https://github.com/crystal-lang/crystal/releases/download/$_bootrel/crystal-$_boot-linux-x86_64.tar.gz")
+sha256sums=('2c85084ce5ed4973d7f1f73987ba990b7b16381f60dd8ccc8a92b2bec1203b05')
+sha256sums_x86_64=('e7138481c02a38966e642d9c17550da62a2a18685d94e7841f763055990d91ee')
+
+build() {
+  cd "crystal-${_tag#v}"
+
+  export PATH="$srcdir/crystal-$_boot/bin:$PATH"
+  [ -d "$srcdir/crystal-$_boot/embedded/bin" ] && export PATH="$srcdir/crystal-$_boot/embedded/bin:$PATH"
+  export LLVM_CONFIG=/usr/lib/llvm21/bin/llvm-config
+
+  mkdir -p .build
+  make deps
+  # The stdlib lives at <bin dir>/../src, i.e. /usr/lib/crystal-alpha/src.
+  make crystal \
+    release=1 interpreter=1 FLAGS=--no-debug \
+    CRYSTAL_CONFIG_PATH="'\$\$ORIGIN/../src'" \
+    CRYSTAL_CONFIG_LIBRARY_PATH="'\$\$ORIGIN/../lib'" \
+    CRYSTAL_CONFIG_BUILD_COMMIT="${_commit:0:9}"
+}
+
+check() {
+  cd "crystal-${_tag#v}"
+  # Shared libraries the freshly built compiler needs must all resolve.
+  if ldd .build/crystal | grep -q 'not found'; then return 1; fi
+  [ "$(.build/crystal eval 'puts 40 + 2')" = 42 ]
+}
+
+package() {
+  cd "crystal-${_tag#v}"
+  local lib="$pkgdir/usr/lib/crystal-alpha"
+
+  install -Dm755 .build/crystal "$lib/bin/crystal-alpha-bin"
+  install -d "$lib"
+  cp -R -P src "$lib/src"
+  rm -f "$lib/src/llvm/ext/llvm_ext.o"
+
+  # Wrapper mirrors the Homebrew formula: fixed CRYSTAL_PATH, real binary behind it.
+  install -d "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/crystal-alpha" <<'WRAP'
+#!/bin/sh
+CRYSTAL_PATH="lib:/usr/lib/crystal-alpha/src"
+export CRYSTAL_PATH
+exec /usr/lib/crystal-alpha/bin/crystal-alpha-bin "$@"
+WRAP
+  chmod 755 "$pkgdir/usr/bin/crystal-alpha"
+  ln -s crystal-alpha "$pkgdir/usr/bin/acrystal"
+
+  # Shell completions for both command names.
+  local cmd
+  for cmd in crystal-alpha acrystal; do
+    install -d "$pkgdir/usr/share/bash-completion/completions" \
+               "$pkgdir/usr/share/zsh/site-functions" \
+               "$pkgdir/usr/share/fish/vendor_completions.d"
+    sed "s/complete -o default -F _crystal crystal/complete -o default -F _crystal $cmd/" \
+      etc/completion.bash > "$pkgdir/usr/share/bash-completion/completions/$cmd"
+    sed -e "s/#compdef crystal/#compdef $cmd/" -e "s/compdef _crystal crystal/compdef _crystal $cmd/" \
+      etc/completion.zsh > "$pkgdir/usr/share/zsh/site-functions/_$cmd"
+    sed "s/complete -c crystal/complete -c $cmd/g" \
+      etc/completion.fish > "$pkgdir/usr/share/fish/vendor_completions.d/$cmd.fish"
+  done
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
