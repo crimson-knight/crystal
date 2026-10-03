@@ -28,7 +28,7 @@ jobs:
           arch: aarch64-darwin
     steps:
       - name: Download Crystal source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -64,7 +64,7 @@ jobs:
           - workers: 4 # execution_context: parallel
     steps:
       - name: Download Crystal source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
