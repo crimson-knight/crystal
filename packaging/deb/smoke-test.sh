@@ -22,7 +22,17 @@ for c in crystal-alpha acrystal; do
   out="$($c --version)"; echo "$c --version: $out"
   case "$out" in *"Crystal ${CRYSTAL_ALPHA_PKGVER%%.incremental*}"*) ;; *) fail "$c --version: $out" ;; esac
 done
-[ "$(crystal-alpha eval 'puts 40 + 2')" = "42" ] || fail "eval"
+if [ "$(crystal-alpha eval 'puts 40 + 2')" != "42" ]; then
+  echo "--- diagnostics for failed eval"
+  grep -m1 'model name' /proc/cpuinfo || true
+  grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(avx2|avx512f|bmi2|sse4_2|ssse3)$' | tr '\n' ' ' || true
+  apt-get install -y -qq gdb >/dev/null
+  printf 'puts 40 + 2\n' > /tmp/diag.cr
+  crystal-alpha build /tmp/diag.cr -o /tmp/diag
+  /tmp/diag || true
+  gdb -batch -ex run -ex bt -ex 'x/3i $pc' /tmp/diag 2>&1 | tail -25 || true
+  fail "eval"
+fi
 [ "$(acrystal eval 'puts 40 + 2')" = "42" ] || fail "acrystal eval"
 
 tmp="$(mktemp -d)"
@@ -36,6 +46,7 @@ out="$("$tmp/hello")"; echo "$out"
 [ "$out" = "hello from crystal-alpha 1 1267650600228229401496703205376" ] || fail "hello output"
 crystal-alpha run "$tmp/hello.cr" | grep -q "^hello from" || fail "run"
 crystal-alpha i --help >/dev/null || fail "interpreter help"
-crystal-alpha watch --help | head -3 || fail "watch --help"
+watch_help="$(crystal-alpha watch --help)" || fail "watch --help"
+echo "$watch_help" | head -3
 dpkg -L crystal-alpha | grep -E "^/usr/bin/" 
 echo "SMOKE OK ($DISTRO $dpkg_arch)"

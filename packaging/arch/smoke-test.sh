@@ -29,6 +29,7 @@ out="$("$tmp/hello")"; echo "$out"
 [ "$out" = "hello from crystal-alpha 1 1267650600228229401496703205376" ] || fail "hello output"
 crystal-alpha run "$tmp/hello.cr" | grep -q "^hello from" || fail "run"
 crystal-alpha i --help >/dev/null || fail "interpreter help"
-crystal-alpha watch --help | head -3 || fail "watch --help"
+watch_help="$(crystal-alpha watch --help)" || fail "watch --help"
+echo "$watch_help" | head -3
 pacman -Ql crystal-alpha | grep ' /usr/bin/'
 echo "SMOKE OK (arch $(uname -m))"
