@@ -65,6 +65,102 @@ module Crystal
     # If `true`, doc comments are attached to types and methods.
     property? wants_doc = false
 
+    # State outside the source files that macros read, recorded so that an
+    # incremental build is only skipped as a whole when all of it is still the
+    # same. See `IncrementalCache::ExternalInput`.
+    getter external_macro_inputs = {} of String => String?
+
+    # For each external macro input (see `external_macro_inputs`), the
+    # methods whose body expanded the macro that read it, or `nil` in the
+    # set when a macro outside a method body read it. `crystal watch` uses
+    # it to type those methods again when a template or other input changes.
+    getter external_macro_input_users = {} of String => Set(Def?)
+
+    def record_external_macro_input(key : String, value : String?, user : Def?) : Nil
+      external_macro_inputs[key] = value
+      (external_macro_input_users[key] ||= Set(Def?).new.compare_by_identity) << user
+    end
+
+    # Set when a macro read external state that can't be re-checked cheaply
+    # (`run`). An incremental build can then never be skipped as a whole.
+    property? uses_unverifiable_macro_inputs = false
+
+    # Strict signatures mode (`--strict-signatures`): the directory whose code
+    # (except its `lib/`) must declare the return type of every method, and in
+    # which a declared return type is the type callers see. `nil` when off.
+    property strict_signatures_root : String?
+
+    # Methods in strict code that lack a return type, reported together after
+    # the top-level pass.
+    getter strict_signature_violations = [] of Def
+
+    @strict_files = {} of String => Bool
+
+    # When set, every method instantiation is appended to it, including the
+    # ones that aren't cached (those taking a block). Used by
+    # `crystal tool annotate`.
+    property collected_def_instances : Array(Def)?
+
+    # When set, how each method instantiation was made, so that
+    # `IncrementalSemantic` can type it again with a new body. Keyed by the
+    # untyped def (compared by identity).
+    getter instantiation_records : Hash(Def, Array(InstantiationRecord))?
+
+    # Defs hash by content, and `IncrementalSemantic` replaces their bodies:
+    # the records must be found by identity.
+    def instantiation_records=(records : Hash(Def, Array(InstantiationRecord))?)
+      @instantiation_records = records.try &.compare_by_identity
+    end
+
+    # *vars* are the typed def's variables before typing its body: `self`,
+    # the arguments (positional, named, magic constant defaults) and their
+    # types.
+    #
+    # *expansion* is set when the typed def came from an expansion of the
+    # def with a copy of its body (a default value with a restriction): the
+    # number of positional arguments and the named ones, to expand the new
+    # body the same way.
+    record InstantiationRecord,
+      typed_def : Def,
+      self_type : Type?,
+      vars : Array({String, Type?}),
+      context : MatchContext,
+      call : Call,
+      expansion : {Int32, Array(String)?}? = nil
+
+    # Defs with an instantiation `IncrementalSemantic` can't type again on its
+    # own (see `Call#instantiate`).
+    getter defs_typed_with_callers = Set(Def).new.compare_by_identity
+
+    # Names checked with `responds_to?`, and types whose methods a macro
+    # looked at (`@type.methods`, `has_method?`): adding a method with such a
+    # name, or to such a type, changes existing code (see
+    # `IncrementalSemantic`).
+    getter responds_to_names = Set(String).new
+    getter types_with_reflected_methods = Set(Type).new.compare_by_identity
+
+    # Library code found through `CRYSTAL_PATH` (the standard library, shards)
+    # is never strict, even inside the root: in the compiler's own repository
+    # the standard library is `src/`.
+    private getter(strict_library_dirs : Array(String)) do
+      root = @strict_signatures_root
+      crystal_path.entries.compact_map do |entry|
+        dir = File.join(File.expand_path(entry), "")
+        dir unless root && File.join(root, "") == dir
+      end
+    end
+
+    # Whether *filename* is strict code, see `strict_signatures_root`.
+    def strict_file?(filename : String?) : Bool
+      return false unless filename
+      return false unless root = @strict_signatures_root
+
+      @strict_files.put_if_absent(filename) do
+        filename.starts_with?(root) && !filename.starts_with?(File.join(root, "lib", "")) &&
+          strict_library_dirs.none? { |dir| filename.starts_with?(dir) }
+      end
+    end
+
     # If `true`, error messages can be colorized
     property? color = true
 

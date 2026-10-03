@@ -225,3 +225,81 @@ module Crystal
     end
   end
 end
+
+module Crystal
+  class Program
+    # Codegen keeps state on the program's nodes: the `fun`s it generated are
+    # marked dead, and consts and class vars remember whether they were read,
+    # consts their LLVM initializer and class vars whether their initializer
+    # was simple enough to be the global's value. Their values from before the first
+    # codegen, so that a new codegen of the same program
+    # (`Compiler#codegen_again`) starts from the same state.
+    @codegen_saved_funs = [] of External
+    @codegen_saved_consts = {} of Const => {Bool, Bool}
+    @codegen_saved_class_vars = {} of MetaTypeVar => {Bool, Bool, Bool}
+
+    def save_codegen_state(external : External) : Nil
+      @codegen_saved_funs << external
+    end
+
+    def save_codegen_state(const : Const) : Nil
+      @codegen_saved_consts.compare_by_identity
+      @codegen_saved_consts.put_if_absent(const) { {const.read?, const.no_init_flag?} }
+    end
+
+    def save_codegen_state(class_var : MetaTypeVar) : Nil
+      @codegen_saved_class_vars.compare_by_identity
+      @codegen_saved_class_vars.put_if_absent(class_var) { {class_var.read?, class_var.no_init_flag?, class_var.simple_initializer?} }
+    end
+
+    def restore_codegen_state : Nil
+      # Types created since the ids were assigned got ids outside their
+      # hierarchy's range: assign them all again.
+      @llvm_id = nil
+      @codegen_saved_funs.each &.dead = false
+      @codegen_saved_funs.clear
+      @codegen_saved_consts.each do |const, (read, no_init_flag)|
+        const.read = read
+        const.no_init_flag = no_init_flag
+        const.initializer = nil
+      end
+      @codegen_saved_consts.clear
+      @codegen_saved_class_vars.each do |class_var, (read, no_init_flag, simple_initializer)|
+        class_var.read = read
+        class_var.no_init_flag = no_init_flag
+        class_var.simple_initializer = simple_initializer
+      end
+      @codegen_saved_class_vars.clear
+    end
+
+    # Lets the next codegen generate the `fun`s again (well known ones like
+    # `__crystal_malloc64` must exist in the main module) without resetting
+    # the rest of the codegen state, see `codegen_partial`.
+    def revive_codegen_funs : Nil
+      @codegen_saved_funs.each &.dead = false
+    end
+
+    # A function codegen generated with its body, recorded so that a partial
+    # codegen can generate its module again.
+    record CodegenFun,
+      mangled_name : String,
+      target_def : Def,
+      self_type : Type,
+      is_closure : Bool
+
+    # What the last full codegen produced, for `codegen_partial`. Set it to
+    # an empty snapshot to have codegen record it.
+    class CodegenSnapshot
+      # Functions with a body, by module name (`""` is the main module).
+      property funs = {} of String => Array(CodegenFun)
+      property module_names = [] of String
+      # Functions and globals the main module defines.
+      property main_definitions = Set(String).new
+      property symbols_size = 0
+      property last_type_id = 0
+      property? taken = false
+    end
+
+    property codegen_snapshot : CodegenSnapshot?
+  end
+end

@@ -57,6 +57,7 @@ class Crystal::Command
     Usage: crystal tool [tool] [switches] [program file] [--] [arguments]
 
     Tool:
+        annotate                 add inferred return types to methods missing one
         context                  show context for given location
         dependencies             show file dependency tree
         expand                   show macro expansion for given location
@@ -76,6 +77,12 @@ class Crystal::Command
 
   private getter options
   @compiler : Compiler?
+
+  # `--watch` / `--no-watch` of `crystal run`, `nil` when not given.
+  @run_watch : Bool? = nil
+
+  # Whether the program file came from `Crystal.project_main_file`.
+  @main_inferred = false
 
   def initialize(@options : Array(String))
     @color = Colorize.default_enabled?(STDOUT, STDERR)
@@ -225,6 +232,9 @@ class Crystal::Command
     when !tool
       puts COMMANDS_USAGE
       exit
+    when "annotate" == tool
+      options.shift
+      annotate
     when "context".starts_with?(tool)
       options.shift
       context
@@ -269,7 +279,40 @@ class Crystal::Command
 
   private def build
     config = create_compiler "build"
+    return if build_through_watcher(config)
+
     config.compile
+  end
+
+  # When a `crystal run` or `crystal watch` builds the same program, asks it
+  # for an up to date executable (incremental) and copies it to the output.
+  # Returns `false` when there's no such watcher.
+  private def build_through_watcher(config) : Bool
+    compiler = config.compiler
+    return false if compiler.no_codegen? || config.sources.size != 1 || !watcher_compatible?(compiler)
+
+    root = Dir.current
+    status = Watch::Coordination.read_status(root)
+    return false unless status && watcher_alive?(status) && status.main == config.sources.first.filename
+
+    token = Random::Secure.hex(8)
+    Watch::Coordination.release(root)
+    Watch::Coordination.request(root, token)
+    loop do
+      status = Watch::Coordination.read_status(root)
+      return false unless status && watcher_alive?(status)
+      if status.request == token && status.finished?
+        unless status.state == "ok"
+          STDERR.puts status.errors || status.message
+          exit 1
+        end
+        binary = status.binary.not_nil!
+        output = File.expand_path(config.output_filename)
+        File.copy(binary, output) unless File.expand_path(binary) == output
+        return true
+      end
+      sleep 50.milliseconds
+    end
   end
 
   private def hierarchy
@@ -281,6 +324,16 @@ class Crystal::Command
 
   private def run_command(single_file = false)
     config = create_compiler "run", run: true, single_file: single_file
+
+    # `crystal run` in a project (no file given) keeps running in a terminal,
+    # like `crystal watch --run`: rebuilt and restarted on every change.
+    watch = @run_watch
+    watch = @main_inferred && STDIN.tty? && STDOUT.tty? if watch.nil?
+    if watch && !config.specified_output && !config.compiler.no_codegen?
+      watch_and_run(config)
+      return
+    end
+
     if config.specified_output
       config.compile
       report_warnings
@@ -288,7 +341,7 @@ class Crystal::Command
       return
     end
 
-    output_filename = Crystal.temp_executable(config.output_filename)
+    output_filename = run_executable(config.compiler, config.sources, config.output_filename)
 
     config.compile output_filename
 
@@ -298,6 +351,17 @@ class Crystal::Command
 
       execute output_filename, config.arguments, config.compiler
     end
+  end
+
+  private def watch_and_run(config)
+    Watch::Watcher.new(
+      compiler: config.compiler,
+      sources: config.sources,
+      output_filename: Crystal.temp_executable(config.output_filename),
+      run_mode: true,
+      run_args: config.arguments,
+      color: @color
+    ).run
   end
 
   private def types
@@ -310,10 +374,26 @@ class Crystal::Command
   private def compile_no_codegen(command, wants_doc = false, hierarchy = false, no_cleanup = false, cursor_command = false, top_level = false, path_filter = false, unreachable_command = false, allowed_formats = ["text", "json"])
     config = create_compiler command, no_codegen: true, hierarchy: hierarchy, cursor_command: cursor_command, path_filter: path_filter, unreachable_command: unreachable_command, allowed_formats: allowed_formats
     config.compiler.no_codegen = true
+    # Tools only look at the code: they work on code that isn't migrated.
+    config.compiler.strict_signatures = false
     config.compiler.no_cleanup = no_cleanup
     config.compiler.wants_doc = wants_doc
     result = top_level ? config.top_level_semantic : config.compile
     {config, result}
+  end
+
+  # Where `crystal run` and `crystal spec` put the executable they run. With
+  # incremental compilation it's kept in the sources' cache directory, so the
+  # next run of the unchanged program skips the build; otherwise it's a
+  # temporary file deleted after running.
+  private def run_executable(compiler, sources, basename) : String
+    return Crystal.temp_executable(basename) unless compiler.incremental? && !compiler.no_cache?
+
+    name = File.join(CacheDir.instance.directory_for(sources), "#{basename}.run")
+    {% if flag?(:win32) %}
+      name += ".exe"
+    {% end %}
+    name
   end
 
   private def execute(output_filename, run_args, compiler, *, error_on_exit = false)
@@ -330,22 +410,25 @@ class Crystal::Command
       end
       {$?, elapsed}
     ensure
-      File.delete?(output_filename)
+      # Kept for the next run, see `run_executable`
+      unless compiler.incremental? && !compiler.no_cache?
+        File.delete?(output_filename)
 
-      # Delete related PDB generated by MSVC, if any exist
-      {% if flag?(:msvc) %}
-        unless compiler.debug.none?
-          basename = output_filename.rchop(".exe")
-          File.delete?("#{basename}.pdb")
-        end
-      {% end %}
+        # Delete related PDB generated by MSVC, if any exist
+        {% if flag?(:msvc) %}
+          unless compiler.debug.none?
+            basename = output_filename.rchop(".exe")
+            File.delete?("#{basename}.pdb")
+          end
+        {% end %}
 
-      # Delete related dwarf generated by dsymutil, if any exist
-      {% if flag?(:darwin) %}
-        unless compiler.debug.none?
-          File.delete?("#{output_filename}.dwarf")
-        end
-      {% end %}
+        # Delete related dwarf generated by dsymutil, if any exist
+        {% if flag?(:darwin) %}
+          unless compiler.debug.none?
+            File.delete?("#{output_filename}.dwarf")
+          end
+        {% end %}
+      end
     end
 
     if time
@@ -605,11 +688,18 @@ class Crystal::Command
         opts.on("--static", "Link statically") do
           compiler.static = true
         end
-        opts.on("--incremental", "Enable incremental compilation (file fingerprinting and parse cache)") do
-          compiler.incremental = true
-        end
+        setup_incremental_options(opts)
         opts.on("--no-cache", "Disable all compilation caching (force full rebuild)") do
           compiler.no_cache = true
+        end
+      end
+
+      if run
+        opts.on("--watch", "Keep running: rebuild and restart the program when a file changes (default without a file, in a terminal)") do
+          @run_watch = true
+        end
+        opts.on("--no-watch", "Run once and exit") do
+          @run_watch = false
         end
       end
 
@@ -639,6 +729,13 @@ class Crystal::Command
     if single_file && (files = filenames[1..-1]?)
       arguments = files + arguments
       filenames = [filenames[0]]
+    end
+
+    # Without a file, use the shard's main file (see `Crystal.project_main_file`).
+    @main_inferred = false
+    if filenames.empty? && !cursor_command && (main = Crystal.project_main_file)
+      filenames << main
+      @main_inferred = true
     end
 
     if filenames.size == 0 || (cursor_command && cursor_location.nil?)
@@ -673,11 +770,13 @@ class Crystal::Command
     end
 
     # CRYSTAL_NO_CACHE env var (command-line flags take precedence)
-    if !compiler.incremental? && !compiler.no_cache?
+    if @incremental_choice != true && !compiler.no_cache?
       if ENV["CRYSTAL_NO_CACHE"]? == "1"
         compiler.no_cache = true
       end
     end
+
+    apply_incremental_default(compiler)
 
     output_format ||= allowed_formats[0]
     unless output_format.in?(allowed_formats)
@@ -685,10 +784,6 @@ class Crystal::Command
     end
 
     abort! "maximum number of threads cannot be lower than 1", :USAGE_ERROR if compiler.n_threads < 1
-
-    if compiler.no_cache? && compiler.incremental?
-      raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
-    end
 
     if !compiler.no_codegen? && !run && Dir.exists?(output_filename)
       abort! "can't use `#{output_filename}` as output filename because it's a directory", :USAGE_ERROR
@@ -759,9 +854,7 @@ class Crystal::Command
       @color = false
       compiler.color = false
     end
-    opts.on("--incremental", "Enable incremental compilation (file fingerprinting and parse cache)") do
-      compiler.incremental = true
-    end
+    setup_incremental_options(opts)
     opts.on("--no-cache", "Disable all compilation caching (force full rebuild)") do
       compiler.no_cache = true
     end
@@ -821,6 +914,13 @@ class Crystal::Command
     end
 
     compiler.warnings.exclude_lib_path = true
+
+    opts.on("--strict-signatures", "Require return types in this directory's code (except lib/) and make them the type callers see (or CRYSTAL_STRICT_SIGNATURES=1)") do
+      compiler.strict_signatures = true
+    end
+    opts.on("--no-strict-signatures", "Don't require return types (default, or CRYSTAL_STRICT_SIGNATURES=0)") do
+      compiler.strict_signatures = false
+    end
   end
 
   private def validate_emit_values(values)
@@ -896,5 +996,38 @@ class Crystal::Command
 
   private def new_compiler
     @compiler = Compiler.new
+  end
+
+  # Explicit `--incremental` (true) / `--no-incremental` (false) choice from
+  # the command line, nil when neither was given.
+  @incremental_choice : Bool? = nil
+
+  private def setup_incremental_options(opts)
+    opts.on("--incremental", "Enable incremental compilation (default; disable with --no-incremental or CRYSTAL_INCREMENTAL=0)") do
+      @incremental_choice = true
+    end
+    opts.on("--no-incremental", "Disable incremental compilation") do
+      @incremental_choice = false
+    end
+  end
+
+  # Incremental compilation is on by default for every command that generates
+  # code. It is off when `--no-incremental`, `CRYSTAL_INCREMENTAL=0`,
+  # `--no-cache` or `CRYSTAL_NO_CACHE=1` is given, and for `--no-codegen`
+  # (nothing is compiled, so there is nothing to cache). An explicit
+  # `--incremental` together with `--no-cache` is a usage error.
+  private def apply_incremental_default(compiler)
+    if @incremental_choice == true && compiler.no_cache?
+      raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
+    end
+
+    compiler.incremental =
+      @incremental_choice.nil? ? incremental_by_default?(compiler) : @incremental_choice.not_nil!
+  end
+
+  private def incremental_by_default?(compiler) : Bool
+    return false if compiler.no_cache? || compiler.no_codegen?
+    return false if ENV["CRYSTAL_NO_CACHE"]? == "1"
+    ENV["CRYSTAL_INCREMENTAL"]? != "0"
   end
 end

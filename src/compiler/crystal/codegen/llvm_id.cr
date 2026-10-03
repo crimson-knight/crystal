@@ -28,6 +28,12 @@ module Crystal
   class LLVMId
     getter id_to_metaclass : Hash(Int32, Int32)
 
+    # The last id given to a type. A type created after the ids were
+    # assigned gets one past the hierarchies' ranges.
+    def last_id : Int32
+      @next_id
+    end
+
     def initialize(program)
       @ids = {} of Type => {Int32, Int32}
       @id_to_metaclass = {} of Int32 => Int32

@@ -7,6 +7,24 @@ require "../tools/watch/watcher"
 
 class Crystal::Command
   private def watch
+    case options.first?
+    when "hold"
+      options.shift
+      Watch::Coordination.hold(Dir.current, options.join(' ').presence || "hold")
+      return
+    when "release"
+      Watch::Coordination.release(Dir.current)
+      return
+    when "build"
+      options.shift
+      exit watch_build
+    when "status"
+      exit watch_status
+    when "hooks"
+      puts WATCH_HOOKS.gsub("crystal-alpha", watch_command_name)
+      return
+    end
+
     compiler = new_compiler
     compiler.progress_tracker = @progress_tracker
     link_flags = [] of String
@@ -17,7 +35,16 @@ class Crystal::Command
     poll_interval_ms = 1000
 
     option_parser = parse_with_crystal_opts do |opts|
-      opts.banner = "Usage: crystal watch [options] [programfile] [--] [arguments]\n\nOptions:"
+      opts.banner = <<-USAGE
+        Usage: crystal-alpha watch [options] [programfile] [--] [arguments]
+               crystal-alpha watch hold [reason]   # don't build until released (before editing)
+               crystal-alpha watch release         # build what changed meanwhile
+               crystal-alpha watch build           # build now, wait, print errors (exit 0/1)
+               crystal-alpha watch status          # state of the last build
+               crystal-alpha watch hooks           # Claude Code hooks doing hold/release
+
+        Options:
+        USAGE
       setup_simple_compiler_options compiler, opts
 
       opts.on("--run", "Run the compiled binary after each successful build") do
@@ -69,6 +96,10 @@ class Crystal::Command
       end
     end
 
+    if filenames.empty? && (main = Crystal.project_main_file)
+      filenames << main
+    end
+
     if filenames.empty?
       STDERR.puts option_parser
       exit 1
@@ -76,8 +107,7 @@ class Crystal::Command
 
     sources = gather_sources(filenames)
 
-    # Enable incremental compilation by default in watch mode
-    compiler.incremental = true
+    apply_incremental_default(compiler)
 
     # Determine output filename
     output_extension = compiler.codegen_target.executable_extension
@@ -103,4 +133,89 @@ class Crystal::Command
 
     watcher.run
   end
+
+  # `crystal-alpha watch build`: makes the watcher of this directory build what
+  # changed (lifting a hold), waits for it and prints the result.
+  private def watch_build : Int32
+    root = Dir.current
+    timeout = 10.minutes
+    if index = options.index("--timeout")
+      timeout = (options[index + 1]?.try(&.to_i?) || abort!("--timeout needs seconds", :USAGE_ERROR)).seconds
+    end
+
+    status = Watch::Coordination.read_status(root)
+    unless status && watcher_alive?(status)
+      STDERR.puts "No `crystal-alpha watch` or `crystal-alpha run` is watching #{root}"
+      return 2
+    end
+
+    token = Random::Secure.hex(8)
+    Watch::Coordination.release(root)
+    Watch::Coordination.request(root, token)
+
+    deadline = Time.instant + timeout
+    loop do
+      status = Watch::Coordination.read_status(root)
+      if status && status.request == token && status.finished?
+        puts "#{status.message} (build #{status.build})"
+        if errors = status.errors
+          puts errors
+        end
+        return status.state == "ok" ? 0 : 1
+      end
+      if status && !watcher_alive?(status)
+        STDERR.puts "The watcher stopped"
+        return 2
+      end
+      if Time.instant > deadline
+        STDERR.puts "Timed out waiting for the build"
+        return 2
+      end
+      sleep 100.milliseconds
+    end
+  end
+
+  private def watch_status : Int32
+    root = Dir.current
+    status = Watch::Coordination.read_status(root)
+    unless status && watcher_alive?(status)
+      puts "Not watching"
+      return 2
+    end
+
+    held = Watch::Coordination.held?(root)
+    puts "#{status.state}: #{status.message} (build #{status.build}, #{status.updated_at.to_local})"
+    puts "Held by #{held}" if held && status.state != "held"
+    if errors = status.errors
+      puts errors
+    end
+    status.state == "failed" ? 1 : 0
+  end
+
+  private def watcher_alive?(status) : Bool
+    Process.exists?(status.pid)
+  end
+
+  private def watch_command_name : String
+    invoked_name = File.basename(PROGRAM_NAME)
+    invoked_name.in?("crystal-alpha", "acrystal") ? invoked_name : "crystal-alpha"
+  end
+
+  WATCH_HOOKS = <<-JSON
+    {
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+            "hooks": [{ "type": "command", "command": "crystal-alpha watch hold claude" }]
+          }
+        ],
+        "Stop": [
+          {
+            "hooks": [{ "type": "command", "command": "crystal-alpha watch release" }]
+          }
+        ]
+      }
+    }
+    JSON
 end

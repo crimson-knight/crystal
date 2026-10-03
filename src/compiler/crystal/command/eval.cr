@@ -18,6 +18,8 @@ class Crystal::Command
       end
     end
 
+    apply_incremental_default(compiler)
+
     program_source = opt_program_source
     if program_source.nil?
       program_source = STDIN.gets_to_end

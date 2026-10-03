@@ -142,6 +142,7 @@ module Crystal
         arg.accept self
         cmd = @last.to_macro_id
         env_value = ENV[cmd]?
+        @program.record_external_macro_input(IncrementalCache::ExternalInput.env_key(cmd), env_value, @def)
         @last = env_value ? StringLiteral.new(env_value) : NilLiteral.new
       end
     end
@@ -263,6 +264,7 @@ module Crystal
       end
 
       if $?.success?
+        @program.record_external_macro_input(IncrementalCache::ExternalInput.system_key(cmd), result, @def)
         @last = MacroId.new(result)
       elsif result.empty?
         node.raise "error executing command: #{cmd}, got exit status #{$?}"
@@ -283,6 +285,8 @@ module Crystal
       interpret_check_args_toplevel do |arg|
         arg.accept self
         filename = @last.to_macro_id
+        key, value = IncrementalCache::ExternalInput.file_exists(filename)
+        @program.record_external_macro_input(key, value, @def)
 
         @last = BoolLiteral.new(File.exists?(filename))
       end
@@ -292,6 +296,8 @@ module Crystal
       interpret_check_args_toplevel do |arg|
         arg.accept self
         filename = @last.to_macro_id
+        key, value = IncrementalCache::ExternalInput.read_file(filename)
+        @program.record_external_macro_input(key, value, @def)
 
         begin
           @last = StringLiteral.new(File.read(filename))
@@ -299,6 +305,32 @@ module Crystal
           node.raise ex.to_s unless nilable
           @last = NilLiteral.new
         end
+      end
+    end
+
+    # The output of a `run` program is assumed to depend only on the program's
+    # sources, the arguments that name files or directories, and the paths it
+    # declared in its depfile (see `Program::MACRO_RUN_DEPFILE_ENV`). That
+    # covers the ECR, Slang and i18n embed programs. `CRYSTAL_MACRO_RUN_TRUST=0`
+    # restores the conservative behavior: never skip a build that used `run`.
+    private def record_macro_run_inputs(result, run_args)
+      if ENV["CRYSTAL_MACRO_RUN_TRUST"]? == "0"
+        @program.uses_unverifiable_macro_inputs = true
+        return
+      end
+
+      result.sources.each do |source|
+        key, value = IncrementalCache::ExternalInput.read_file(source)
+        @program.record_external_macro_input(key, value, @def)
+      end
+      run_args.each do |arg|
+        next unless File.exists?(arg)
+        key, value = IncrementalCache::ExternalInput.path(arg)
+        @program.record_external_macro_input(key, value, @def)
+      end
+      result.declared_inputs.each do |path|
+        key, value = IncrementalCache::ExternalInput.path(path)
+        @program.record_external_macro_input(key, value, @def)
       end
     end
 
@@ -323,6 +355,7 @@ module Crystal
       end
 
       result = @program.macro_run(filename, run_args)
+      record_macro_run_inputs(result, run_args)
       if result.status.success?
         @last = MacroId.new(result.stdout)
       else
@@ -2110,10 +2143,13 @@ module Crystal
           TypeNode.has_constant?(type, value)
         end
       when "methods"
+        type.program.types_with_reflected_methods << type
         interpret_check_args { TypeNode.methods(type) }
       when "all_methods"
+        type.program.types_with_reflected_methods << type
         interpret_check_args { TypeNode.all_methods(type) }
       when "has_method?"
+        type.program.types_with_reflected_methods << type
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#has_method?'")
           TypeNode.has_method?(type, value)

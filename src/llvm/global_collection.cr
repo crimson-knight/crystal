@@ -8,6 +8,14 @@ struct LLVM::GlobalCollection
     Value.new LibLLVM.add_global(@mod, type, name)
   end
 
+  def each(&) : Nil
+    global = LibLLVM.get_first_global(@mod)
+    while global
+      yield LLVM::Value.new global
+      global = LibLLVM.get_next_global(global)
+    end
+  end
+
   def []?(name)
     global =
       {% if LibLLVM::IS_LT_200 %}

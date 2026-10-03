@@ -460,11 +460,17 @@ class Crystal::CodeGenVisitor
   # to read a constant value or the value of an instance variable.
   # Additionally, not inlining instance variable getters changes the semantic
   # a program, so we must always inline these.
+  #
+  # Except, for a literal or `self`, a method behind the return type firewall
+  # (strict code): its body may change without its callers being generated
+  # again (see `Program#codegen_partial`). Instance variable getters stay
+  # inlined; editing one needs a full codegen.
   def try_inline_call(target_def, body, self_type, call_args)
     return false if target_def.is_a?(External)
 
     case body
     when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral
+      return false if target_def.return_type_firewall?
       return true unless @needs_value
 
       accept body
@@ -472,6 +478,7 @@ class Crystal::CodeGenVisitor
       true
     when Var
       if body.name == "self"
+        return false if target_def.return_type_firewall?
         return true unless @needs_value
 
         @last = self_type.passed_as_self? ? call_args.first : type_id(self_type)

@@ -58,6 +58,9 @@ lib LibLLVM
   {% end %}
   fun get_first_function = LLVMGetFirstFunction(m : ModuleRef) : ValueRef
   fun get_next_function = LLVMGetNextFunction(fn : ValueRef) : ValueRef
+  fun get_first_global = LLVMGetFirstGlobal(m : ModuleRef) : ValueRef
+  fun get_next_global = LLVMGetNextGlobal(global_var : ValueRef) : ValueRef
+  fun is_declaration = LLVMIsDeclaration(global : ValueRef) : Bool
 
   fun get_type_kind = LLVMGetTypeKind(ty : TypeRef) : LLVM::Type::Kind
   fun get_type_context = LLVMGetTypeContext(ty : TypeRef) : ContextRef

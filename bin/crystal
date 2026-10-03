@@ -135,6 +135,10 @@ if [ -n "${CRYSTAL_PATH##*"$CRYSTAL_ROOT"/src*}" ]; then
 fi
 
 export CRYSTAL_HAS_WRAPPER=true
+# The compiler's own sources and specs don't declare every return type, so
+# Keep strict signatures off by default when working on the compiler, while
+# preserving an explicit environment opt-in.
+export CRYSTAL_STRICT_SIGNATURES="${CRYSTAL_STRICT_SIGNATURES:-0}"
 : "${CRYSTAL=crystal}"
 
 PARENT_CRYSTAL="$CRYSTAL"

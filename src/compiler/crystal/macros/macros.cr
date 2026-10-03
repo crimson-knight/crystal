@@ -11,8 +11,9 @@ class Crystal::Program
   # filenames ready to be run (so they don't need to be compiled twice),
   # together with the time it took to compile them and whether a previous
   # compilation was reused.
-  # The elapsed time is only needed for stats.
-  record CompiledMacroRun, filename : String, elapsed : Time::Span, reused : Bool
+  # The elapsed time is only needed for stats. The sources are the files the
+  # program was compiled from, inputs of the macro run for incremental builds.
+  record CompiledMacroRun, filename : String, elapsed : Time::Span, reused : Bool, sources : Array(String)
   property compiled_macros_cache = {} of String => CompiledMacroRun
 
   property interpreted_node_hook : Proc(ASTNode, Bool, Bool, Location?, Nil)? = nil
@@ -65,7 +66,16 @@ class Crystal::Program
     normalize(generated_node, inside_exp: inside_exp, current_def: current_def)
   end
 
-  record MacroRunResult, stdout : String, stderr : String, status : Process::Status
+  # *declared_inputs* are the paths the program wrote to its depfile, see
+  # `macro_run`.
+  record MacroRunResult, stdout : String, stderr : String, status : Process::Status,
+    sources : Array(String), declared_inputs : Array(String)
+
+  # A macro run program can declare the files it reads beyond its arguments
+  # by writing their paths, one per line, to the file named by this
+  # environment variable (like a compiler's depfile). Incremental builds then
+  # recompile when one of them changes.
+  MACRO_RUN_DEPFILE_ENV = "CRYSTAL_MACRO_RUN_DEPFILE"
 
   def macro_run(filename, args)
     compiled_macro_run = @compiled_macros_cache[filename] ||= macro_compile(filename)
@@ -73,8 +83,14 @@ class Crystal::Program
 
     out_io = IO::Memory.new
     err_io = IO::Memory.new
-    Process.run(compiled_file, args: args, output: out_io, error: err_io)
-    MacroRunResult.new(out_io.to_s, err_io.to_s, $?)
+    depfile = File.tempname("crystal-macro-run", ".d")
+    begin
+      Process.run(compiled_file, args: args, env: {MACRO_RUN_DEPFILE_ENV => depfile}, output: out_io, error: err_io)
+      declared_inputs = File.exists?(depfile) ? File.read_lines(depfile).map(&.strip).reject(&.empty?) : [] of String
+    ensure
+      File.delete?(depfile)
+    end
+    MacroRunResult.new(out_io.to_s, err_io.to_s, $?, compiled_macro_run.sources, declared_inputs)
   end
 
   record RequireWithTimestamp, filename : String, epoch : Int64 do
@@ -106,8 +122,8 @@ class Crystal::Program
       File.utime(now, now, program_dir)
     {% end %}
 
-    if can_reuse_previous_compilation?(filename, executable_path, recorded_requires_path, requires_path)
-      return CompiledMacroRun.new(executable_path, time.elapsed, true)
+    if sources = reusable_compilation_sources(filename, executable_path, recorded_requires_path, requires_path)
+      return CompiledMacroRun.new(executable_path, time.elapsed, true, sources)
     end
 
     result = host_compiler.compile Compiler::Source.new(filename, source), executable_path
@@ -130,7 +146,7 @@ class Crystal::Program
       requires_with_timestamps.to_json(file)
     end
 
-    CompiledMacroRun.new(executable_path, time.elapsed, false)
+    CompiledMacroRun.new(executable_path, time.elapsed, false, result.program.requires.to_a)
   end
 
   @host_compiler : Compiler?
@@ -171,26 +187,31 @@ class Crystal::Program
 
       # No need to generate debug info for macro run programs
       host_compiler.debug = Crystal::Debug::None
+
+      # Macro run programs are separate programs, not code being edited.
+      host_compiler.strict_signatures = false
     end
   end
 
-  private def can_reuse_previous_compilation?(filename, executable_path, recorded_requires_path, requires_path)
-    return false unless File.exists?(executable_path)
-    return false unless File.exists?(recorded_requires_path)
-    return false unless File.exists?(requires_path)
+  # Returns the files the previous compilation of *filename* was made from if
+  # none of them changed since, otherwise `nil`.
+  private def reusable_compilation_sources(filename, executable_path, recorded_requires_path, requires_path) : Array(String)?
+    return nil unless File.exists?(executable_path)
+    return nil unless File.exists?(recorded_requires_path)
+    return nil unless File.exists?(requires_path)
 
     recorded_requires =
       begin
         Array(Program::RecordedRequire).from_json(File.read(recorded_requires_path))
       rescue JSON::Error
-        return false
+        return nil
       end
 
     requires_with_timestamps =
       begin
         Array(RequireWithTimestamp).from_json(File.read(requires_path))
       rescue JSON::Error
-        return false
+        return nil
       end
 
     # From the recorded requires we reconstruct the effective required files.
@@ -211,12 +232,14 @@ class Crystal::Program
 
     # Quick check: if there are a different number of files, something changed
     if requires_with_timestamps.size != new_requires_with_timestamps.size
-      return false
+      return nil
     end
 
     # Sort both requires and check if they are the same
     requires_with_timestamps.sort_by! &.filename
     new_requires_with_timestamps.sort_by! &.filename
-    requires_with_timestamps == new_requires_with_timestamps
+    return nil unless requires_with_timestamps == new_requires_with_timestamps
+
+    required_files.to_a
   end
 end

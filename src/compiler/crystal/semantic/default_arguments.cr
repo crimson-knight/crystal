@@ -1,6 +1,12 @@
 require "../syntax/ast"
 
 class Crystal::Def
+  # Whether an expansion of this def (for default or named arguments)
+  # contains a copy of its body, instead of forwarding to it.
+  def expansion_retains_body? : Bool
+    !!(block_arity || splat_index || double_splat || assigns_special_var? || macro_def? || args.any? { |arg| arg.default_value && arg.restriction })
+  end
+
   def expand_default_arguments(program, args_size, named_args = nil)
     # If the named arguments cover all arguments with a default value and
     # they come in the same order, we can safely return this def without
@@ -34,7 +40,7 @@ class Crystal::Def
       end
     end
 
-    retain_body = block_arity || splat_index || double_splat || assigns_special_var? || macro_def? || args.any? { |arg| arg.default_value && arg.restriction }
+    retain_body = expansion_retains_body?
 
     splat_index = self.splat_index
     double_splat = self.double_splat

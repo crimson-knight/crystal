@@ -118,6 +118,7 @@ class Crystal::CodeGenVisitor
     global.global_constant = true
 
     if const_type.is_a?(PrimitiveType) || const_type.is_a?(EnumType)
+      @program.save_codegen_state(const)
       const.initializer = @last
     end
   end
@@ -153,6 +154,7 @@ class Crystal::CodeGenVisitor
   def initialize_const(const)
     # If the constant wasn't read yet, we can initialize it right now and
     # avoid checking an "initialized" flag every time we read it.
+    @program.save_codegen_state(const)
     const.no_init_flag = true unless const.read?
 
     # Maybe the constant was simple and doesn't need a real initialization
@@ -201,6 +203,7 @@ class Crystal::CodeGenVisitor
             global.global_constant = true
 
             if const_type.is_a?(PrimitiveType) || const_type.is_a?(EnumType)
+              @program.save_codegen_state(const)
               const.initializer = @last
             end
           else
@@ -240,6 +243,7 @@ class Crystal::CodeGenVisitor
   end
 
   def read_const_pointer(const)
+    @program.save_codegen_state(const)
     const.read = true
 
     if !const.needs_init_flag?

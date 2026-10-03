@@ -77,6 +77,8 @@ class Crystal::Program
       visitor.process_finished_hooks
       visitor.new_expansions
     end
+
+    check_strict_signatures
     @progress_tracker.stage("Semantic (new)") do
       define_new_methods(new_expansions)
     end
@@ -107,4 +109,22 @@ class Crystal::Program
   # FIXME: Introduce a more generic method to track progress of compiler stages
   # (potential synergy with `ProcessTracker`?).
   property? top_level_semantic_complete = false
+
+  private def check_strict_signatures
+    violations = strict_signature_violations
+    return if violations.empty?
+
+    shown = violations.first(50)
+    message = String.build do |io|
+      io << "strict signatures: " << violations.size << " method"
+      io << 's' unless violations.size == 1
+      io << " without a return type:\n\n"
+      shown.each do |a_def|
+        io << "  " << a_def.location << ": def " << a_def.name << '\n'
+      end
+      io << "  ... and " << (violations.size - shown.size) << " more\n" if violations.size > shown.size
+      io << "\nAdd them with `crystal tool annotate`, or declare them by hand (`def foo : Int32`, `def bar : Nil`)."
+    end
+    violations.first.raise message
+  end
 end

@@ -110,6 +110,16 @@ class Crystal::CodeGenVisitor
       args = codegen_fun_signature(mangled_name, target_def, self_type, is_fun_literal, is_closure)
 
       needs_body = !target_def.is_a?(External) || is_exported_fun
+
+      # A partial codegen only generates the functions of the modules being
+      # regenerated; the others are declared, their objects being reused.
+      module_name = module_name(fun_module_info)
+      if needs_body && !is_fun_literal && (partial = @partial_modules) && !partial.includes?(module_name)
+        needs_body = false
+      end
+      if needs_body && !is_fun_literal && (recorded = @recorded_funs)
+        (recorded[module_name] ||= [] of Program::CodegenFun) << Program::CodegenFun.new(mangled_name, target_def, self_type, is_closure)
+      end
       if needs_body
         emit_def_debug_metadata target_def unless @debug.none?
         set_current_debug_location target_def if @debug.line_numbers?
@@ -670,6 +680,10 @@ class Crystal::CodeGenVisitor
     end
 
     assign pointer, var_type, arg.type, value
+  end
+
+  def module_name(module_info : ModuleInfo) : String
+    module_info.mod == @main_mod ? "" : module_info.mod.name
   end
 
   def type_module(type)

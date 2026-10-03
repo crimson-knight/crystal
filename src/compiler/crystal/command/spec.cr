@@ -39,9 +39,14 @@ class Crystal::Command
     end
 
     compiler.link_flags = link_flags.join(' ') unless link_flags.empty?
+    apply_incremental_default(compiler)
 
     # Assume spec files end with ".cr" and optionally with a colon and a number
     # (for the target line number), or is a directory. Everything else is an option we forward.
+    # Run only the examples affected by the changes since the previous run
+    # (needs a watcher, see `spec_through_watcher`)
+    affected_only = !!options.delete("--affected")
+
     filenames = options.select do |option|
       option =~ /\.cr(\:\d+)?\Z/ || Dir.exists?(option)
     end
@@ -89,14 +94,7 @@ class Crystal::Command
       options << "--no-color"
     end
 
-    source_filename = File.expand_path("spec")
-
-    source = target_filenames.join('\n') do |filename|
-      %(require "./#{::Path[filename].relative_to(Dir.current).to_posix.to_s.inspect_unquoted}")
-    end
-    sources = [Compiler::Source.new(source_filename, source)]
-
-    output_filename = Crystal.temp_executable "spec"
+    sources = [Crystal.spec_source(target_filenames)]
 
     ENV["CRYSTAL_SPEC_COMPILER_BIN"] ||= if crystal_exec_path = ENV["CRYSTAL_EXEC_PATH"]?
                                            File.join(crystal_exec_path, "crystal")
@@ -104,8 +102,54 @@ class Crystal::Command
                                            Process.executable_path
                                          end
 
+    # A `crystal run` or `crystal watch` of this project keeps the spec
+    # program typed: it rebuilds just what changed.
+    if watcher_compatible?(compiler) && (response = spec_through_watcher(target_filenames))
+      unless response.ok
+        STDERR.puts response.errors || response.message
+        exit 1
+      end
+      if affected_only
+        affected = response.affected
+        if affected && affected.empty?
+          puts "No examples affected by the changes since the previous spec run"
+          return
+        end
+        affected.try &.each { |location| options << "--location" << location }
+      end
+      execute response.binary.not_nil!, options, compiler, error_on_exit: warnings_fail_on_exit?
+      return
+    end
+
+    output_filename = run_executable(compiler, sources, "spec")
     compiler.compile sources, output_filename
     report_warnings
     execute output_filename, options, compiler, error_on_exit: warnings_fail_on_exit?
+  end
+
+  # Asks the watcher of this directory to build the specs of *filenames*.
+  # `nil` when there's no watcher.
+  private def spec_through_watcher(filenames : Array(String)) : Watch::Coordination::Response?
+    root = Dir.current
+    status = Watch::Coordination.read_status(root)
+    return nil unless status && watcher_alive?(status)
+
+    token = Random::Secure.hex(8)
+    files = filenames.map { |filename| File.expand_path(filename) }
+    Watch::Coordination.request(root, Watch::Coordination::Request.new(token, "spec", files))
+    loop do
+      if response = Watch::Coordination.take_response(root, token)
+        return response
+      end
+      return nil unless watcher_alive?(status)
+      sleep 50.milliseconds
+    end
+  end
+
+  # Whether the watcher's compiler settings can serve this command: no
+  # flags of its own.
+  private def watcher_compatible?(compiler : Compiler) : Bool
+    compiler.flags.empty? && !compiler.release? && compiler.emit_targets.none? &&
+      compiler.incremental? && !compiler.no_cache? && compiler.link_flags.nil?
   end
 end

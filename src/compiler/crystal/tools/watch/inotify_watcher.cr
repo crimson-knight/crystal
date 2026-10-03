@@ -49,10 +49,12 @@
         def watch(files : Set(String)) : Nil
           @watched_files = files.dup
 
-          # Compute directories that need watching
+          # Compute directories that need watching: a file's directory, and a
+          # watched directory itself (any change in it is a change of it)
           needed_dirs = Set(String).new
           files.each do |path|
             needed_dirs << File.dirname(path)
+            needed_dirs << path if Dir.exists?(path)
           end
 
           current_dirs = @dir_watches.keys.to_set
@@ -112,6 +114,12 @@
           changed.to_a
         end
 
+        def drain : Nil
+          buf = Bytes.new(4096)
+          while LibC.read(@inotify_fd, buf.to_unsafe, buf.size) > 0
+          end
+        end
+
         def close : Nil
           @dir_watches.each_value do |wd|
             LibInotify.inotify_rm_watch(@inotify_fd, wd)
@@ -140,7 +148,9 @@
               name = String.new(name_bytes[0, null_idx])
               full_path = File.join(dir, name)
 
-              if @watched_files.includes?(full_path)
+              # A watched file, or any file in a watched directory (one added
+              # or removed, too)
+              if @watched_files.includes?(full_path) || @watched_files.includes?(dir)
                 changed << full_path
               end
             end

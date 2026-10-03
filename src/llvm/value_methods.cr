@@ -88,6 +88,12 @@ module LLVM::ValueMethods
     init ? LLVM::Value.new(init) : nil
   end
 
+  # Whether this global value (function or variable) is only declared here,
+  # its definition being in another module.
+  def declaration? : Bool
+    LibLLVM.is_declaration(self) != 0
+  end
+
   def global_set_metadata(kind : String, metadata)
     kind = LibLLVM.get_md_kind_id_in_context(type.context, kind, kind.bytesize)
     global_set_metadata(kind, metadata)

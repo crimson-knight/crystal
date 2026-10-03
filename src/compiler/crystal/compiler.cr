@@ -231,6 +231,14 @@ module Crystal
     # file fingerprinting, parse caching, and cache persistence.
     property? incremental = false
 
+    # Whether a build skipped because nothing changed still types the program
+    # (skipping only codegen), for `crystal watch` to keep it.
+    property? keep_typed_program = false
+
+    # Strict signatures mode, see `Program#strict_signatures_root`.
+    # Opt in with `--strict-signatures` or `CRYSTAL_STRICT_SIGNATURES=1`.
+    property? strict_signatures : Bool = ENV["CRYSTAL_STRICT_SIGNATURES"]? == "1"
+
     # If `true`, cache files are never read during compilation (forces recompile of
     # every module), but are still written. Mutually exclusive with `--incremental`.
     property? no_cache = false
@@ -292,13 +300,11 @@ module Crystal
       @compilation_skipped = false
       @link_skipped = false
 
-      node = parse program, source
-
       # Load incremental cache data once for the entire compilation
       if @incremental && !@no_cache
         output_dir_for_cache = CacheDir.instance.directory_for(source)
         @current_cached_data = IncrementalCache.load(
-          output_dir_for_cache, Config.version, @codegen_target.to_s, @flags, @prelude
+          output_dir_for_cache, Config.version, @codegen_target.to_s, @flags, @prelude, incremental_build_settings(source)
         )
       else
         @current_cached_data = nil
@@ -315,7 +321,7 @@ module Crystal
       if @incremental && !@no_codegen
         cached_data = @current_cached_data
 
-        if cached_data && !cached_data.file_fingerprints.empty?
+        if cached_data && !cached_data.file_fingerprints.empty? && !cached_data.unverifiable_macro_inputs?
           any_changed = false
 
           # Check every file from the previous compilation for changes
@@ -333,15 +339,27 @@ module Crystal
             end
           end
 
-          unless any_changed
-            expanded_output = File.expand_path(output_filename)
-            if File.exists?(expanded_output)
-              compilation_skipped = true
-              @compilation_skipped = true
-            end
+          # Only skip when the output on disk is exactly the file this cache
+          # produced: same path, untouched since. Otherwise (another output
+          # path, or a binary overwritten by a build with other settings or
+          # another entry file) it must be rebuilt.
+          if !any_changed && reusable_output?(cached_data, output_filename) &&
+             IncrementalCache::ExternalInput.unchanged?(cached_data.external_macro_inputs)
+            compilation_skipped = true
+            @compilation_skipped = true
           end
         end
       end
+
+      # The skip check above only needs the cached file list, so a skipped
+      # build doesn't parse the program at all, unless the typed program is
+      # wanted anyway (`crystal watch` keeps it to type edits incrementally):
+      # then only codegen is skipped.
+      if compilation_skipped && keep_typed_program?
+        compilation_skipped = false
+        skip_codegen = true
+      end
+      node = compilation_skipped ? Nop.new : parse(program, source)
 
       unless compilation_skipped
         begin
@@ -350,14 +368,20 @@ module Crystal
           program.macro_expansion_error_hook.try &.call(ex.cause)
         end
 
-        units = codegen program, node, source, output_filename unless @no_codegen
+        units = codegen program, node, source, output_filename unless @no_codegen || skip_codegen
 
-        if @incremental
+        if @incremental && !skip_codegen
           @progress_tracker.stage("Signatures") do
             extract_and_compare_signatures(program, source)
           end
-          @progress_tracker.stage("Cache save") do
-            save_incremental_cache(program, source)
+
+          # Without codegen nothing was compiled, so the fingerprints must not
+          # be recorded: the next real build would treat the files as already
+          # compiled and reuse stale objects.
+          unless @no_codegen
+            @progress_tracker.stage("Cache save") do
+              save_incremental_cache(program, source, output_filename)
+            end
           end
         end
       end
@@ -372,6 +396,52 @@ module Crystal
       @current_cached_data = nil
 
       Result.new program, node
+    end
+
+    # Generates the executable again for a program whose methods
+    # `IncrementalSemantic` typed again, without the semantic pass.
+    #
+    # *changed_types* are the owners of the methods typed again (and of new
+    # instantiations): when given, only their LLVM modules are generated
+    # again if possible (see `Program#codegen_partial`). Returns why that
+    # wasn't possible, or `nil` when it was.
+    def codegen_again(result : Result, sources : Array(Source), output_filename : String, changed_types : Enumerable(Type)? = nil) : String?
+      program = result.program
+      reason = "no changed types given"
+
+      if changed_types && !single_module_codegen?(program)
+        partial_modules = changed_types.to_set.map { |type| codegen_module_name(type) }.to_set
+        begin
+          units = codegen program, result.node, sources, output_filename, partial_modules: partial_modules
+          @progress_tracker.clear
+          print_codegen_stats(units)
+          return nil
+        rescue ex : Program::PartialCodegenUnsupported
+          reason = ex.message || "unsupported"
+        end
+      end
+
+      program.restore_codegen_state
+      units = codegen program, result.node, sources, output_filename
+      @progress_tracker.clear
+      print_codegen_stats(units)
+      reason
+    end
+
+    # The name of the LLVM module the methods of *type* are generated in
+    # (see `CodeGenVisitor#type_module`).
+    private def codegen_module_name(type : Type) : String
+      type = type.remove_typedef
+      case type
+      when Program, LibType
+        ""
+      else
+        type.instance_type.to_s
+      end
+    end
+
+    private def single_module_codegen?(program) : Bool
+      @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
     end
 
     # Runs the semantic pass on the given source, without generating an
@@ -394,6 +464,49 @@ module Crystal
       print_macro_run_stats(program)
 
       Result.new program, node
+    end
+
+    # Codegen and link settings that affect the output but are not part of
+    # `flags`. Stored in the incremental cache so that e.g. a `--release` build
+    # never reuses (or skips in favor of) the output of a debug build.
+    #
+    # Also includes a digest of the sources that don't match a file on disk:
+    # `crystal spec` and `crystal eval` generate them, `--stdin-filename` reads
+    # them from STDIN. File fingerprints don't cover those, so without this
+    # e.g. `crystal spec a_spec.cr` and `crystal spec b_spec.cr` would share a
+    # cache. Sources matching their file are left out, so that editing the
+    # entry file in watch mode doesn't invalidate the whole cache.
+    private def incremental_build_settings(sources : Array(Source)) : String
+      sources_digest = Crystal::Digest::MD5.hexdigest do |ctx|
+        sources.each do |source|
+          next if (File.read(source.filename) rescue nil) == source.code
+          ctx.update source.filename
+          ctx.update "\0"
+          ctx.update source.code
+          ctx.update "\0"
+        end
+      end
+
+      String.build do |io|
+        io << sources_digest << '|'
+        io << optimization_mode << '|' << single_module? << '|' << debug
+        io << '|' << static? << '|' << shared? << '|' << cross_compile?
+        io << '|' << frame_pointers << '|' << emit_targets
+        io << '|' << @link_flags << '|' << @mcpu << '|' << @mattr << '|' << @mcmodel
+        io << '|' << strict_signatures?
+      end
+    end
+
+    private def module_skip? : Bool
+      ENV["CRYSTAL_INCREMENTAL_MODULE_SKIP"]? == "1"
+    end
+
+    # Whether *output_filename* is the untouched output of the compilation
+    # that wrote *cached_data*.
+    private def reusable_output?(cached_data : IncrementalCacheData?, output_filename : String) : Bool
+      return false unless @emit_targets.none?
+      return false unless stamp = cached_data.try(&.output)
+      stamp.path == File.expand_path(output_filename) && stamp.matches_file?
     end
 
     # Set maximum level of optimization.
@@ -426,6 +539,7 @@ module Crystal
       program.progress_tracker = @progress_tracker
       program.warnings = @warnings
       program.optimization_mode = @optimization_mode
+      program.strict_signatures_root = Dir.current if strict_signatures?
 
       # Apply allocation hints from previous compilation
       if @incremental
@@ -575,7 +689,7 @@ module Crystal
       bc_flags_changed
     end
 
-    private def codegen(program, node : ASTNode, sources, output_filename)
+    private def codegen(program, node : ASTNode, sources, output_filename, partial_modules : Set(String)? = nil)
       {% if LibLLVM::IS_LT_130 %}
         if @codegen_target.architecture == "aarch64"
           stderr.puts "Error: Target #{@codegen_target} requires a Crystal compiler built with LLVM 13 or a later version."
@@ -586,15 +700,28 @@ module Crystal
       is_single_module = @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
 
       llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
-        program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: is_single_module
+        if partial_modules
+          program.codegen_partial node, partial_modules, debug: debug, frame_pointers: frame_pointers,
+            single_module: is_single_module
+        else
+          program.codegen node, debug: debug, frame_pointers: frame_pointers,
+            single_module: is_single_module
+        end
       end
 
       output_dir = CacheDir.instance.directory_for(sources)
 
       # Load cached data for module-level skip optimization (Phase 4).
       # Only applicable in multi-module mode with incremental compilation enabled.
-      cached_data = (@incremental && !is_single_module) ? @current_cached_data : nil
+      #
+      # Experimental, opt-in via CRYSTAL_INCREMENTAL_MODULE_SKIP=1: a module's
+      # content doesn't only depend on the files its defs come from. E.g. a
+      # changed file can add or remove instantiations (`IO#<<(MyEnum)`) that
+      # live in the module of an unchanged type; skipping that module then
+      # links a stale object (undefined symbols or outdated code). Without it,
+      # object reuse is decided by the sound bitcode comparison in
+      # `must_compile?`.
+      cached_data = (@incremental && !is_single_module && module_skip?) ? @current_cached_data : nil
       cached_module_mapping = cached_data.try(&.module_file_mapping)
 
       # Compute set of changed files from fingerprints (for module skip checks).
@@ -668,6 +795,15 @@ module Crystal
         end
 
         CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, skip_codegen)
+      end
+
+      # A partial codegen reuses the objects of the modules it didn't generate.
+      if partial_modules && (snapshot = program.codegen_snapshot)
+        reused_module = LLVM::Context.new.new_module("reused")
+        snapshot.module_names.each do |type_name|
+          next if partial_modules.includes?(type_name)
+          units << CompilationUnit.new(self, program, type_name, reused_module, output_dir, bc_flags_changed, true)
+        end
       end
 
       # Store module source files for later saving to incremental cache
@@ -967,7 +1103,7 @@ module Crystal
       # from cache and the output binary already exists. The linker inputs are
       # identical, so the output would be byte-for-byte the same.
       all_reused = @incremental && !@no_cache && units.all?(&.reused_previous_compilation?)
-      @link_skipped = all_reused && File.exists?(output_filename)
+      @link_skipped = all_reused && reusable_output?(@current_cached_data, output_filename)
 
       if @link_skipped
         @progress_tracker.stage("Codegen (linking)") { }
@@ -1360,7 +1496,7 @@ module Crystal
       {all_signatures, all_contents}
     end
 
-    private def save_incremental_cache(program, sources)
+    private def save_incremental_cache(program, sources, output_filename)
       output_dir = CacheDir.instance.directory_for(sources)
 
       fingerprints = {} of String => FileFingerprint
@@ -1410,12 +1546,12 @@ module Crystal
 
       # Capture file-level dependencies (convert Set to sorted Array for JSON)
       file_deps = unless program.file_dependencies.empty?
-                    result = {} of String => Array(String)
-                    program.file_dependencies.each do |user_file, provider_set|
-                      result[user_file] = provider_set.to_a.sort
-                    end
-                    result
-                  end
+        result = {} of String => Array(String)
+        program.file_dependencies.each do |user_file, provider_set|
+          result[user_file] = provider_set.to_a.sort
+        end
+        result
+      end
 
       data = IncrementalCacheData.new(
         compiler_version: Config.version,
@@ -1427,6 +1563,10 @@ module Crystal
         file_signatures: @last_file_signatures,
         allocation_hints: hints,
         file_dependencies: file_deps,
+        build_settings: incremental_build_settings(sources),
+        output: @cross_compile ? nil : OutputStamp.for?(File.expand_path(output_filename)),
+        external_macro_inputs: program.external_macro_inputs,
+        unverifiable_macro_inputs: program.uses_unverifiable_macro_inputs?,
       )
 
       IncrementalCache.save(output_dir, data)
