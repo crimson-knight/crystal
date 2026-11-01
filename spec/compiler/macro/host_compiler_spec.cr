@@ -1,5 +1,4 @@
 require "../../spec_helper"
-require "../spec_helper"
 
 describe "Program#host_compiler" do
   it "compiles macro run programs without optimizations, one module per type" do
@@ -33,12 +32,23 @@ describe "Program#host_compiler" do
     compiler.flags.should eq(["custom"])
   end
 
-  [[] of String, ["--release"]].each do |mode_options|
-    it "builds a program whose macro run program checks the release flag (#{mode_options.join(" ").presence || "debug"})" do
-      with_temp_executable "macro_run_release_flag" do |path|
-        Crystal::Command.run ["build"].concat(program_flags_options).concat(mode_options).concat([compiler_datapath("macro_run", "release_flag.cr"), "-o", path])
+  {false, true}.each do |release|
+    it "compiles a macro run program that sees the release flag (#{release ? "release" : "debug"} build)" do
+      with_tempfile("macro_run_release_flag_#{release ? "release" : "debug"}") do |directory|
+        Dir.mkdir_p(directory)
+        File.write(File.join(directory, "print_release_flag.cr"), %(print "macro run release flag: ", {{ flag?(:release) }}\n))
+        program = File.join(directory, "program.cr")
+        File.write(program, %(puts {{ run("./print_release_flag").stringify }}\n))
+        executable = File.join(directory, "program")
 
-        Process.capture(path).should eq("macro run release flag: true\n")
+        compiler = Crystal::Compiler.new
+        compiler.release! if release
+        ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
+        result = compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
+
+        # The helper was compiled by this build, not reused from the cache.
+        result.program.compiled_macros_cache.values.map(&.reused).should eq([false])
+        Process.capture(executable).should eq("macro run release flag: true\n")
       end
     end
   end
