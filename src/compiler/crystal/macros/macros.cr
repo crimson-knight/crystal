@@ -159,9 +159,20 @@ class Crystal::Program
         host_compiler.prelude = compiler.prelude
       end
 
-      # Although release takes longer, once the bc is cached in .crystal
-      # the subsequent times will make program execution faster.
-      host_compiler.release!
+      # Macro run programs (such as `ecr/process.cr`) are compiled without
+      # optimizations and split into one LLVM module per type, so the modules
+      # are compiled in parallel. Compiling the ECR helper this way takes
+      # 0.7 s instead of 3.0 s in release mode on an Apple M4, and the helper
+      # still processes an 890 KB template in 40 ms: its run time is
+      # dominated by process startup, not by the optimization level.
+      host_compiler.optimization_mode = Compiler::OptimizationMode::O0
+      host_compiler.single_module = false
+
+      # Macro run programs used to be release builds, so they keep the
+      # `release` flag: one that checks `flag?(:release)` prints the same
+      # output as before. A new array leaves the target compiler's flags
+      # untouched.
+      host_compiler.flags = host_compiler.flags | ["release"]
 
       # Don't cleanup old directories after compiling: it might happen
       # that in doing so we remove the directory associated with the current

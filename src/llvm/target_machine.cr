@@ -1,4 +1,6 @@
 class LLVM::TargetMachine
+  @disposed = false
+
   def initialize(@unwrap : LibLLVM::TargetMachineRef)
   end
 
@@ -76,7 +78,18 @@ class LLVM::TargetMachine
     @unwrap
   end
 
-  def finalize
+  # Disposes this target machine. It may not be used afterwards.
+  #
+  # Calling this releases LLVM's memory right away instead of when the
+  # garbage collector finalizes the target machine.
+  def dispose : Nil
+    return if @disposed
+    @disposed = true
+
     LibLLVM.dispose_target_machine(@unwrap)
+  end
+
+  def finalize
+    dispose
   end
 end

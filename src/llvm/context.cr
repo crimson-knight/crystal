@@ -137,6 +137,7 @@ class LLVM::Context
 
   def parse_ir(buf : MemoryBuffer)
     ret = LibLLVM.parse_ir_in_context(self, buf, out mod, out msg)
+    buf.transfer_ownership_to_llvm
     if ret != 0 && msg
       raise LLVM.string_and_dispose(msg)
     end
@@ -151,7 +152,13 @@ class LLVM::Context
     @unwrap
   end
 
-  def finalize
+  # Disposes this context together with its modules and builders, unless
+  # the context was created with `dispose_on_finalize: false` (it is owned
+  # elsewhere). Nothing created in this context may be used afterwards.
+  #
+  # Calling this releases LLVM's memory right away instead of when the
+  # garbage collector finalizes the context.
+  def dispose : Nil
     return unless @dispose_on_finalize
     return if @disposed
     @disposed = true
@@ -159,6 +166,10 @@ class LLVM::Context
     @builders.each &.dispose
 
     LibLLVM.dispose_context(self)
+  end
+
+  def finalize
+    dispose
   end
 
   # The next lines are for ease debugging when a types/values

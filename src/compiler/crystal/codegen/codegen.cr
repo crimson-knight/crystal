@@ -612,6 +612,8 @@ module Crystal
         mod.verify
       end
 
+      dispose_di_builders
+
       if type_info_path = ENV["CRYSTAL_DUMP_TYPE_INFO"]?.presence
         dump_type_info(type_info_path)
       end

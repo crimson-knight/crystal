@@ -18,16 +18,22 @@ class LLVM::MemoryBuffer
     )
   end
 
-  def dispose
+  # Disposes this memory buffer. Its contents may not be used afterwards.
+  def dispose : Nil
     return if @finalized
     @finalized = true
-    finalize
+
+    LibLLVM.dispose_memory_buffer(@unwrap)
   end
 
   def finalize
-    return if @finalized
+    dispose
+  end
 
-    LibLLVM.dispose_memory_buffer(@unwrap)
+  # Records that LLVM took ownership of the buffer (`LLVMParseIRInContext`
+  # frees it), so neither `#dispose` nor the finalizer frees it again.
+  protected def transfer_ownership_to_llvm : Nil
+    @finalized = true
   end
 
   def to_unsafe
