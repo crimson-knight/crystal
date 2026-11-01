@@ -168,6 +168,12 @@ class Crystal::Program
       host_compiler.optimization_mode = Compiler::OptimizationMode::O0
       host_compiler.single_module = false
 
+      # Macro run programs used to be release builds, so they keep the
+      # `release` flag: one that checks `flag?(:release)` prints the same
+      # output as before. A new array leaves the target compiler's flags
+      # untouched.
+      host_compiler.flags = host_compiler.flags | ["release"]
+
       # Don't cleanup old directories after compiling: it might happen
       # that in doing so we remove the directory associated with the current
       # compilation (for example if we have more than 10 macro runs, the current
