@@ -33,11 +33,13 @@ describe "Program#host_compiler" do
     compiler.flags.should eq(["custom"])
   end
 
-  it "builds a program whose macro run program checks the release flag" do
-    with_temp_executable "macro_run_release_flag" do |path|
-      Crystal::Command.run ["build"].concat(program_flags_options).concat([compiler_datapath("macro_run", "release_flag.cr"), "-o", path])
+  [[] of String, ["--release"]].each do |mode_options|
+    it "builds a program whose macro run program checks the release flag (#{mode_options.join(" ").presence || "debug"})" do
+      with_temp_executable "macro_run_release_flag" do |path|
+        Crystal::Command.run ["build"].concat(program_flags_options).concat(mode_options).concat([compiler_datapath("macro_run", "release_flag.cr"), "-o", path])
 
-      Process.capture(path).should eq("macro run release flag: true\n")
+        Process.capture(path).should eq("macro run release flag: true\n")
+      end
     end
   end
 end
