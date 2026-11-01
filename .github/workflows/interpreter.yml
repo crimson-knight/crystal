@@ -15,10 +15,10 @@ jobs:
   test-interpreter_spec:
     runs-on: ubuntu-24.04
     container:
-      image: crystallang/crystal:1.20.3-build
+      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
     name: "Test Interpreter"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -28,10 +28,10 @@ jobs:
   build-interpreter:
     runs-on: ubuntu-24.04
     container:
-      image: crystallang/crystal:1.20.3-build
+      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
     name: Build interpreter
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -39,7 +39,7 @@ jobs:
         run: make interpreter=1 release=1
 
       - name: Upload compiler artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crystal-interpreter
           path: |
@@ -49,19 +49,19 @@ jobs:
     needs: build-interpreter
     runs-on: ubuntu-24.04
     container:
-      image: crystallang/crystal:1.20.3-build
+      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
     strategy:
       fail-fast: false
       matrix:
         part: [0, 1, 2, 3]
     name: "Test std_spec with interpreter (${{ matrix.part }})"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Download compiler artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: crystal-interpreter
           path: .build/
@@ -76,15 +76,15 @@ jobs:
     needs: build-interpreter
     runs-on: ubuntu-24.04
     container:
-      image: crystallang/crystal:1.20.3-build
+      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
     name: "Test primitives_spec with interpreter"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Download compiler artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: crystal-interpreter
           path: .build/

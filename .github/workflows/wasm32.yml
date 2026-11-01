@@ -17,10 +17,10 @@ env:
 jobs:
   wasm32-test:
     runs-on: ubuntu-24.04
-    container: crystallang/crystal:1.20.3-build
+    container: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
     steps:
       - name: Download Crystal source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -29,6 +29,7 @@ jobs:
           apt-get update
           apt-get install -y curl
           curl -sSfL -o wasmtime-v29.0.1-x86_64-linux.tar.xz "https://github.com/bytecodealliance/wasmtime/releases/download/v29.0.1/wasmtime-v29.0.1-x86_64-linux.tar.xz"
+          echo "579ec7086f34ff6bbc53483ae00f660be1570f3ef10af0880a4ba9867067a77c  wasmtime-v29.0.1-x86_64-linux.tar.xz" | sha256sum -c -
           tar -xf wasmtime-v29.0.1-x86_64-linux.tar.xz
           install -m 755 wasmtime-v29.0.1-x86_64-linux/wasmtime /usr/local/bin/wasmtime
           rm -rf wasmtime-v29.0.1-x86_64-linux wasmtime-v29.0.1-x86_64-linux.tar.xz
@@ -41,15 +42,22 @@ jobs:
           apt-get update
           apt-get remove -y 'llvm-*' 'libllvm*'
           apt-get install -y curl software-properties-common
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          apt-add-repository -y deb http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main
+          wget -qO llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
+          echo "8b2a587ffd672c4687e7581dad4b2f6c1bb2ad6b480cd9771ba2ff48e0b8c75d  llvm-snapshot.gpg.key" | sha256sum -c -
+          install -d -m 755 /etc/apt/keyrings
+          install -m 644 llvm-snapshot.gpg.key /etc/apt/keyrings/apt.llvm.org.asc
+          rm llvm-snapshot.gpg.key
+          echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" > /etc/apt/sources.list.d/apt.llvm.org.list
+          apt-get update
           apt-get install -y llvm-18-dev lld-18
           ln -s "$(which wasm-ld-18)" /usr/bin/wasm-ld
 
       - name: Install Binaryen
         run: |
           BINARYEN_VERSION=126
-          curl -LO "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          BINARYEN_SHA256=e487e0eac1f02a6739816c617270b033e5d3f8ca90439301fd0286460322fd76
+          curl -sSfLO "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          echo "${BINARYEN_SHA256}  binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz" | sha256sum -c -
           tar -xzf "binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
           cp "binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt" /usr/local/bin/
           cp "binaryen-version_${BINARYEN_VERSION}/bin/wasm-merge" /usr/local/bin/
