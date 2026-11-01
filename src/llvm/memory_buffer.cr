@@ -30,6 +30,12 @@ class LLVM::MemoryBuffer
     dispose
   end
 
+  # Records that LLVM took ownership of the buffer (`LLVMParseIRInContext`
+  # frees it), so neither `#dispose` nor the finalizer frees it again.
+  protected def transfer_ownership_to_llvm : Nil
+    @finalized = true
+  end
+
   def to_unsafe
     @unwrap
   end

@@ -137,6 +137,7 @@ class LLVM::Context
 
   def parse_ir(buf : MemoryBuffer)
     ret = LibLLVM.parse_ir_in_context(self, buf, out mod, out msg)
+    buf.transfer_ownership_to_llvm
     if ret != 0 && msg
       raise LLVM.string_and_dispose(msg)
     end

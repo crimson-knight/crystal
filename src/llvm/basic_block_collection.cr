@@ -19,6 +19,10 @@ struct LLVM::BasicBlockCollection
     builder.position_at_end block
     yield builder
     block
+  ensure
+    # The builder is not registered with its context, so dispose of it here:
+    # it must not outlive a context that is disposed explicitly.
+    builder.try &.dispose
   end
 
   def each(&) : Nil
