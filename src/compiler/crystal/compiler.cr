@@ -1737,6 +1737,8 @@ module Crystal
         # .o file exists, skip IR generation, bitcode, and compilation entirely.
         if @skipped_via_module_cache
           @reused_previous_compilation = true
+          # The cached object file stands in for this module (see below).
+          llvm_mod.context.dispose if isolate_context
           return
         end
 
