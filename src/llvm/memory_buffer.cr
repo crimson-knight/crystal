@@ -18,16 +18,16 @@ class LLVM::MemoryBuffer
     )
   end
 
-  def dispose
+  # Disposes this memory buffer. Its contents may not be used afterwards.
+  def dispose : Nil
     return if @finalized
     @finalized = true
-    finalize
+
+    LibLLVM.dispose_memory_buffer(@unwrap)
   end
 
   def finalize
-    return if @finalized
-
-    LibLLVM.dispose_memory_buffer(@unwrap)
+    dispose
   end
 
   def to_unsafe

@@ -4,12 +4,21 @@ module Crystal
   class CodeGenVisitor
     # workaround for `LLVM::Builder` not being GC'ed (#13250)
     private class DIBuilder
+      @disposed = false
+
       def initialize(mod : LLVM::Module)
         @builder = LLVM::DIBuilder.new(mod)
       end
 
-      def finalize
+      def dispose : Nil
+        return if @disposed
+        @disposed = true
+
         @builder.dispose
+      end
+
+      def finalize
+        dispose
       end
 
       forward_missing_to @builder
@@ -35,6 +44,14 @@ module Crystal
         # TODO: switch to Crystal's language code for LLVM 16+ (#13174)
         di_builder.create_compile_unit(LLVM::DwarfSourceLanguage::C_plus_plus, file, dir, "Crystal", is_optimised, "", 0_u32)
       end
+    end
+
+    # Disposes the debug info builders once their modules are finished. A
+    # builder refers to its module's context, and a compilation unit may
+    # dispose that context before the GC would finalize the builder.
+    def dispose_di_builders : Nil
+      @di_builders.try &.each_value &.dispose
+      @di_builders = nil
     end
 
     def push_debug_info_metadata(mod)
