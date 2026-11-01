@@ -73,7 +73,7 @@ jobs:
 
       - name: Install Nix
         if: ${{ matrix.ci_nix_shell == 'true' }}
-        uses: cachix/install-nix-action@4e002c8ec80594ecd40e759629461e26c8abed15 # v31
+        uses: cachix/install-nix-action@4e002c8ec80594ecd40e759629461e26c8abed15 # v31.9.0
         with:
           extra_nix_config: |
             experimental-features = nix-command
