@@ -18,13 +18,15 @@ describe "Compiler with --incremental" do
       helper = File.join(directory, "helper.cr")
       program = File.join(directory, "program.cr")
       executable = File.join(directory, "program")
-      File.write(helper, "module Helper\n  def self.value\n    1\n  end\nend\n")
+      # A body the code generator does not inline, so its module is mapped to
+      # this file and the rebuild can skip the modules of the other files.
+      File.write(helper, "module Helper\n  def self.value\n    ARGV.size + 1\n  end\nend\n")
       File.write(program, %(require "./helper"\nputs Helper.value\n))
 
       build_incrementally(program, executable)
       Process.capture(executable).should eq("1\n")
 
-      File.write(helper, "module Helper\n  def self.value\n    999\n  end\nend\n")
+      File.write(helper, "module Helper\n  def self.value\n    ARGV.size + 999\n  end\nend\n")
       File.touch(helper, Time.utc + 5.seconds)
       rebuild = build_incrementally(program, executable)
       Process.capture(executable).should eq("999\n")
