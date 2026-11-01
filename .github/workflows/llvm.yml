@@ -60,13 +60,11 @@ jobs:
           sudo apt remove 'llvm-*' 'libllvm*'
           wget -qO llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
           echo "8b2a587ffd672c4687e7581dad4b2f6c1bb2ad6b480cd9771ba2ff48e0b8c75d  llvm-snapshot.gpg.key" | sha256sum -c -
-          sudo install -m 644 llvm-snapshot.gpg.key /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          sudo install -d -m 755 /etc/apt/keyrings
+          sudo install -m 644 llvm-snapshot.gpg.key /etc/apt/keyrings/apt.llvm.org.asc
           rm llvm-snapshot.gpg.key
-          sudo apt-add-repository -y \
-            deb \
-            http://apt.llvm.org/${{ matrix.codename }}/ \
-            llvm-toolchain-${{ matrix.codename }}${{ matrix.llvm_version && format('-{0}', matrix.llvm_version) || '' }} \
-            main
+          echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] http://apt.llvm.org/${{ matrix.codename }}/ llvm-toolchain-${{ matrix.codename }}${{ matrix.llvm_version && format('-{0}', matrix.llvm_version) || '' }} main" | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list
+          sudo apt-get update
           sudo apt install -y llvm${{ matrix.llvm_version && format('-{0}', matrix.llvm_version) || '' }}-dev lld
 
       - name: Install Crystal
