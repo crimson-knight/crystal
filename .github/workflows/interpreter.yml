@@ -15,7 +15,7 @@ jobs:
   test-interpreter_spec:
     runs-on: ubuntu-24.04
     container:
-      image: crystallang/crystal:1.20.3-build
+      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
     name: "Test Interpreter"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,7 +28,7 @@ jobs:
   build-interpreter:
     runs-on: ubuntu-24.04
     container:
-      image: crystallang/crystal:1.20.3-build
+      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
     name: Build interpreter
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,7 +49,7 @@ jobs:
     needs: build-interpreter
     runs-on: ubuntu-24.04
     container:
-      image: crystallang/crystal:1.20.3-build
+      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
     strategy:
       fail-fast: false
       matrix:
@@ -76,7 +76,7 @@ jobs:
     needs: build-interpreter
     runs-on: ubuntu-24.04
     container:
-      image: crystallang/crystal:1.20.3-build
+      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
     name: "Test primitives_spec with interpreter"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

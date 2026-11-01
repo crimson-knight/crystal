@@ -58,7 +58,10 @@ jobs:
       - name: Install LLVM ${{ matrix.llvm_version || 'Nightly' }}
         run: |
           sudo apt remove 'llvm-*' 'libllvm*'
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          wget -qO llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
+          echo "8b2a587ffd672c4687e7581dad4b2f6c1bb2ad6b480cd9771ba2ff48e0b8c75d  llvm-snapshot.gpg.key" | sha256sum -c -
+          sudo install -m 644 llvm-snapshot.gpg.key /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          rm llvm-snapshot.gpg.key
           sudo apt-add-repository -y \
             deb \
             http://apt.llvm.org/${{ matrix.codename }}/ \
