@@ -1748,6 +1748,15 @@ module Crystal
           @reused_previous_compilation = true
         end
         dump_llvm_ir
+
+        # A unit compiled on a worker thread owns its LLVM context, and
+        # nothing reads its module after this point (only a single unit is
+        # emitted, and a single unit never goes to a worker). Dispose of the
+        # context now instead of when the GC finalizes it: hundreds of units
+        # otherwise keep their contexts alive for the rest of the
+        # compilation, including the codegen of a macro run program that
+        # happens in the middle of the main program's semantic phase.
+        llvm_mod.context.dispose if isolate_context
       end
 
       private def must_compile?
@@ -1782,7 +1791,13 @@ module Crystal
       # dedicated context, so we can safely optimize & compile the module in
       # multiple threads (llvm contexts can't be shared across threads).
       private def isolate_module_context
+        generated_module = @llvm_mod
         @llvm_mod = LLVM::Module.parse(@memory_buffer.not_nil!, LLVM::Context.new)
+
+        # In multi-module mode every module is generated in a context of its
+        # own, and only this unit refers to it. Its bitcode now lives in the
+        # isolated context, so the generated one can go.
+        generated_module.context.dispose
       end
 
       private def update_bitcode_cache
@@ -1798,8 +1813,14 @@ module Crystal
       private def compile_to_object
         temporary_object_name = self.temporary_object_name
         target_machine = compiler.create_target_machine
-        compiler.optimize llvm_mod, target_machine unless compiler.optimization_mode.o0?
-        target_machine.emit_obj_to_file llvm_mod, temporary_object_name
+        begin
+          compiler.optimize llvm_mod, target_machine unless compiler.optimization_mode.o0?
+          target_machine.emit_obj_to_file llvm_mod, temporary_object_name
+        ensure
+          # Each unit creates a target machine of its own, and each one holds
+          # a few hundred kilobytes until it is released.
+          target_machine.dispose
+        end
         File.rename(temporary_object_name, object_name)
       end
 

@@ -151,7 +151,13 @@ class LLVM::Context
     @unwrap
   end
 
-  def finalize
+  # Disposes this context together with its modules and builders, unless
+  # the context was created with `dispose_on_finalize: false` (it is owned
+  # elsewhere). Nothing created in this context may be used afterwards.
+  #
+  # Calling this releases LLVM's memory right away instead of when the
+  # garbage collector finalizes the context.
+  def dispose : Nil
     return unless @dispose_on_finalize
     return if @disposed
     @disposed = true
@@ -159,6 +165,10 @@ class LLVM::Context
     @builders.each &.dispose
 
     LibLLVM.dispose_context(self)
+  end
+
+  def finalize
+    dispose
   end
 
   # The next lines are for ease debugging when a types/values
