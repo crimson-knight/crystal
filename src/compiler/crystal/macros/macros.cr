@@ -207,7 +207,7 @@ class Crystal::Program
     compiler_path = File.join(seed_dir, MACRO_RUN_SEED_COMPILER_FILE)
     sources_path = File.join(seed_dir, MACRO_RUN_SEED_SOURCES_FILE)
 
-    return unless File.executable?(executable_path) && File.exists?(compiler_path) && File.exists?(sources_path)
+    return unless File::Info.executable?(executable_path) && File.exists?(compiler_path) && File.exists?(sources_path)
     return unless can_reuse_previous_compilation?(filename, executable_path, recorded_requires_path, requires_path)
 
     identity = macro_run_compiler_identity
