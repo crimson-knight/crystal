@@ -156,25 +156,50 @@ void LLVMExtSetWasmExceptionHandling(LLVMTargetMachineRef T) {
   LLVMExtEnableLegacyWasmExceptionHandlingOptions();
 }
 
-// Split a module into at most `parts` modules and hand each one to `callback`
-// as bitcode, in partition order, as soon as it is written.
+// Split a module into `parts` modules and hand each one to `callback` as
+// bitcode, in partition order, as soon as it is written.
 //
-// The module is changed in place: every local symbol that the split touches
-// becomes an external symbol with hidden visibility, so references across
-// parts resolve when the objects are linked. Each part is serialized because
-// LLVM contexts are not thread-safe: the receiver parses it into a context of
-// its own and compiles it on any thread (LLVM's LTO `splitCodeGen` does the
-// same). The callback owns the buffer it receives and must dispose of it.
+// The module is changed in place. Every local definition is first renamed
+// with the prefix `__crystal_local.` (a prefix no C or Crystal external symbol
+// uses), and SplitModule then makes every local an external symbol with
+// hidden visibility, so references across parts resolve when the objects are
+// linked and cannot collide with symbols of other objects in the link. Each
+// part is serialized because LLVM contexts are not thread-safe: the receiver
+// parses it into a context of its own and compiles it on any thread (LLVM's
+// LTO `splitCodeGen` does the same). The callback owns the buffer it receives
+// and must dispose of it; it must not unwind (it is called from C++).
 //
-// Returns the number of parts produced (SplitModule may produce fewer
-// non-empty parts than asked for, but it always calls back `parts` times).
+// Returns the number of parts handed to `callback` (always `parts`), or 0
+// without changing the module when it carries module-level assembly, which
+// SplitModule cannot keep consistent across parts.
 unsigned LLVMExtSplitModuleToBitcode(LLVMModuleRef M, unsigned parts,
                                      void (*callback)(void *data, unsigned index,
                                                       LLVMMemoryBufferRef buffer),
                                      void *data) {
+  Module &module = *unwrap(M);
+  if (!module.getModuleInlineAsm().empty())
+    return 0;
+
+  auto rename_local = [](GlobalValue &value) {
+    if (value.isDeclaration() || !value.hasLocalLinkage())
+      return;
+    if (value.hasName())
+      value.setName("__crystal_local." + value.getName());
+    else
+      value.setName("__crystal_local.unnamed");
+  };
+  for (Function &function : module)
+    rename_local(function);
+  for (GlobalVariable &variable : module.globals())
+    rename_local(variable);
+  for (GlobalAlias &alias : module.aliases())
+    rename_local(alias);
+  for (GlobalIFunc &ifunc : module.ifuncs())
+    rename_local(ifunc);
+
   unsigned index = 0;
   SplitModule(
-      *unwrap(M), parts,
+      module, parts,
       [&](std::unique_ptr<Module> part) {
         SmallString<0> bitcode;
         raw_svector_ostream stream(bitcode);

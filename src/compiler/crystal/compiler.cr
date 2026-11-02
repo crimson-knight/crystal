@@ -1897,9 +1897,10 @@ module Crystal
         list_of_part_object_names = object_names
 
         {% if flag?(:without_mt) %}
-          llvm_mod.split_to_bitcode(@part_count) do |index, bitcode|
+          split = llvm_mod.split_to_bitcode(@part_count) do |index, bitcode|
             compile_part_to_object(bitcode, list_of_part_object_names[index], optimize_each_part)
           end
+          raise_unsplittable_module unless split
         {% else %}
           parts_to_compile = Channel({Int32, LLVM::MemoryBuffer}).new(@part_count)
           first_part_failure = nil.as(Exception?)
@@ -1919,8 +1920,11 @@ module Crystal
             end
           end
 
+          split = false
           begin
-            llvm_mod.split_to_bitcode(@part_count) do |index, bitcode|
+            # The channel holds every part, so handing one over never blocks
+            # the split, even when a worker has stopped on a failure.
+            split = llvm_mod.split_to_bitcode(@part_count) do |index, bitcode|
               parts_to_compile.send({index, bitcode})
             end
           ensure
@@ -1931,7 +1935,12 @@ module Crystal
           if failure = failure_lock.synchronize { first_part_failure }
             raise failure
           end
+          raise_unsplittable_module unless split
         {% end %}
+      end
+
+      private def raise_unsplittable_module
+        raise CompilerError.new("--release-units cannot split a program with module-level assembly; use --release-units 1", :USAGE_ERROR)
       end
 
       private def compile_part_to_object(bitcode, part_object_name, optimize_part)
