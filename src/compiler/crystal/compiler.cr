@@ -166,17 +166,12 @@ module Crystal
     # --release automatically enable this option
     property? single_module = false
 
-    # Number of parts an optimized single-module build is split into for
-    # machine code emission, each part emitted on its own thread. With 1
-    # (the default) the module is emitted as one object file. The module is
-    # optimized as a whole before the split, so the optimized program is the
-    # same whatever the number of parts.
-    property release_units : Int32 = 1
-
-    # Prototype only: split an optimized single-module build into
-    # `release_units` parts *before* optimizing, and optimize each part on its
-    # own. Faster to compile, but nothing is inlined across parts.
-    property? release_split_before_optimize = false
+    # The most parts an optimized single-module build (`--release`) is split
+    # into for machine code emission, each part emitted on its own thread; the
+    # build uses at most `n_threads` parts. With 1 the module is emitted as one
+    # object file. The module is optimized as a whole before the split, so the
+    # optimized program is the same whatever the number of parts.
+    property release_units : Int32 = 8
 
     # A `ProgressTracker` object which tracks compilation progress.
     property progress_tracker = ProgressTracker.new
@@ -601,7 +596,7 @@ module Crystal
       bc_flags_changed = true
       current_bc_flags = "#{@codegen_target}|#{@mcpu}|#{@mattr}|#{@link_flags}|#{@mcmodel}"
       if release_parts > 1
-        current_bc_flags += "|parts=#{release_parts}|split_before_optimize=#{release_split_before_optimize?}"
+        current_bc_flags += "|parts=#{release_parts}"
       end
       bc_flags_filename = "#{output_dir}/bc_flags#{optimization_mode.suffix}"
       if File.file?(bc_flags_filename)
@@ -657,7 +652,7 @@ module Crystal
         end
       end
 
-      release_parts = release_parts_for(program, is_single_module)
+      release_parts = release_parts_for(program, is_single_module, llvm_modules)
       bc_flags_changed = bc_flags_changed? output_dir, release_parts
       target_triple = target_machine.triple
 
@@ -741,14 +736,22 @@ module Crystal
     end
 
     # The number of parts the single optimized module is emitted as: more than
-    # one only for an optimized single-module build of an executable for this
-    # host, where every part's object goes straight to the linker.
-    private def release_parts_for(program, is_single_module) : Int32
-      return 1 unless is_single_module
+    # one only for an optimized single-module build of an executable or shared
+    # library for this host on macOS or Linux, where every part's object goes
+    # straight to the linker, and only when LLVM can split the module and
+    # compile the parts on several threads; at most `n_threads`.
+    private def release_parts_for(program, is_single_module, llvm_modules) : Int32
+      return 1 unless is_single_module && llvm_modules.size == 1
       return 1 if @optimization_mode.o0? || @cross_compile || !@emit_targets.none?
-      return 1 if program.has_flag?("wasm32")
 
-      @release_units
+      target = program.codegen_target
+      return 1 unless target.macos? || (target.linux? && !target.android?)
+      return 1 unless llvm_modules.first_value.mod.can_be_split?
+      {% unless flag?(:without_mt) %}
+        return 1 unless LLVM.multithreaded?
+      {% end %}
+
+      @release_units.clamp(1..@n_threads.clamp(1..))
     end
 
     private def with_file_lock(output_dir, &)
@@ -960,6 +963,38 @@ module Crystal
       end
     end
 
+    # The prefix of the symbols a build emitted in parts promotes from private
+    # definitions and internal variables (see `LLVM::Module#split_to_bitcode`),
+    # which a single-object build does not list in its symbol table.
+    PRIVATE_SYMBOL_PREFIX = "__crystal_private."
+
+    # On Mach-O the promoted private symbols carry the linker-private `l`
+    # prefix, which Apple's linker leaves out of the output's symbol table and
+    # debug map. LLVM's ld64.lld (chosen when `ld.lld` is installed) lists
+    # them, so the linker also gets them as a strip list, which both linkers
+    # apply to the symbol table and the debug map.
+    private def private_symbols_strip_flag(output_dir) : String
+      strip_list = File.join(output_dir, "private_symbols_strip_list.txt")
+      File.write(strip_list, "l#{PRIVATE_SYMBOL_PREFIX}*\n")
+      " -Wl,-non_global_symbols_strip_list,#{Process.quote_posix(File.expand_path(strip_list))}"
+    end
+
+    # Removes the promoted private symbols from an ELF output's symbol table,
+    # so a build emitted in parts lists the same symbols as a single-object
+    # build. ELF linkers have no option for this, so `objcopy` (GNU binutils or
+    # LLVM) does it after linking. Without `objcopy` the symbols stay; the
+    # program is the same either way.
+    private def remove_private_symbols(output_filename)
+      objcopy = Process.find_executable("objcopy") || Process.find_executable("llvm-objcopy")
+      return unless objcopy
+
+      status = Process.run(objcopy, ["--wildcard", "--strip-symbol=#{PRIVATE_SYMBOL_PREFIX}*", output_filename],
+        output: Process::Redirect::Close, error: Process::Redirect::Inherit)
+      unless status.success?
+        stderr.puts "Warning: #{objcopy} could not remove the #{PRIVATE_SYMBOL_PREFIX}* symbols from #{output_filename}"
+      end
+    end
+
     # Tests if `mold` or `lld` are available and prefers them as linkers over
     # the default `ld`. Only works when `cc` is the linker driver and can be
     # disabled with `--link-flags=-fuse-ld=bfd`.
@@ -1041,9 +1076,13 @@ module Crystal
           # Save source directory before changing to output_dir so CRYSTAL_PATH
           # relative entries (e.g. "src:lib") resolve correctly in linker_command
           src_dir = Dir.current
+          split_into_parts = units.any? { |unit| unit.part_count > 1 }
           Dir.cd(output_dir) do
-            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true, source_dir: src_dir)
+            linker_name, command, args = linker_command(program, object_names, output_filename, output_dir, expand: true, source_dir: src_dir)
+            command += private_symbols_strip_flag(output_dir) if split_into_parts && program.codegen_target.macos?
+            run_linker linker_name, command, args
           end
+          remove_private_symbols(output_filename) if split_into_parts && program.codegen_target.linux?
         end
       end
 
@@ -1475,12 +1514,12 @@ module Crystal
 
       # Capture file-level dependencies (convert Set to sorted Array for JSON)
       file_deps = unless program.file_dependencies.empty?
-        result = {} of String => Array(String)
-        program.file_dependencies.each do |user_file, provider_set|
-          result[user_file] = provider_set.to_a.sort
-        end
-        result
-      end
+                    result = {} of String => Array(String)
+                    program.file_dependencies.each do |user_file, provider_set|
+                      result[user_file] = provider_set.to_a.sort
+                    end
+                    result
+                  end
 
       data = IncrementalCacheData.new(
         compiler_version: Config.version,
@@ -1869,36 +1908,53 @@ module Crystal
       end
 
       private def update_bitcode_cache
-        return unless memory_buffer = @memory_buffer
-
-        # Delete existing .o files. They cannot be used anymore.
+        # Delete existing .o files, including the parts of any part count
+        # (only the main unit is ever split). They cannot be used anymore:
+        # every object left next to the .bc file must have been built from
+        # it, or a later build (with another part count, or after a
+        # --no-cache build) could link objects of another program.
+        File.delete?(object_name)
         object_names.each { |name| File.delete?(name) }
-        # Create the .bc file (for next compilations)
-        File.write(bc_name, memory_buffer.to_slice)
-        memory_buffer.dispose
+        delete_part_objects_of_every_count if @original_name == "_main"
+
+        if memory_buffer = @memory_buffer
+          # Create the .bc file (for next compilations)
+          File.write(bc_name, memory_buffer.to_slice)
+          memory_buffer.dispose
+        else
+          # --no-cache generates no bitcode: the objects written next do not
+          # come from the cached .bc file, so it must not match them later.
+          File.delete?(bc_name)
+        end
       end
 
-      # Optimizes the module as a whole (unless the parts are optimized on
-      # their own), splits it into `part_count` modules and emits each part's
-      # object file on its own thread. Each part is handed over as bitcode and
-      # parsed into an LLVM context of its own, because contexts cannot be
-      # shared across threads.
+      private def delete_part_objects_of_every_count
+        part_prefix = "#{@name}.p"
+        Dir.each_child(@output_dir) do |child|
+          next unless child.starts_with?(part_prefix) && child.ends_with?(@object_extension)
+          next unless child[part_prefix.size...-@object_extension.size].matches?(/\A\d+of\d+\z/)
+
+          File.delete?(File.join(@output_dir, child))
+        end
+      end
+
+      # Optimizes the module as a whole, splits it into `part_count` modules
+      # and emits each part's object file on its own thread. Each part is
+      # handed over as bitcode and parsed into an LLVM context of its own,
+      # because contexts cannot be shared across threads.
       private def compile_parts_to_objects
-        optimize_each_part = compiler.release_split_before_optimize?
-        unless optimize_each_part
-          target_machine = compiler.create_target_machine
-          begin
-            compiler.optimize llvm_mod, target_machine
-          ensure
-            target_machine.dispose
-          end
+        target_machine = compiler.create_target_machine
+        begin
+          compiler.optimize llvm_mod, target_machine
+        ensure
+          target_machine.dispose
         end
 
         list_of_part_object_names = object_names
 
         {% if flag?(:without_mt) %}
           split = llvm_mod.split_to_bitcode(@part_count) do |index, bitcode|
-            compile_part_to_object(bitcode, list_of_part_object_names[index], optimize_each_part)
+            compile_part_to_object(bitcode, list_of_part_object_names[index])
           end
           raise_unsplittable_module unless split
         {% else %}
@@ -1912,7 +1968,7 @@ module Crystal
               while part = parts_to_compile.receive?
                 index, bitcode = part
                 begin
-                  compile_part_to_object(bitcode, list_of_part_object_names[index], optimize_each_part)
+                  compile_part_to_object(bitcode, list_of_part_object_names[index])
                 rescue ex
                   failure_lock.synchronize { first_part_failure ||= ex }
                 end
@@ -1940,10 +1996,10 @@ module Crystal
       end
 
       private def raise_unsplittable_module
-        raise CompilerError.new("--release-units cannot split a program with module-level assembly; use --release-units 1", :USAGE_ERROR)
+        raise "BUG: --release-units split a module that LLVM cannot split"
       end
 
-      private def compile_part_to_object(bitcode, part_object_name, optimize_part)
+      private def compile_part_to_object(bitcode, part_object_name)
         part_context = LLVM::Context.new
         begin
           part_module = LLVM::Module.parse(bitcode, part_context)
@@ -1951,7 +2007,6 @@ module Crystal
           target_machine = compiler.create_target_machine
           temporary_part_object_name = "#{part_object_name}.tmp"
           begin
-            compiler.optimize part_module, target_machine if optimize_part
             target_machine.emit_obj_to_file part_module, temporary_part_object_name
           ensure
             target_machine.dispose

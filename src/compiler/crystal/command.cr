@@ -601,11 +601,8 @@ class Crystal::Command
         opts.on("--threads NUM", "Maximum number of threads to use") do |n_threads|
           compiler.n_threads = n_threads.to_i? || raise Error.new("Invalid thread count: #{n_threads}")
         end
-        opts.on("--release-units NUM", "Emit a single optimized module as NUM object files in parallel (default 1)") do |release_units|
+        opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
           compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
-        end
-        opts.on("--release-split-before-optimize", "Prototype: split the module into --release-units parts before optimizing") do
-          compiler.release_split_before_optimize = true
         end
         unless run
           opts.on("--target TRIPLE", "Target triple") do |triple|
@@ -762,11 +759,8 @@ class Crystal::Command
     opts.on("--threads NUM", "Maximum number of threads to use") do |n_threads|
       compiler.n_threads = n_threads.to_i? || raise Error.new("Invalid thread count: #{n_threads}")
     end
-    opts.on("--release-units NUM", "Emit a single optimized module as NUM object files in parallel (default 1)") do |release_units|
+    opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
       compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
-    end
-    opts.on("--release-split-before-optimize", "Prototype: split the module into --release-units parts before optimizing") do
-      compiler.release_split_before_optimize = true
     end
     opts.on("-s", "--stats", "Enable statistics output") do
       compiler.progress_tracker.stats = true

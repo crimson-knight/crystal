@@ -35,6 +35,7 @@ lib LibLLVMExt
   fun set_target_machine_global_isel = LLVMExtSetTargetMachineGlobalISel(t : LibLLVM::TargetMachineRef, enable : LibLLVM::Bool)
   fun set_wasm_exception_handling = LLVMExtSetWasmExceptionHandling(t : LibLLVM::TargetMachineRef)
 
+  fun module_can_be_split = LLVMExtModuleCanBeSplit(m : LibLLVM::ModuleRef) : LibLLVM::Bool
   fun split_module_to_bitcode = LLVMExtSplitModuleToBitcode(m : LibLLVM::ModuleRef, parts : UInt,
                                                             callback : (Void*, UInt, LibLLVM::MemoryBufferRef ->),
                                                             data : Void*) : UInt

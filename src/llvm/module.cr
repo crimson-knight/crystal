@@ -76,17 +76,27 @@ class LLVM::Module
     MemoryBuffer.new(LibLLVM.write_bitcode_to_memory_buffer self)
   end
 
+  # Whether `#split_to_bitcode` can split this module: it needs LLVM 17 or
+  # later, and a module without module-level assembly.
+  def can_be_split? : Bool
+    LibLLVMExt.module_can_be_split(self) != 0
+  end
+
   # Splits this module into *parts* modules and yields each part's index and
   # bitcode, in order, as soon as the part is written. The receiver owns the
   # buffer: it parses it into a context of its own (so the part can be
   # compiled on another thread) and disposes of it.
   #
-  # This module is changed in place: local definitions are renamed with a
-  # `__crystal_local.` prefix and become external symbols with hidden
-  # visibility, so references across parts resolve at link time.
+  # This module is changed in place: local definitions become external
+  # symbols with hidden visibility, so references across parts resolve at link
+  # time. Private definitions and internal variables are renamed with a
+  # `__crystal_private.` prefix (kept out of the linked output's symbol
+  # table), internal functions whose names are plain C identifiers with a
+  # `__crystal_local.` prefix, and the other functions (Crystal method names)
+  # keep their names.
   #
   # Returns `false`, yielding nothing and leaving the module unchanged, when
-  # the module carries module-level assembly. An exception raised by the
+  # `#can_be_split?` is false. An exception raised by the
   # block is re-raised once the split is over (the block runs inside LLVM,
   # which an exception must not unwind through); later parts are disposed of.
   def split_to_bitcode(parts : Int32, &block : Int32, MemoryBuffer ->) : Bool

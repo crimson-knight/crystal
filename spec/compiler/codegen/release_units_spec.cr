@@ -1,9 +1,13 @@
 require "../../spec_helper"
 
+# Release builds are split on macOS and Linux hosts only.
+{% skip_file unless flag?(:darwin) || (flag?(:linux) && !flag?(:android)) %}
+
 private RELEASE_UNITS_PROGRAM = <<-CRYSTAL
   class Counter
     @@count = 0
 
+    @[NoInline]
     def self.bump
       @@count += 1
     end
@@ -13,7 +17,7 @@ private RELEASE_UNITS_PROGRAM = <<-CRYSTAL
     end
   end
 
-  LOOKUP = {"alpha" => 1, "beta" => 2}
+  LOOKUP = {"alpha" => 1, "beta" => BETA}
 
   def risky(number)
     raise ArgumentError.new("bad \#{number}") if number.odd?
@@ -25,33 +29,75 @@ private RELEASE_UNITS_PROGRAM = <<-CRYSTAL
   puts (1..4).map { |number| risky(number) rescue "rescued" }.inspect
   CRYSTAL
 
-private def compile_release_units_program(directory, release_units, executable_name)
+private def compile_release_units_program(directory, release_units, executable_name, beta = 2)
   program = File.join(directory, "program.cr")
-  File.write(program, RELEASE_UNITS_PROGRAM)
+  File.write(program, "BETA = #{beta}\n#{RELEASE_UNITS_PROGRAM}")
   executable = File.join(directory, executable_name)
 
   compiler = Crystal::Compiler.new
   compiler.release!
   compiler.release_units = release_units
+  compiler.n_threads = 8
   ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
   result = compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
   {executable, result}
 end
 
+# The part objects of the release build of `directory/program.cr` in the compiler cache.
+private def release_part_objects(directory)
+  cache_directory = Crystal::CacheDir.instance.directory_for(File.join(directory, "program.cr"))
+  Dir.children(cache_directory).select(&.matches?(/\A_main\.o3\.p\d+of\d+\.o\z/)).sort
+end
+
+private def expected_release_units_output(beta = 2)
+  "5\n#{beta}\n[\"rescued\", 4, \"rescued\", 8]\n"
+end
+
+# On macOS the linker leaves the promoted private symbols out; on Linux the
+# compiler removes them with objcopy, when it is installed.
+private def private_symbols_are_removed? : Bool
+  {% if flag?(:darwin) %}
+    true
+  {% else %}
+    {"objcopy", "llvm-objcopy"}.any? { |tool| Process.find_executable(tool) }
+  {% end %}
+end
+
+private def symbol_names(nm, executable)
+  Process.capture([nm, executable]).lines.map { |line| line.split(' ', 3).last.chomp }
+end
+
 describe "Compiler#release_units" do
-  it "defaults to emitting the optimized module as one object" do
-    Crystal::Compiler.new.release_units.should eq(1)
+  it "defaults to emitting the optimized module as eight parts" do
+    Crystal::Compiler.new.release_units.should eq(8)
   end
 
   it "builds a release program from parts that behaves like the single-object build" do
     with_tempfile("release_units") do |directory|
       Dir.mkdir_p(directory)
       single_executable, _ = compile_release_units_program(directory, 1, "single")
+      release_part_objects(directory).should be_empty
       parts_executable, _ = compile_release_units_program(directory, 4, "parts")
+      release_part_objects(directory).should eq(%w[_main.o3.p0of4.o _main.o3.p1of4.o _main.o3.p2of4.o _main.o3.p3of4.o])
 
-      expected_output = "5\n2\n[\"rescued\", 4, \"rescued\", 8]\n"
-      Process.capture(single_executable).should eq(expected_output)
-      Process.capture(parts_executable).should eq(expected_output)
+      Process.capture(single_executable).should eq(expected_release_units_output)
+      Process.capture(parts_executable).should eq(expected_release_units_output)
+    end
+  end
+
+  it "uses at most --threads parts" do
+    with_tempfile("release_units_threads") do |directory|
+      Dir.mkdir_p(directory)
+      program = File.join(directory, "program.cr")
+      File.write(program, "BETA = 2\n#{RELEASE_UNITS_PROGRAM}")
+      compiler = Crystal::Compiler.new
+      compiler.release!
+      compiler.release_units = 8
+      compiler.n_threads = 2
+      compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), File.join(directory, "two_threads"))
+
+      release_part_objects(directory).should eq(%w[_main.o3.p0of2.o _main.o3.p1of2.o])
+      Process.capture(File.join(directory, "two_threads")).should eq(expected_release_units_output)
     end
   end
 
@@ -62,8 +108,48 @@ describe "Compiler#release_units" do
       unchanged_executable, _ = compile_release_units_program(directory, 3, "unchanged")
       more_parts_executable, _ = compile_release_units_program(directory, 5, "more_parts")
 
-      Process.capture(unchanged_executable).should eq("5\n2\n[\"rescued\", 4, \"rescued\", 8]\n")
-      Process.capture(more_parts_executable).should eq("5\n2\n[\"rescued\", 4, \"rescued\", 8]\n")
+      Process.capture(unchanged_executable).should eq(expected_release_units_output)
+      Process.capture(more_parts_executable).should eq(expected_release_units_output)
+      release_part_objects(directory).should eq(%w[_main.o3.p0of5.o _main.o3.p1of5.o _main.o3.p2of5.o _main.o3.p3of5.o _main.o3.p4of5.o])
+    end
+  end
+
+  it "never links the parts of an older program after an interrupted change of part count" do
+    with_tempfile("release_units_interrupted") do |directory|
+      Dir.mkdir_p(directory)
+      compile_release_units_program(directory, 4, "old_program", beta: 2)
+      compile_release_units_program(directory, 3, "new_program", beta: 7)
+      release_part_objects(directory).should eq(%w[_main.o3.p0of3.o _main.o3.p1of3.o _main.o3.p2of3.o])
+
+      # A build of the new program with 4 parts that stopped right after it
+      # recorded its flags, before it replaced any object.
+      cache_directory = Crystal::CacheDir.instance.directory_for(File.join(directory, "program.cr"))
+      flags_file = File.join(cache_directory, "bc_flags.o3")
+      File.write(flags_file, File.read(flags_file).sub("|parts=3", "|parts=4"))
+
+      retried_executable, _ = compile_release_units_program(directory, 4, "retried", beta: 7)
+      Process.capture(retried_executable).should eq(expected_release_units_output(7))
+    end
+  end
+
+  it "lists the same symbols as the single-object build, without the promoted private ones" do
+    nm = Process.find_executable("nm")
+    pending! "nm is not installed" unless nm
+
+    with_tempfile("release_units_symbols") do |directory|
+      Dir.mkdir_p(directory)
+      single_executable, _ = compile_release_units_program(directory, 1, "single")
+      parts_executable, _ = compile_release_units_program(directory, 4, "parts")
+
+      single_symbols = symbol_names(nm, single_executable)
+      parts_symbols = symbol_names(nm, parts_executable)
+
+      list_of_private_symbols = parts_symbols.select(&.includes?("__crystal_private."))
+      list_of_private_symbols.should be_empty if private_symbols_are_removed?
+      list_of_crystal_method_symbols = single_symbols.select(&.includes?("Counter::bump"))
+      list_of_crystal_method_symbols.should_not be_empty
+      (list_of_crystal_method_symbols - parts_symbols).should be_empty
+      (parts_symbols - list_of_private_symbols).size.should be_close(single_symbols.size, single_symbols.size // 10)
     end
   end
 end
