@@ -110,7 +110,7 @@ class Crystal::Program
       return CompiledMacroRun.new(executable_path, time.elapsed, true)
     end
 
-    if seeded_executable_path = seeded_macro_run(filename)
+    if !writing_macro_run_seed? && (seeded_executable_path = seeded_macro_run(filename))
       return CompiledMacroRun.new(seeded_executable_path, time.elapsed, true)
     end
 
@@ -134,9 +134,20 @@ class Crystal::Program
       requires_with_timestamps.to_json(file)
     end
 
-    # Records which compiler built the program, so that a copy of this
-    # directory can serve as a macro run seed (see `#seeded_macro_run`).
-    File.write(File.join(program_dir, MACRO_RUN_SEED_COMPILER_FILE), macro_run_compiler_identity)
+    # `scripts/seed_macro_run.cr` turns this cache directory into a macro run
+    # seed (see `#seeded_macro_run`): record the compiler that built the
+    # program and the content of every file it was built from.
+    if writing_macro_run_seed?
+      if identity = macro_run_compiler_identity
+        File.write(File.join(program_dir, MACRO_RUN_SEED_COMPILER_FILE), identity)
+      end
+      source_digests = result.program.requires.map do |required_file|
+        SourceDigest.new(required_file, Crystal::Digest::MD5.hexdigest(File.read(required_file)))
+      end
+      File.open(File.join(program_dir, MACRO_RUN_SEED_SOURCES_FILE), "w") do |file|
+        source_digests.to_json(file)
+      end
+    end
 
     CompiledMacroRun.new(executable_path, time.elapsed, false)
   end
@@ -145,23 +156,45 @@ class Crystal::Program
   # macro run programs compiled when the compiler was installed.
   MACRO_RUN_SEED_DIRECTORY = "macro_run_seed"
 
-  # The file in a macro run cache directory that names the compiler that
-  # built the program.
+  # The file in a macro run seed that identifies the compiler that built it.
   MACRO_RUN_SEED_COMPILER_FILE = "compiler"
+
+  # The file in a macro run seed with the content digest of every source
+  # file the program was built from.
+  MACRO_RUN_SEED_SOURCES_FILE = "source_digests"
+
+  # Set to `write` by `scripts/seed_macro_run.cr`: macro run programs are
+  # then always compiled, and their cache directories get the files that
+  # make them a seed.
+  MACRO_RUN_SEED_ENV = "CRYSTAL_MACRO_RUN_SEED"
+
+  record SourceDigest, filename : String, md5 : String do
+    include JSON::Serializable
+  end
+
+  private def writing_macro_run_seed? : Bool
+    ENV[MACRO_RUN_SEED_ENV]? == "write"
+  end
 
   # Returns the executable of a macro run program that was compiled ahead of
   # time for the standard library, or `nil` if there is none that this
   # compilation can use.
   #
   # A seed for `<stdlib>/ecr/process.cr` lives in
-  # `<stdlib>/../macro_run_seed/ecr-process.cr/` and has the same files as a
-  # macro run cache directory (`scripts/seed_macro_run.sh` writes it when the
-  # compiler is installed). It is used only when it was built by this
-  # compiler executable, every file it was compiled from is unchanged, and
-  # the macro run compiler has the default settings the seed was built with,
+  # `<stdlib>/../macro_run_seed/ecr-process.cr/`: a macro run cache directory
+  # written by `scripts/seed_macro_run.cr` when the compiler is installed. It
+  # is used only when
+  #
+  # * the running compiler executable is byte for byte the one that built it,
+  # * every source file it was built from resolves the same way and has the
+  #   same content (the recorded timestamps and an MD5 digest of each file),
+  # * the macro run compiler has the default settings the seed was built
+  #   with (no `-D` flags, link flags, CPU or code model options, for the
+  #   host),
+  #
   # so the program is the one this compilation would build. This saves the
-  # cold-cache compile of the ECR helper (about 0.7 s) in every clean build
-  # of an app that renders ECR templates.
+  # cold-cache compile of the ECR helper (0.7 s on an Apple M4) in every
+  # clean build of an app that renders ECR templates.
   private def seeded_macro_run(filename) : String?
     return unless default_macro_run_settings?
 
@@ -172,18 +205,26 @@ class Crystal::Program
     recorded_requires_path = File.join(seed_dir, "recorded_requires")
     requires_path = File.join(seed_dir, "requires")
     compiler_path = File.join(seed_dir, MACRO_RUN_SEED_COMPILER_FILE)
+    sources_path = File.join(seed_dir, MACRO_RUN_SEED_SOURCES_FILE)
 
-    return unless File.exists?(compiler_path)
-    return unless File.read(compiler_path) == macro_run_compiler_identity
+    return unless File.executable?(executable_path) && File.exists?(compiler_path) && File.exists?(sources_path)
     return unless can_reuse_previous_compilation?(filename, executable_path, recorded_requires_path, requires_path)
 
+    identity = macro_run_compiler_identity
+    return unless identity && File.read(compiler_path) == identity
+
+    source_digests = Array(SourceDigest).from_json(File.read(sources_path))
+    requires = Array(RequireWithTimestamp).from_json(File.read(requires_path))
+    return unless source_digests.map(&.filename).sort! == requires.map(&.filename).sort!
+    return unless source_digests.all? { |digest| Crystal::Digest::MD5.hexdigest(File.read(digest.filename)) == digest.md5 }
+
     executable_path
-  rescue IO::Error
+  rescue IO::Error | JSON::Error
     nil
   end
 
   # Returns the seed directory for *filename* if it is a file of the
-  # standard library (the `CRYSTAL_PATH` entry that holds `prelude.cr`).
+  # standard library (the first `CRYSTAL_PATH` entry that holds `prelude.cr`).
   private def macro_run_seed_directory(filename) : String?
     crystal_path.entries.each do |entry|
       stdlib_dir = File.expand_path(entry)
@@ -212,18 +253,15 @@ class Crystal::Program
       host.codegen_target == Config.host_target
   end
 
-  @macro_run_compiler_identity : String?
+  # Identifies the running compiler: its version description and an MD5
+  # digest of its executable, or `nil` if the executable cannot be found.
+  private def macro_run_compiler_identity : String?
+    executable = Process.executable_path
+    return unless executable
 
-  # Identifies the running compiler executable: its version description
-  # and the path, size and modification time of its executable.
-  private def macro_run_compiler_identity : String
-    @macro_run_compiler_identity ||= String.build do |io|
-      io << Config.description
-      if executable = Process.executable_path
-        info = File.info(executable)
-        io << executable << '\n' << info.size << '\n' << info.modification_time.to_unix << '\n'
-      end
-    end
+    digest = Crystal::Digest::MD5.new
+    File.open(executable, "rb") { |file| digest.update(file.getb_to_end) }
+    "#{Config.description}#{digest.final.hexstring}\n"
   end
 
   @host_compiler : Compiler?

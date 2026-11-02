@@ -18,13 +18,13 @@ private def with_seeded_macro_run(&)
     File.write(tool, %(print "seeded tool output"\n))
 
     with_env("CRYSTAL_PATH": stdlib_dir) do
-      compiled = new_program.macro_compile(tool)
+      compiled = with_env("CRYSTAL_MACRO_RUN_SEED": "write") { new_program.macro_compile(tool) }
       compiled.reused.should be_false
 
       cache_entry = File.dirname(compiled.filename)
       seed_dir = File.join(root, "macro_run_seed", "seeded_tool.cr")
       Dir.mkdir_p(seed_dir)
-      {"macro_run", "recorded_requires", "requires", "compiler"}.each do |file|
+      {"macro_run", "recorded_requires", "requires", "compiler", "source_digests"}.each do |file|
         FileUtils.cp(File.join(cache_entry, file), File.join(seed_dir, file))
       end
       FileUtils.rm_rf(cache_entry)
@@ -57,6 +57,27 @@ describe "Program#macro_compile with a macro run seed" do
     with_seeded_macro_run do |tool, seeded_executable|
       File.touch(tool, Time.utc + 1.hour)
       compiled = new_program.macro_compile(tool)
+
+      compiled.reused.should be_false
+      compiled.filename.should_not eq(seeded_executable)
+    end
+  end
+
+  it "compiles the program when a file it was built from has new content and the same timestamp" do
+    with_seeded_macro_run do |tool, seeded_executable|
+      modification_time = File.info(tool).modification_time
+      File.write(tool, %(print "edited tool output"\n))
+      File.touch(tool, modification_time)
+      compiled = new_program.macro_compile(tool)
+
+      compiled.reused.should be_false
+      Process.capture(compiled.filename).should eq("edited tool output")
+    end
+  end
+
+  it "compiles the program while a seed is being written" do
+    with_seeded_macro_run do |tool, seeded_executable|
+      compiled = with_env("CRYSTAL_MACRO_RUN_SEED": "write") { new_program.macro_compile(tool) }
 
       compiled.reused.should be_false
       compiled.filename.should_not eq(seeded_executable)

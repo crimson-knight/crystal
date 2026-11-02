@@ -185,7 +185,7 @@ crystal: $(O)/$(CRYSTAL_BIN) ## Build the compiler
 
 .PHONY: macro_run_seed
 macro_run_seed: $(O)/$(CRYSTAL_BIN) ## Precompile the ECR helper for src/ so clean builds skip compiling it
-	./bin/crystal run scripts/seed_macro_run.cr -- ./bin/crystal src
+	./bin/crystal run scripts/seed_macro_run.cr -- "$(CURDIR)/bin/crystal" "$(CURDIR)/src"
 
 .PHONY: deps llvm_ext
 deps: $(DEPS) ## Build dependencies

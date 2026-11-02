@@ -26,7 +26,8 @@ unless ARGV.size == 2
   abort "Usage: crystal run scripts/seed_macro_run.cr -- COMPILER STDLIB_SRC_DIR"
 end
 
-compiler = ARGV[0]
+# A compiler given as a relative path keeps working from the temporary directory.
+compiler = ARGV[0].includes?('/') ? File.expand_path(ARGV[0]) : ARGV[0]
 stdlib_dir = File.expand_path(ARGV[1])
 seed_root = File.join(File.dirname(stdlib_dir), "macro_run_seed")
 work_dir = File.join(Dir.tempdir, "crystal-macro-run-seed-#{Random::Secure.hex(8)}")
@@ -40,9 +41,10 @@ begin
   File.write(source_path, "require \"ecr\"\nputs ECR.render(#{template_path.inspect})\n")
 
   # A type-checking build runs every macro, so it compiles the helper into
-  # the empty cache with the compiler's default settings.
+  # the empty cache with the compiler's default settings. CRYSTAL_MACRO_RUN_SEED
+  # makes the compiler ignore an existing seed and record what a seed needs.
   status = Process.run(compiler, ["build", "--no-codegen", source_path],
-    env: {"CRYSTAL_CACHE_DIR" => cache_dir, "CRYSTAL_PATH" => "lib:#{stdlib_dir}"},
+    env: {"CRYSTAL_CACHE_DIR" => cache_dir, "CRYSTAL_PATH" => "lib:#{stdlib_dir}", "CRYSTAL_MACRO_RUN_SEED" => "write"},
     chdir: work_dir, output: :inherit, error: :inherit)
   raise MacroRunSeedError.new("#{compiler} could not compile the seed program (#{status})") unless status.success?
 
@@ -53,15 +55,22 @@ begin
       .find { |dir| dir.ends_with?("-#{seed_name}") && File.exists?(File.join(dir, "macro_run")) }
     raise MacroRunSeedError.new("the compiler left no cached macro run for #{program} in #{cache_dir}") unless cache_entry
 
+    # Build the new seed beside the old one, then swap the directories, so a
+    # build never sees a partly written seed.
     seed_dir = File.join(seed_root, seed_name)
-    FileUtils.rm_rf(seed_dir)
-    Dir.mkdir_p(seed_dir)
-    {"macro_run", "recorded_requires", "requires", "compiler"}.each do |file|
+    staged_dir = File.join(seed_root, ".#{seed_name}.#{Random::Secure.hex(4)}")
+    Dir.mkdir_p(staged_dir)
+    {"macro_run", "recorded_requires", "requires", "compiler", "source_digests"}.each do |file|
       source_file = File.join(cache_entry, file)
       raise MacroRunSeedError.new("#{source_file} is missing; is #{compiler} a compiler that writes macro run seeds?") unless File.exists?(source_file)
-      FileUtils.cp(source_file, File.join(seed_dir, file))
+      FileUtils.cp(source_file, File.join(staged_dir, file))
     end
-    File.chmod(File.join(seed_dir, "macro_run"), 0o755)
+    File.chmod(File.join(staged_dir, "macro_run"), 0o755)
+
+    retired_dir = "#{staged_dir}.old"
+    File.rename(seed_dir, retired_dir) if Dir.exists?(seed_dir)
+    File.rename(staged_dir, seed_dir)
+    FileUtils.rm_rf(retired_dir)
     puts "Seeded #{program} in #{seed_dir}"
   end
 rescue error : MacroRunSeedError
