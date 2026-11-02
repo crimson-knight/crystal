@@ -1,9 +1,21 @@
 #include <llvm/Config/llvm-config.h>
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/StringExtras.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+#include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/MC/MCAsmInfo.h>
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/CommandLine.h>
+#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
+#include <llvm/Transforms/Utils/SplitModule.h>
+#if LLVM_VERSION_MAJOR >= 17
+#include <llvm/TargetParser/Triple.h>
+#else
+#include <llvm/ADT/Triple.h>
+#endif
 #include <llvm-c/TargetMachine.h>
 
 using namespace llvm;
@@ -149,6 +161,115 @@ void LLVMExtSetWasmExceptionHandling(LLVMTargetMachineRef T) {
       ->setExceptionsType(ExceptionHandling::Wasm);
 #endif
   LLVMExtEnableLegacyWasmExceptionHandlingOptions();
+}
+
+// Whether `LLVMExtSplitModuleToBitcode` can split this module: it needs
+// LLVM 17 or later, and a module without module-level assembly, which
+// SplitModule cannot keep consistent across parts.
+LLVMBool LLVMExtModuleCanBeSplit(LLVMModuleRef M) {
+#if LLVM_VERSION_MAJOR >= 17
+  return unwrap(M)->getModuleInlineAsm().empty();
+#else
+  return false;
+#endif
+}
+
+// Split a module into `parts` modules and hand each one to `callback` as
+// bitcode, in partition order, as soon as it is written.
+//
+// The module is changed in place. SplitModule makes every local definition an
+// external symbol with hidden visibility, so references across parts resolve
+// when the objects are linked. Before that, each local definition whose name
+// could meet another object's symbol in the link is renamed:
+//
+// - private definitions (string literals, constant tables) and internal
+//   global variables get the prefix `__crystal_private.`. A single-object
+//   build lists none of the private ones in the executable's symbol table and
+//   merges most of the variables into one symbol, so these names are kept out
+//   of the executable: on Mach-O the name also starts with `l`, which Apple's
+//   linker resolves across objects and leaves out of the output's symbol
+//   table and debug map (the compiler also passes them to the linker as a
+//   strip list, for ld64.lld); on ELF the compiler removes them after
+//   linking;
+// - internal functions whose names are plain C identifiers get the prefix
+//   `__crystal_local.`;
+// - internal functions whose names hold a character that no C, C++,
+//   Objective-C, Rust or Swift global symbol uses (Crystal method names such
+//   as `*Foo#bar:Int32`) keep their names, so the executable lists the same
+//   functions under the same names as a single-object build.
+//
+// No C or Crystal external symbol uses either prefix, so a promoted name
+// cannot collide with a symbol of another object in the link. Each part is
+// serialized because LLVM contexts are not thread-safe: the receiver parses
+// it into a context of its own and compiles it on any thread (LLVM's LTO
+// `splitCodeGen` does the same). The callback owns the buffer it receives and
+// must dispose of it; it must not unwind (it is called from C++).
+//
+// Returns the number of parts handed to `callback` (always `parts`), or 0
+// without changing the module when `LLVMExtModuleCanBeSplit` is false for it.
+unsigned LLVMExtSplitModuleToBitcode(LLVMModuleRef M, unsigned parts,
+                                     void (*callback)(void *data, unsigned index,
+                                                      LLVMMemoryBufferRef buffer),
+                                     void *data) {
+  if (!LLVMExtModuleCanBeSplit(M))
+    return 0;
+#if LLVM_VERSION_MAJOR >= 17
+  Module &module = *unwrap(M);
+
+  auto is_plain_symbol_character = [](char character) {
+    return isAlnum(character) || character == '_' || character == '.' ||
+           character == '$';
+  };
+  // A leading \1 asks the mangler to keep the name as written, without the
+  // `_` global prefix Mach-O adds, so the promoted name starts with `l`.
+  bool is_mach_o = Triple(module.getTargetTriple()).isOSBinFormatMachO();
+  StringRef private_prefix = is_mach_o ? "\1l__crystal_private." : "__crystal_private.";
+
+  auto rename_local = [&](GlobalValue &value) {
+    if (value.isDeclaration() || !value.hasLocalLinkage())
+      return;
+    // A promoted name is used by these parts alone, so it is mangled as usual
+    // (apart from the Mach-O prefix above) even if the local's name asked
+    // the mangler to keep it as written.
+    StringRef name = value.getName();
+    if (name.starts_with("\1"))
+      name = name.drop_front(1);
+    if (value.hasPrivateLinkage() || isa<GlobalVariable>(value)) {
+      value.setName(private_prefix + (name.empty() ? StringRef("unnamed") : name));
+      return;
+    }
+    bool keeps_its_name = !name.empty() && !name.starts_with("__crystal_") &&
+                          !llvm::all_of(name, is_plain_symbol_character);
+    if (keeps_its_name)
+      return;
+    value.setName(Twine("__crystal_local.") + (name.empty() ? StringRef("unnamed") : name));
+  };
+  for (Function &function : module)
+    rename_local(function);
+  for (GlobalVariable &variable : module.globals())
+    rename_local(variable);
+  for (GlobalAlias &alias : module.aliases())
+    rename_local(alias);
+  for (GlobalIFunc &ifunc : module.ifuncs())
+    rename_local(ifunc);
+
+  unsigned index = 0;
+  SplitModule(
+      module, parts,
+      [&](std::unique_ptr<Module> part) {
+        SmallString<0> bitcode;
+        raw_svector_ostream stream(bitcode);
+        WriteBitcodeToFile(*part, stream);
+        part.reset();
+        auto buffer = MemoryBuffer::getMemBufferCopy(
+            StringRef(bitcode.data(), bitcode.size()), "crystal-release-part");
+        callback(data, index++, wrap(buffer.release()));
+      },
+      /* PreserveLocals */ false, /* RoundRobin */ true);
+  return index;
+#else
+  return 0;
+#endif
 }
 
 } // extern "C"

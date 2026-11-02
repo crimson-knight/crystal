@@ -76,6 +76,60 @@ class LLVM::Module
     MemoryBuffer.new(LibLLVM.write_bitcode_to_memory_buffer self)
   end
 
+  # Whether `#split_to_bitcode` can split this module: it needs LLVM 17 or
+  # later, and a module without module-level assembly.
+  def can_be_split? : Bool
+    LibLLVMExt.module_can_be_split(self) != 0
+  end
+
+  # Splits this module into *parts* modules and yields each part's index and
+  # bitcode, in order, as soon as the part is written. The receiver owns the
+  # buffer: it parses it into a context of its own (so the part can be
+  # compiled on another thread) and disposes of it.
+  #
+  # This module is changed in place: local definitions become external
+  # symbols with hidden visibility, so references across parts resolve at link
+  # time. Private definitions and internal variables are renamed with a
+  # `__crystal_private.` prefix (kept out of the linked output's symbol
+  # table), internal functions whose names are plain C identifiers with a
+  # `__crystal_local.` prefix, and the other functions (Crystal method names)
+  # keep their names.
+  #
+  # Returns `false`, yielding nothing and leaving the module unchanged, when
+  # `#can_be_split?` is false. An exception raised by the
+  # block is re-raised once the split is over (the block runs inside LLVM,
+  # which an exception must not unwind through); later parts are disposed of.
+  def split_to_bitcode(parts : Int32, &block : Int32, MemoryBuffer ->) : Bool
+    handoff = SplitHandoff.new(block)
+    produced = LibLLVMExt.split_module_to_bitcode(self, parts, ->(data, index, buffer) {
+      Box(SplitHandoff).unbox(data).receive(index.to_i32, MemoryBuffer.new(buffer))
+    }, Box.box(handoff))
+    if failure = handoff.failure
+      raise failure
+    end
+    produced > 0
+  end
+
+  # Receives the parts of `#split_to_bitcode` without letting an exception
+  # escape into LLVM.
+  private class SplitHandoff
+    getter failure : Exception?
+
+    def initialize(@receiver : Proc(Int32, MemoryBuffer, Nil))
+    end
+
+    def receive(index : Int32, bitcode : MemoryBuffer) : Nil
+      if @failure
+        bitcode.dispose
+        return
+      end
+      @receiver.call(index, bitcode)
+    rescue ex
+      bitcode.dispose
+      @failure = ex
+    end
+  end
+
   def write_bitcode_to_fd(fd : Int, should_close = false, buffered = false)
     LibLLVM.write_bitcode_to_fd(self, fd, should_close ? 1 : 0, buffered ? 1 : 0)
   end

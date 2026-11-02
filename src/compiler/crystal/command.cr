@@ -601,6 +601,9 @@ class Crystal::Command
         opts.on("--threads NUM", "Maximum number of threads to use") do |n_threads|
           compiler.n_threads = n_threads.to_i? || raise Error.new("Invalid thread count: #{n_threads}")
         end
+        opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
+          compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
+        end
         unless run
           opts.on("--target TRIPLE", "Target triple") do |triple|
             compiler.codegen_target = Codegen::Target.new(triple)
@@ -692,6 +695,7 @@ class Crystal::Command
     end
 
     abort! "maximum number of threads cannot be lower than 1", :USAGE_ERROR if compiler.n_threads < 1
+    abort! "number of release units cannot be lower than 1", :USAGE_ERROR if compiler.release_units < 1
 
     if compiler.no_cache? && compiler.incremental?
       raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
@@ -754,6 +758,9 @@ class Crystal::Command
     end
     opts.on("--threads NUM", "Maximum number of threads to use") do |n_threads|
       compiler.n_threads = n_threads.to_i? || raise Error.new("Invalid thread count: #{n_threads}")
+    end
+    opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
+      compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
     end
     opts.on("-s", "--stats", "Enable statistics output") do
       compiler.progress_tracker.stats = true
