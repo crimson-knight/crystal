@@ -79,6 +79,9 @@ class Crystal::Command
     # Enable incremental compilation by default in watch mode
     compiler.incremental = true
 
+    # With --run the program runs right away: keep file and line numbers in its backtraces.
+    compiler.dsymutil = true if run_mode && compiler.dsymutil.nil?
+
     # Determine output filename
     output_extension = compiler.codegen_target.executable_extension
     first_filename = sources.first.filename

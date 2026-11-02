@@ -220,6 +220,23 @@ module Crystal
     # Whether to link statically
     property? static = false
 
+    # Whether to run `dsymutil` after linking on macOS. It writes the
+    # `<output>.dwarf` file that exception backtraces read file and line
+    # numbers from, and adds about 0.2 s to every build of a mid-size app.
+    #
+    # `nil` (the default) runs it for optimized builds (`--release` or
+    # `-O1` and above) and skips it for unoptimized development builds.
+    # `crystal run`, `crystal spec` and `crystal eval` set it to `true`,
+    # because they run the program right away. Set by `--dsymutil` and
+    # `--no-dsymutil`. Has no effect on other platforms or without debug info.
+    property dsymutil : Bool? = nil
+
+    # Returns whether `dsymutil` runs after linking (see `#dsymutil`).
+    def dsymutil? : Bool
+      dsymutil = @dsymutil
+      dsymutil.nil? ? !optimization_mode.o0? : dsymutil
+    end
+
     property dependency_printer : DependencyPrinter? = nil
 
     # In-memory cache of parsed ASTs for incremental compilation.
@@ -361,6 +378,11 @@ module Crystal
           end
         end
       end
+
+      {% if flag?(:darwin) %}
+        # The executable from the previous build was kept as is.
+        update_dwarf_companion(File.expand_path(output_filename), linked: false) if compilation_skipped && !@cross_compile
+      {% end %}
 
       @progress_tracker.clear
       print_macro_run_stats(program)
@@ -689,7 +711,7 @@ module Crystal
         end
 
         {% if flag?(:darwin) %}
-          run_dsymutil(output_filename) unless debug.none? || @link_skipped
+          update_dwarf_companion(output_filename, linked: !@link_skipped)
         {% end %}
 
         {% if flag?(:msvc) %}
@@ -710,12 +732,28 @@ module Crystal
       end
     end
 
+    # Brings `<output>.dwarf` in line with the executable after a build. A
+    # fresh link removes the companion an earlier build left, which describes
+    # the executable this build replaced; then dsymutil writes a new one when
+    # `#dsymutil?` asks for it and the program has debug information. A build
+    # that reused the executable keeps its companion, or writes the missing
+    # one when asked for.
+    private def update_dwarf_companion(output_filename, *, linked : Bool)
+      dwarf_filename = "#{output_filename}.dwarf"
+      File.delete?(dwarf_filename) if linked
+      return if debug.none? || !dsymutil?
+
+      run_dsymutil(output_filename) unless File.exists?(dwarf_filename)
+    end
+
     private def run_dsymutil(filename)
       dsymutil = Process.find_executable("dsymutil")
       return unless dsymutil
 
       @progress_tracker.stage("dsymutil") do
-        Process.run(dsymutil, ["--flat", filename])
+        status = Process.run(dsymutil, ["--flat", filename])
+        # Leave no partial companion behind.
+        File.delete?("#{filename}.dwarf") unless status.success?
       end
     end
 

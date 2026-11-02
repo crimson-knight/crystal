@@ -19,4 +19,5 @@ The default command. Compile and run program.
 
 == Options
 
-Same as the build options.
+Same as the build options, except that *--dsymutil* is on by default, so
+exception backtraces show file and line numbers (unless *--no-debug* is given).
