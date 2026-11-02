@@ -1,5 +1,9 @@
 require "../spec_helper"
 
+# Development builds skip `dsymutil` on macOS; the backtraces below need the
+# `.dwarf` file it writes to show file and line numbers.
+CALL_STACK_SPEC_BUILD_FLAGS = %w(--dsymutil)
+
 describe "Backtrace" do
   it "prints file line:column", tags: %w[slow] do
     source_file = datapath("backtrace_sample")
@@ -10,7 +14,7 @@ describe "Backtrace" do
     current_dir += File::SEPARATOR unless current_dir.ends_with?(File::SEPARATOR)
     source_file = source_file.lchop(current_dir)
 
-    _, output, _ = compile_and_run_file(source_file)
+    _, output, _ = compile_and_run_file(source_file, CALL_STACK_SPEC_BUILD_FLAGS)
 
     # resolved file:line:column (no column for MSVC PDB because of poor support
     # by external tooling in general)
@@ -40,7 +44,7 @@ describe "Backtrace" do
 
         callee1
         CRYSTAL
-      _, output, _ = compile_and_run_file(source_file)
+      _, output, _ = compile_and_run_file(source_file, CALL_STACK_SPEC_BUILD_FLAGS)
 
       output.should match /\A(#{Regex.escape(source_path.to_s)}):/
     end

@@ -40,6 +40,9 @@ class Crystal::Command
 
     compiler.link_flags = link_flags.join(' ') unless link_flags.empty?
 
+    # The specs run right away: keep file and line numbers in their backtraces.
+    compiler.dsymutil = true if compiler.dsymutil.nil?
+
     # Assume spec files end with ".cr" and optionally with a colon and a number
     # (for the target line number), or is a directory. Everything else is an option we forward.
     filenames = options.select do |option|

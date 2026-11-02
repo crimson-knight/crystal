@@ -220,6 +220,23 @@ module Crystal
     # Whether to link statically
     property? static = false
 
+    # Whether to run `dsymutil` after linking on macOS. It writes the
+    # `<output>.dwarf` file that exception backtraces read file and line
+    # numbers from, and adds about 0.2 s to every build of a mid-size app.
+    #
+    # `nil` (the default) runs it for optimized builds (`--release` or
+    # `-O1` and above) and skips it for unoptimized development builds.
+    # `crystal run`, `crystal spec` and `crystal eval` set it to `true`,
+    # because they run the program right away. Set by `--dsymutil` and
+    # `--no-dsymutil`. Has no effect on other platforms or without debug info.
+    property dsymutil : Bool? = nil
+
+    # Returns whether `dsymutil` runs after linking (see `#dsymutil`).
+    def dsymutil? : Bool
+      dsymutil = @dsymutil
+      dsymutil.nil? ? !optimization_mode.o0? : dsymutil
+    end
+
     property dependency_printer : DependencyPrinter? = nil
 
     # In-memory cache of parsed ASTs for incremental compilation.
@@ -689,7 +706,7 @@ module Crystal
         end
 
         {% if flag?(:darwin) %}
-          run_dsymutil(output_filename) unless debug.none? || @link_skipped
+          run_dsymutil(output_filename) if dsymutil? && !debug.none? && !@link_skipped
         {% end %}
 
         {% if flag?(:msvc) %}

@@ -25,6 +25,10 @@ when debugging the built program with tools like lldb, gdb, valgrind etc. and pr
 those tools.
 *--no-debug*::
 Generate the output without any symbolic debug symbols.
+*--dsymutil*::
+On macOS, run dsymutil after linking, so exception backtraces show file and line numbers. This command does it by default.
+*--no-dsymutil*::
+On macOS, skip dsymutil after linking. Backtraces then show addresses and method names without file and line numbers.
 *-D* _FLAG_, *--define* _FLAG_::
 Define a compile-time flag. This is useful to conditionally define types, methods, or commands based on flags available at compile time. The default flags are from the target triple given
 with `--target-triple` or the hosts default, if none is given.

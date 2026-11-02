@@ -281,6 +281,7 @@ class Crystal::Command
 
   private def run_command(single_file = false)
     config = create_compiler "run", run: true, single_file: single_file
+    config.compiler.dsymutil = true if config.compiler.dsymutil.nil?
     if config.specified_output
       config.compile
       report_warnings
@@ -437,6 +438,12 @@ class Crystal::Command
         end
         opts.on("--no-debug", "Skip any symbolic debug info") do
           compiler.debug = Crystal::Debug::None
+        end
+        opts.on("--dsymutil", "Run dsymutil after linking on macOS, so backtraces show file and line numbers") do
+          compiler.dsymutil = true
+        end
+        opts.on("--no-dsymutil", "Skip dsymutil after linking on macOS") do
+          compiler.dsymutil = false
         end
 
         opts.on("--frame-pointers auto|always|non-leaf", "Control the preservation of frame pointers") do |value|
@@ -718,6 +725,12 @@ class Crystal::Command
     end
     opts.on("--no-debug", "Skip any symbolic debug info") do
       compiler.debug = Crystal::Debug::None
+    end
+    opts.on("--dsymutil", "Run dsymutil after linking on macOS, so backtraces show file and line numbers") do
+      compiler.dsymutil = true
+    end
+    opts.on("--no-dsymutil", "Skip dsymutil after linking on macOS") do
+      compiler.dsymutil = false
     end
     opts.on("-D FLAG", "--define FLAG", "Define a compile-time flag") do |flag|
       compiler.flags << flag

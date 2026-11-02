@@ -25,6 +25,9 @@ class Crystal::Command
 
     sources = [Compiler::Source.new("eval", program_source)]
 
+    # The program runs right away: keep file and line numbers in its backtraces.
+    compiler.dsymutil = true if compiler.dsymutil.nil?
+
     output_filename = Crystal.temp_executable "eval"
 
     compiler.compile sources, output_filename
