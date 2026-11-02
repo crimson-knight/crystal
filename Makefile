@@ -183,6 +183,10 @@ docs: ## Generate standard library documentation
 .PHONY: crystal
 crystal: $(O)/$(CRYSTAL_BIN) ## Build the compiler
 
+.PHONY: macro_run_seed
+macro_run_seed: $(O)/$(CRYSTAL_BIN) ## Precompile the ECR helper for src/ so clean builds skip compiling it
+	./bin/crystal run scripts/seed_macro_run.cr -- ./bin/crystal src
+
 .PHONY: deps llvm_ext
 deps: $(DEPS) ## Build dependencies
 llvm_ext: $(LLVM_EXT_OBJ)

@@ -110,6 +110,10 @@ class Crystal::Program
       return CompiledMacroRun.new(executable_path, time.elapsed, true)
     end
 
+    if seeded_executable_path = seeded_macro_run(filename)
+      return CompiledMacroRun.new(seeded_executable_path, time.elapsed, true)
+    end
+
     result = host_compiler.compile Compiler::Source.new(filename, source), executable_path
 
     # Write the new files from which 'filename' depends into the cache dir
@@ -130,7 +134,96 @@ class Crystal::Program
       requires_with_timestamps.to_json(file)
     end
 
+    # Records which compiler built the program, so that a copy of this
+    # directory can serve as a macro run seed (see `#seeded_macro_run`).
+    File.write(File.join(program_dir, MACRO_RUN_SEED_COMPILER_FILE), macro_run_compiler_identity)
+
     CompiledMacroRun.new(executable_path, time.elapsed, false)
+  end
+
+  # The directory, next to the standard library's `src` directory, that holds
+  # macro run programs compiled when the compiler was installed.
+  MACRO_RUN_SEED_DIRECTORY = "macro_run_seed"
+
+  # The file in a macro run cache directory that names the compiler that
+  # built the program.
+  MACRO_RUN_SEED_COMPILER_FILE = "compiler"
+
+  # Returns the executable of a macro run program that was compiled ahead of
+  # time for the standard library, or `nil` if there is none that this
+  # compilation can use.
+  #
+  # A seed for `<stdlib>/ecr/process.cr` lives in
+  # `<stdlib>/../macro_run_seed/ecr-process.cr/` and has the same files as a
+  # macro run cache directory (`scripts/seed_macro_run.sh` writes it when the
+  # compiler is installed). It is used only when it was built by this
+  # compiler executable, every file it was compiled from is unchanged, and
+  # the macro run compiler has the default settings the seed was built with,
+  # so the program is the one this compilation would build. This saves the
+  # cold-cache compile of the ECR helper (about 0.7 s) in every clean build
+  # of an app that renders ECR templates.
+  private def seeded_macro_run(filename) : String?
+    return unless default_macro_run_settings?
+
+    seed_dir = macro_run_seed_directory(filename)
+    return unless seed_dir
+
+    executable_path = File.join(seed_dir, "macro_run")
+    recorded_requires_path = File.join(seed_dir, "recorded_requires")
+    requires_path = File.join(seed_dir, "requires")
+    compiler_path = File.join(seed_dir, MACRO_RUN_SEED_COMPILER_FILE)
+
+    return unless File.exists?(compiler_path)
+    return unless File.read(compiler_path) == macro_run_compiler_identity
+    return unless can_reuse_previous_compilation?(filename, executable_path, recorded_requires_path, requires_path)
+
+    executable_path
+  rescue IO::Error
+    nil
+  end
+
+  # Returns the seed directory for *filename* if it is a file of the
+  # standard library (the `CRYSTAL_PATH` entry that holds `prelude.cr`).
+  private def macro_run_seed_directory(filename) : String?
+    crystal_path.entries.each do |entry|
+      stdlib_dir = File.expand_path(entry)
+      next unless File.exists?(File.join(stdlib_dir, "prelude.cr"))
+
+      prefix = File.join(stdlib_dir, "")
+      return unless filename.starts_with?(prefix)
+
+      seed_name = filename.lchop(prefix).gsub(File::SEPARATOR, '-')
+      return File.join(File.dirname(stdlib_dir), MACRO_RUN_SEED_DIRECTORY, seed_name)
+    end
+  end
+
+  # Whether macro run programs are compiled with the settings a seed is
+  # built with: no `-D` flags, no link flags, the default CPU, code model,
+  # prelude and linking, for the host.
+  private def default_macro_run_settings? : Bool
+    host = host_compiler
+    host.flags == ["release"] &&
+      host.link_flags.nil? &&
+      host.mcpu.nil? &&
+      host.mattr.nil? &&
+      host.mcmodel.default? &&
+      !host.static? &&
+      host.prelude == "prelude" &&
+      host.codegen_target == Config.host_target
+  end
+
+  @macro_run_compiler_identity : String?
+
+  # Identifies the running compiler executable: its version description
+  # and the path, size and modification time of its executable.
+  private def macro_run_compiler_identity : String
+    @macro_run_compiler_identity ||= String.build do |io|
+      io << Config.description
+      if executable = Process.executable_path
+        info = File.info(executable)
+        io << executable << '\n' << info.size << '\n' << info.modification_time.to_unix << '\n'
+      end
+    end
   end
 
   @host_compiler : Compiler?
