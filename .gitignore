@@ -16,6 +16,7 @@
 *.pdb
 *.exe
 /.build/
+/macro_run_seed/
 /samples/.build/
 /docs/
 /man/
