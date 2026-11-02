@@ -1,9 +1,14 @@
 #include <llvm/Config/llvm-config.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+#include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/MC/MCAsmInfo.h>
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/CommandLine.h>
+#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
+#include <llvm/Transforms/Utils/SplitModule.h>
 #include <llvm-c/TargetMachine.h>
 
 using namespace llvm;
@@ -149,6 +154,38 @@ void LLVMExtSetWasmExceptionHandling(LLVMTargetMachineRef T) {
       ->setExceptionsType(ExceptionHandling::Wasm);
 #endif
   LLVMExtEnableLegacyWasmExceptionHandlingOptions();
+}
+
+// Split a module into at most `parts` modules and hand each one to `callback`
+// as bitcode, in partition order, as soon as it is written.
+//
+// The module is changed in place: every local symbol that the split touches
+// becomes an external symbol with hidden visibility, so references across
+// parts resolve when the objects are linked. Each part is serialized because
+// LLVM contexts are not thread-safe: the receiver parses it into a context of
+// its own and compiles it on any thread (LLVM's LTO `splitCodeGen` does the
+// same). The callback owns the buffer it receives and must dispose of it.
+//
+// Returns the number of parts produced (SplitModule may produce fewer
+// non-empty parts than asked for, but it always calls back `parts` times).
+unsigned LLVMExtSplitModuleToBitcode(LLVMModuleRef M, unsigned parts,
+                                     void (*callback)(void *data, unsigned index,
+                                                      LLVMMemoryBufferRef buffer),
+                                     void *data) {
+  unsigned index = 0;
+  SplitModule(
+      *unwrap(M), parts,
+      [&](std::unique_ptr<Module> part) {
+        SmallString<0> bitcode;
+        raw_svector_ostream stream(bitcode);
+        WriteBitcodeToFile(*part, stream);
+        part.reset();
+        auto buffer = MemoryBuffer::getMemBufferCopy(
+            StringRef(bitcode.data(), bitcode.size()), "crystal-release-part");
+        callback(data, index++, wrap(buffer.release()));
+      },
+      /* PreserveLocals */ false, /* RoundRobin */ true);
+  return index;
 }
 
 } // extern "C"

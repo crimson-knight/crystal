@@ -76,6 +76,20 @@ class LLVM::Module
     MemoryBuffer.new(LibLLVM.write_bitcode_to_memory_buffer self)
   end
 
+  # Splits this module into *parts* modules and yields each part's index and
+  # bitcode, in order, as soon as the part is written. The receiver owns the
+  # buffer: it parses it into a context of its own (so the part can be
+  # compiled on another thread) and disposes of it.
+  #
+  # This module is changed in place: local symbols referenced across parts
+  # become external symbols with hidden visibility.
+  def split_to_bitcode(parts : Int32, &block : Int32, MemoryBuffer ->) : Nil
+    boxed_block = Box.box(block)
+    LibLLVMExt.split_module_to_bitcode(self, parts, ->(data, index, buffer) {
+      Box(Proc(Int32, MemoryBuffer, Nil)).unbox(data).call(index.to_i32, MemoryBuffer.new(buffer))
+    }, boxed_block)
+  end
+
   def write_bitcode_to_fd(fd : Int, should_close = false, buffered = false)
     LibLLVM.write_bitcode_to_fd(self, fd, should_close ? 1 : 0, buffered ? 1 : 0)
   end

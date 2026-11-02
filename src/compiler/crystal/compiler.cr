@@ -166,6 +166,18 @@ module Crystal
     # --release automatically enable this option
     property? single_module = false
 
+    # Number of parts an optimized single-module build is split into for
+    # machine code emission, each part emitted on its own thread. With 1
+    # (the default) the module is emitted as one object file. The module is
+    # optimized as a whole before the split, so the optimized program is the
+    # same whatever the number of parts.
+    property release_units : Int32 = 1
+
+    # Prototype only: split an optimized single-module build into
+    # `release_units` parts *before* optimizing, and optimize each part on its
+    # own. Faster to compile, but nothing is inlined across parts.
+    property? release_split_before_optimize = false
+
     # A `ProgressTracker` object which tracks compilation progress.
     property progress_tracker = ProgressTracker.new
 
@@ -585,9 +597,12 @@ module Crystal
       result
     end
 
-    private def bc_flags_changed?(output_dir)
+    private def bc_flags_changed?(output_dir, release_parts = 1)
       bc_flags_changed = true
       current_bc_flags = "#{@codegen_target}|#{@mcpu}|#{@mattr}|#{@link_flags}|#{@mcmodel}"
+      if release_parts > 1
+        current_bc_flags += "|parts=#{release_parts}|split_before_optimize=#{release_split_before_optimize?}"
+      end
       bc_flags_filename = "#{output_dir}/bc_flags#{optimization_mode.suffix}"
       if File.file?(bc_flags_filename)
         previous_bc_flags = File.read(bc_flags_filename).strip
@@ -642,7 +657,8 @@ module Crystal
         end
       end
 
-      bc_flags_changed = bc_flags_changed? output_dir
+      release_parts = release_parts_for(program, is_single_module)
+      bc_flags_changed = bc_flags_changed? output_dir, release_parts
       target_triple = target_machine.triple
 
       modules_skipped = 0
@@ -689,7 +705,7 @@ module Crystal
           end
         end
 
-        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, skip_codegen)
+        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, skip_codegen, release_parts)
       end
 
       # Store module source files for later saving to incremental cache
@@ -722,6 +738,17 @@ module Crystal
       CacheDir.instance.cleanup if @cleanup
 
       units
+    end
+
+    # The number of parts the single optimized module is emitted as: more than
+    # one only for an optimized single-module build of an executable for this
+    # host, where every part's object goes straight to the linker.
+    private def release_parts_for(program, is_single_module) : Int32
+      return 1 unless is_single_module
+      return 1 if @optimization_mode.o0? || @cross_compile || !@emit_targets.none?
+      return 1 if program.has_flag?("wasm32")
+
+      @release_units
     end
 
     private def with_file_lock(output_dir, &)
@@ -976,7 +1003,7 @@ module Crystal
     end
 
     private def codegen(program, units : Array(CompilationUnit), output_filename, output_dir)
-      object_names = units.map &.object_filename
+      object_names = units.flat_map &.object_filenames
 
       @progress_tracker.stage("Codegen (bc+obj)") do
         @progress_tracker.stage_progress_total = units.size
@@ -1448,12 +1475,12 @@ module Crystal
 
       # Capture file-level dependencies (convert Set to sorted Array for JSON)
       file_deps = unless program.file_dependencies.empty?
-                    result = {} of String => Array(String)
-                    program.file_dependencies.each do |user_file, provider_set|
-                      result[user_file] = provider_set.to_a.sort
-                    end
-                    result
-                  end
+        result = {} of String => Array(String)
+        program.file_dependencies.each do |user_file, provider_set|
+          result[user_file] = provider_set.to_a.sort
+        end
+        result
+      end
 
       data = IncrementalCacheData.new(
         compiler_version: Config.version,
@@ -1717,11 +1744,13 @@ module Crystal
       getter object_extension : String
       @memory_buffer : LLVM::MemoryBuffer?
       @object_name : String?
+      # The number of object files this unit is emitted as (see `Compiler#release_units`).
+      getter part_count : Int32
       @bc_name : String?
 
       def initialize(@compiler : Compiler, program : Program, @name : String,
                      @llvm_mod : LLVM::Module, @output_dir : String, @bc_flags_changed : Bool,
-                     @skipped_via_module_cache : Bool = false)
+                     @skipped_via_module_cache : Bool = false, @part_count : Int32 = 1)
         @name = "_main" if @name == ""
         @original_name = @name
         @name = String.build do |str|
@@ -1812,11 +1841,10 @@ module Crystal
         return true unless compiler.emit_targets.none?
         return true if @bc_flags_changed
         return true unless File.exists?(bc_name)
-        return true unless File.exists?(object_name)
 
         # If the user cancelled a previous compilation
-        # it might be that the .o file is empty
-        return true if File.size(object_name) == 0
+        # it might be that a .o file is missing or empty
+        return true unless object_names.all? { |name| File.exists?(name) && File.size(name) > 0 }
 
         memory_io = IO::Memory.new(memory_buffer.to_slice)
 
@@ -1843,14 +1871,92 @@ module Crystal
       private def update_bitcode_cache
         return unless memory_buffer = @memory_buffer
 
-        # Delete existing .o file. It cannot be used anymore.
-        File.delete?(object_name)
+        # Delete existing .o files. They cannot be used anymore.
+        object_names.each { |name| File.delete?(name) }
         # Create the .bc file (for next compilations)
         File.write(bc_name, memory_buffer.to_slice)
         memory_buffer.dispose
       end
 
+      # Optimizes the module as a whole (unless the parts are optimized on
+      # their own), splits it into `part_count` modules and emits each part's
+      # object file on its own thread. Each part is handed over as bitcode and
+      # parsed into an LLVM context of its own, because contexts cannot be
+      # shared across threads.
+      private def compile_parts_to_objects
+        optimize_each_part = compiler.release_split_before_optimize?
+        unless optimize_each_part
+          target_machine = compiler.create_target_machine
+          begin
+            compiler.optimize llvm_mod, target_machine
+          ensure
+            target_machine.dispose
+          end
+        end
+
+        list_of_part_object_names = object_names
+
+        {% if flag?(:without_mt) %}
+          llvm_mod.split_to_bitcode(@part_count) do |index, bitcode|
+            compile_part_to_object(bitcode, list_of_part_object_names[index], optimize_each_part)
+          end
+        {% else %}
+          parts_to_compile = Channel({Int32, LLVM::MemoryBuffer}).new(@part_count)
+          first_part_failure = nil.as(Exception?)
+          failure_lock = Sync::Mutex.new
+          workers = WaitGroup.new
+
+          compiler.n_threads.clamp(1..@part_count).times do
+            workers.spawn do
+              while part = parts_to_compile.receive?
+                index, bitcode = part
+                begin
+                  compile_part_to_object(bitcode, list_of_part_object_names[index], optimize_each_part)
+                rescue ex
+                  failure_lock.synchronize { first_part_failure ||= ex }
+                end
+              end
+            end
+          end
+
+          begin
+            llvm_mod.split_to_bitcode(@part_count) do |index, bitcode|
+              parts_to_compile.send({index, bitcode})
+            end
+          ensure
+            parts_to_compile.close
+            workers.wait
+          end
+
+          if failure = failure_lock.synchronize { first_part_failure }
+            raise failure
+          end
+        {% end %}
+      end
+
+      private def compile_part_to_object(bitcode, part_object_name, optimize_part)
+        part_context = LLVM::Context.new
+        begin
+          part_module = LLVM::Module.parse(bitcode, part_context)
+          bitcode.dispose
+          target_machine = compiler.create_target_machine
+          temporary_part_object_name = "#{part_object_name}.tmp"
+          begin
+            compiler.optimize part_module, target_machine if optimize_part
+            target_machine.emit_obj_to_file part_module, temporary_part_object_name
+          ensure
+            target_machine.dispose
+          end
+          File.rename(temporary_part_object_name, part_object_name)
+        ensure
+          bitcode.dispose
+          part_context.dispose
+        end
+      end
+
       private def compile_to_object
+        return compile_parts_to_objects if @part_count > 1
+
         temporary_object_name = self.temporary_object_name
         target_machine = compiler.create_target_machine
         begin
@@ -1889,6 +1995,17 @@ module Crystal
 
       def object_filename
         @name + @object_extension
+      end
+
+      # The object files this unit is linked as: one, or one per part.
+      def object_filenames : Array(String)
+        return [object_filename] if @part_count == 1
+
+        Array.new(@part_count) { |index| "#{@name}.p#{index}of#{@part_count}#{@object_extension}" }
+      end
+
+      def object_names : Array(String)
+        object_filenames.map { |filename| Crystal.relative_filename("#{@output_dir}/#{filename}") }
       end
 
       def temporary_object_name
