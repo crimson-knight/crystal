@@ -68,13 +68,27 @@ describe "Compiler" do
 
       it "writes the .dwarf file when asked for after an incremental build that reuses the program" do
         with_tempfile("compiler_spec_dsymutil_incremental", "compiler_spec_dsymutil_incremental.dwarf") do |path, dwarf_path|
+          # `Crystal::Command.run` consumes its arguments: give each run a new array.
           build = ["build", "--incremental"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
-          Crystal::Command.run build
+          Crystal::Command.run build.dup
           File.exists?(dwarf_path).should be_false
+          executable_time = File.info(path).modification_time
 
-          Crystal::Command.run build + ["--dsymutil"]
+          Crystal::Command.run build.dup.push("--dsymutil")
+          File.info(path).modification_time.should eq(executable_time)
           Process.capture(path).should eq("Hello!")
           File.exists?(dwarf_path).should be_true
+        end
+      end
+
+      it "removes the .dwarf file of the executable a new link replaces" do
+        with_tempfile("compiler_spec_dsymutil_relink", "compiler_spec_dsymutil_relink.dwarf") do |path, dwarf_path|
+          Crystal::Command.run ["build", "--dsymutil"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
+          File.exists?(dwarf_path).should be_true
+
+          Crystal::Command.run ["build", "--no-debug"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
+          Process.capture(path).should eq("Hello!")
+          File.exists?(dwarf_path).should be_false
         end
       end
     {% end %}

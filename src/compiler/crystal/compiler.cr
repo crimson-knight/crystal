@@ -732,18 +732,18 @@ module Crystal
       end
     end
 
-    # Brings `<output>.dwarf` in line with `#dsymutil?` after a build: runs
-    # dsymutil when it is wanted and the executable was linked (or was reused
-    # without a companion), and removes a companion an earlier build left for
-    # an executable that this build replaced.
+    # Brings `<output>.dwarf` in line with the executable after a build. A
+    # fresh link removes the companion an earlier build left, which describes
+    # the executable this build replaced; then dsymutil writes a new one when
+    # `#dsymutil?` asks for it and the program has debug information. A build
+    # that reused the executable keeps its companion, or writes the missing
+    # one when asked for.
     private def update_dwarf_companion(output_filename, *, linked : Bool)
-      return if debug.none?
+      dwarf_filename = "#{output_filename}.dwarf"
+      File.delete?(dwarf_filename) if linked
+      return if debug.none? || !dsymutil?
 
-      if dsymutil?
-        run_dsymutil(output_filename) if linked || !File.exists?("#{output_filename}.dwarf")
-      elsif linked
-        File.delete?("#{output_filename}.dwarf")
-      end
+      run_dsymutil(output_filename) unless File.exists?(dwarf_filename)
     end
 
     private def run_dsymutil(filename)
@@ -751,7 +751,9 @@ module Crystal
       return unless dsymutil
 
       @progress_tracker.stage("dsymutil") do
-        Process.run(dsymutil, ["--flat", filename])
+        status = Process.run(dsymutil, ["--flat", filename])
+        # Leave no partial companion behind.
+        File.delete?("#{filename}.dwarf") unless status.success?
       end
     end
 
