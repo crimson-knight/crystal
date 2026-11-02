@@ -26,7 +26,7 @@ those tools.
 *--no-debug*::
 Generate the output without any symbolic debug symbols.
 *--dsymutil*::
-On macOS, run dsymutil after linking, so exception backtraces show file and line numbers. This command does it by default.
+On macOS, run dsymutil after linking, so exception backtraces show file and line numbers (needs debug information, so not with *--no-debug*). This command does it by default.
 *--no-dsymutil*::
 On macOS, skip dsymutil after linking. Backtraces then show addresses and method names without file and line numbers.
 *-D* _FLAG_, *--define* _FLAG_::

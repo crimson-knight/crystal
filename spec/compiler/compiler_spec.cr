@@ -65,6 +65,18 @@ describe "Compiler" do
           File.exists?(dwarf_path).should be_true
         end
       end
+
+      it "writes the .dwarf file when asked for after an incremental build that reuses the program" do
+        with_tempfile("compiler_spec_dsymutil_incremental", "compiler_spec_dsymutil_incremental.dwarf") do |path, dwarf_path|
+          build = ["build", "--incremental"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
+          Crystal::Command.run build
+          File.exists?(dwarf_path).should be_false
+
+          Crystal::Command.run build + ["--dsymutil"]
+          Process.capture(path).should eq("Hello!")
+          File.exists?(dwarf_path).should be_true
+        end
+      end
     {% end %}
   end
 end

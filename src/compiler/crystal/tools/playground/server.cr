@@ -58,6 +58,8 @@ module Crystal::Playground
       output_filename = Crystal.temp_executable "play-#{@session_key}-#{tag}"
       compiler = Compiler.new
       compiler.color = false
+      # The program runs right away: keep file and line numbers in its backtraces.
+      compiler.dsymutil = true
       begin
         Log.info { "Instrumented code compilation started (session=#{@session_key}, tag=#{tag})." }
         compiler.compile sources, output_filename
@@ -158,6 +160,7 @@ module Crystal::Playground
         Log.info { "Code execution killed (session=#{@session_key}, filename=#{@running_process_filename})." }
         @process = nil
         File.delete? @running_process_filename
+        File.delete? "#{@running_process_filename}.dwarf"
         process.terminate rescue nil
       end
     end

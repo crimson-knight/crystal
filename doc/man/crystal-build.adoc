@@ -28,12 +28,15 @@ crystal-build - Compile a Crystal program
 *--no-debug*::
   Generate the output without any symbolic debug symbols.
 *--dsymutil*::
-  On macOS, run dsymutil after linking. It writes _output_.dwarf next to the
+  On macOS, run dsymutil after linking a program that has debug information
+  (every build without *--no-debug*). It writes _output_.dwarf next to the
   program; exception backtraces read file and line numbers from it. This is the
   default for optimized builds (*--release*, *-O1* and above). Unoptimized
   builds skip it, which saves about 0.2 seconds a build, and their backtraces
   show addresses and method names without file and line numbers. Tools such as
-  lldb still find the debug information in the compiler cache.
+  lldb still find the debug information in the compiler cache. *crystal run*,
+  *crystal spec*, *crystal eval*, *crystal play* and *crystal watch --run* run
+  dsymutil by default.
 *--no-dsymutil*::
   On macOS, skip dsymutil after linking, also for optimized builds.
 *-D* _FLAG_, *--define* _FLAG_::

@@ -379,6 +379,11 @@ module Crystal
         end
       end
 
+      {% if flag?(:darwin) %}
+        # The executable from the previous build was kept as is.
+        update_dwarf_companion(File.expand_path(output_filename), linked: false) if compilation_skipped && !@cross_compile
+      {% end %}
+
       @progress_tracker.clear
       print_macro_run_stats(program)
       print_codegen_stats(units)
@@ -706,7 +711,7 @@ module Crystal
         end
 
         {% if flag?(:darwin) %}
-          run_dsymutil(output_filename) if dsymutil? && !debug.none? && !@link_skipped
+          update_dwarf_companion(output_filename, linked: !@link_skipped)
         {% end %}
 
         {% if flag?(:msvc) %}
@@ -724,6 +729,20 @@ module Crystal
         file.flock_exclusive do
           yield
         end
+      end
+    end
+
+    # Brings `<output>.dwarf` in line with `#dsymutil?` after a build: runs
+    # dsymutil when it is wanted and the executable was linked (or was reused
+    # without a companion), and removes a companion an earlier build left for
+    # an executable that this build replaced.
+    private def update_dwarf_companion(output_filename, *, linked : Bool)
+      return if debug.none?
+
+      if dsymutil?
+        run_dsymutil(output_filename) if linked || !File.exists?("#{output_filename}.dwarf")
+      elsif linked
+        File.delete?("#{output_filename}.dwarf")
       end
     end
 
