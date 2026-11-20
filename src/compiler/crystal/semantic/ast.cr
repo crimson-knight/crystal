@@ -860,6 +860,20 @@ module Crystal
     end
   end
 
+  # Stands in for the body of a typed def whose LLVM function has already
+  # been generated, when `CodeGenVisitor#release_typed_bodies?` is set.
+  #
+  # Codegen generates each function once and later call sites only declare
+  # it, so the typed body is dead weight afterwards; dropping it lets the
+  # memory of the analyzed program shrink while LLVM's grows. Call sites see
+  # a body they cannot inline and emit a plain call. If codegen ever reaches
+  # one, it raises instead of generating an empty function.
+  class ReleasedBody < ASTNode
+    def clone_without_location
+      ReleasedBody.new
+    end
+  end
+
   class ProcLiteral
     # If this ProcLiteral was created from expanding a ProcPointer,
     # this holds the reference to it.

@@ -153,9 +153,10 @@ module Crystal
     end
 
     def codegen(node, single_module = false, debug = Debug::Default,
-                frame_pointers = FramePointers::Auto)
+                frame_pointers = FramePointers::Auto, release_typed_bodies = false)
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
+      visitor.release_typed_bodies = release_typed_bodies
       visitor.accept node
       visitor.process_finished_hooks
       visitor.finish
@@ -221,6 +222,11 @@ module Crystal
     getter builder : CrystalLLVMBuilder
     getter main : LLVM::Function
     getter modules : Hash(String, ModuleInfo)
+
+    # When set, the body of each typed def is replaced by a `ReleasedBody`
+    # once its function is generated (see `ReleasedBody`).
+    property? release_typed_bodies = false
+    @released_body_count = 0
     getter context : Context
     getter llvm_typer : LLVMTyper
     getter alloca_block : LLVM::BasicBlock
@@ -1908,6 +1914,10 @@ module Crystal
     def visit(node : Unreachable)
       builder.unreachable
       false
+    end
+
+    def visit(node : ReleasedBody)
+      raise "BUG: reached a def body that was released after its function was generated"
     end
 
     def check_proc_is_not_closure(value, type)

@@ -92,7 +92,11 @@ class Crystal::CodeGenVisitor
 
     old_needs_value = @needs_value
 
-    with_cloned_context do |old_context|
+    if target_def.body.is_a?(ReleasedBody)
+      raise "BUG: the body of #{target_def.name} was released after its function was generated, but codegen needs it again for #{mangled_name}"
+    end
+
+    typed_function = with_cloned_context do |old_context|
       context.type = self_type
       context.vars = LLVMVars.new
       context.block_context = nil
@@ -248,6 +252,31 @@ class Crystal::CodeGenVisitor
       end
 
       LLVMTypedFunction.new(context.fun_type, context.fun)
+    end
+
+    # Proc literals can be generated more than once (a block inlined at
+    # several `yield`s), so only plain method defs are released.
+    release_typed_body(target_def) unless is_fun_literal || is_closure || is_exported_fun
+    typed_function
+  end
+
+  # Released bodies between two collections that return free heap pages to
+  # the OS (see `release_typed_body`).
+  RELEASED_BODIES_PER_UNMAP = 50_000
+
+  private def release_typed_body(target_def) : Nil
+    return unless release_typed_bodies?
+    return if target_def.is_a?(External)
+    return if target_def.body.is_a?(Primitive)
+
+    target_def.body = ReleasedBody.new
+    @released_body_count += 1
+    # Hand the freed heap back to the OS now and then, so LLVM (which
+    # allocates outside the GC heap) can use it instead of it sitting free.
+    if @released_body_count % RELEASED_BODIES_PER_UNMAP == 0
+      LibGC.set_force_unmap_on_gcollect(1)
+      GC.collect
+      LibGC.set_force_unmap_on_gcollect(0)
     end
   end
 

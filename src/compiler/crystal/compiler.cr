@@ -622,7 +622,7 @@ module Crystal
 
       llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
         program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: is_single_module
+          single_module: is_single_module, release_typed_bodies: !@incremental
       end
 
       output_dir = CacheDir.instance.directory_for(sources)

@@ -102,5 +102,10 @@ module Crystal
       @str << %(raise "unreachable")
       false
     end
+
+    def visit(node : ReleasedBody)
+      @str << "# body released after codegen"
+      false
+    end
   end
 end
