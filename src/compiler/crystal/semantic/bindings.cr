@@ -243,6 +243,20 @@ module Crystal
       @observers.try &.reject! &.same?(observer)
     end
 
+    # Drops this node's type-inference edges and keeps its type.
+    #
+    # Codegen reads types, not edges, so once semantic analysis is over the
+    # edges only keep other nodes alive (a released def body stays reachable
+    # through the vars that observe it). When this node depends on
+    # *nil_marker*, that single dependency is kept: codegen checks local vars
+    # for it (`CodeGenVisitor#bound_to_mod_nil?`).
+    def release_bindings(nil_marker : ASTNode? = nil) : Nil
+      keeps_nil_marker = nil_marker && @dependencies.any?(&.same?(nil_marker))
+      @dependencies = SmallNodeList.new
+      @observers = SmallNodeList.new
+      @dependencies.push(nil_marker) if nil_marker && keeps_nil_marker
+    end
+
     def set_enclosing_call(enclosing_call)
       current_enclosing_call = @enclosing_call
       if current_enclosing_call

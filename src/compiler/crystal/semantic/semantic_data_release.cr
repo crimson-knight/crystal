@@ -12,12 +12,18 @@ module Crystal
     # `External` defs (`fun` declarations, including `fun`s with a Crystal
     # body) are typed in place and code-generated directly, so they are kept.
     #
+    # It also drops the type-inference edges of instance, class and global
+    # vars and the calls waiting for new subclasses. They reach into every
+    # method body, so without this no typed body could be freed during
+    # codegen (see `CodeGenVisitor#release_typed_bodies?`).
+    #
     # Must only be called when nothing will run semantic analysis on this
     # program again. Returns the number of bodies released.
     def release_semantic_only_data : Int32
       released = 0
       visited = Set(UInt64).new
       release_semantic_only_data(self, visited) { released += 1 }
+      vars.each_value &.release_bindings
       released
     end
 
@@ -42,6 +48,14 @@ module Crystal
           end
         end
       end
+
+      if type.is_a?(InstanceVarContainer)
+        type.@instance_vars.try &.each_value &.release_bindings
+      end
+      if type.is_a?(ClassVarContainer)
+        type.@class_vars.try &.each_value &.release_bindings
+      end
+      type.release_subclass_observers if type.is_a?(SubclassObservable)
 
       if type.is_a?(GenericType)
         type.each_instantiated_type { |instance| release_semantic_only_data(instance, visited, &on_release) }

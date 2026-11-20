@@ -1064,6 +1064,12 @@ module Crystal
     def notify_subclass_added
       @subclass_observers.try &.dup.each &.on_new_subclass
     end
+
+    # Forgets the calls waiting for new subclasses (see
+    # `Program#release_semantic_only_data`).
+    def release_subclass_observers : Nil
+      @subclass_observers = nil
+    end
   end
 
   # A type that can have instance var initializers, like

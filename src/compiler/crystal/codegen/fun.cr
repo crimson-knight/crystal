@@ -270,6 +270,11 @@ class Crystal::CodeGenVisitor
     return if target_def.body.is_a?(Primitive)
 
     target_def.body = ReleasedBody.new
+    # Cut the edges that would keep the old body reachable: the def's own
+    # (it depends on its body) and those of its args and local vars.
+    target_def.release_bindings
+    target_def.args.each &.release_bindings
+    target_def.vars.try &.each_value &.release_bindings(@program.nil_var)
     @released_body_count += 1
     # Hand the freed heap back to the OS now and then, so LLVM (which
     # allocates outside the GC heap) can use it instead of it sitting free.
