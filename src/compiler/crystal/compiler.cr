@@ -374,7 +374,10 @@ module Crystal
           program.macro_expansion_error_hook.try &.call(ex.cause)
         end
 
-        units = codegen program, node, source, output_filename unless @no_codegen
+        unless @no_codegen
+          release_semantic_only_data(program) unless @incremental
+          units = codegen program, node, source, output_filename
+        end
 
         if @incremental
           @progress_tracker.stage("Signatures") do
@@ -1096,10 +1099,41 @@ module Crystal
     end
 
     private def sequential_codegen(units)
+      # A single unit is emitted after this loop (`--emit`), so its module
+      # must stay alive. With several units, nothing reads a unit's module
+      # once its object file is written: free each one right away instead of
+      # holding every optimized module until the GC finalizes them.
+      dispose_after_compile = units.size > 1
       units.each do |unit|
         unit.compile
+        unit.llvm_mod.context.dispose if dispose_after_compile
         @progress_tracker.stage_progress += 1
       end
+    end
+
+    # Releases what only semantic analysis needed (untyped def and macro
+    # bodies) and hands the freed heap pages back to the OS, so the memory
+    # LLVM allocates during codegen does not stack on top of it.
+    #
+    # Skipped in incremental mode, whose signature pass reads the program
+    # after codegen.
+    private def release_semantic_only_data(program)
+      @progress_tracker.stage("Semantic (release)") do
+        program.release_semantic_only_data
+        return_free_memory_to_os
+      end
+    end
+
+    private def return_free_memory_to_os : Nil
+      {% if flag?(:gc_none) || flag?(:wasm32) %}
+        # no collector, nothing to return
+      {% else %}
+        LibGC.set_force_unmap_on_gcollect(1)
+        # The first collection frees the released bodies; the next ones
+        # coalesce the free blocks so they can be unmapped.
+        3.times { GC.collect }
+        LibGC.set_force_unmap_on_gcollect(0)
+      {% end %}
     end
 
     private def parallel_codegen(units, n_threads)
@@ -1514,12 +1548,12 @@ module Crystal
 
       # Capture file-level dependencies (convert Set to sorted Array for JSON)
       file_deps = unless program.file_dependencies.empty?
-                    result = {} of String => Array(String)
-                    program.file_dependencies.each do |user_file, provider_set|
-                      result[user_file] = provider_set.to_a.sort
-                    end
-                    result
-                  end
+        result = {} of String => Array(String)
+        program.file_dependencies.each do |user_file, provider_set|
+          result[user_file] = provider_set.to_a.sort
+        end
+        result
+      end
 
       data = IncrementalCacheData.new(
         compiler_version: Config.version,

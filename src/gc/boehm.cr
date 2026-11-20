@@ -133,6 +133,7 @@ lib LibGC
 
   fun get_heap_usage_safe = GC_get_heap_usage_safe(heap_size : Word*, free_bytes : Word*, unmapped_bytes : Word*, bytes_since_gc : Word*, total_bytes : Word*)
   fun set_max_heap_size = GC_set_max_heap_size(Word)
+  fun set_force_unmap_on_gcollect = GC_set_force_unmap_on_gcollect(Int)
 
   fun get_prof_stats = GC_get_prof_stats(stats : ProfStats*, size : SizeT)
 
