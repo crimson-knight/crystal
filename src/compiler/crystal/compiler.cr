@@ -1188,55 +1188,25 @@ module Crystal
       return_free_memory_to_os
       return_free_malloc_memory_to_os
 
-      # The largest modules take the longest and need the most memory. A
-      # quarter of the workers start with them, so the longest one is under
-      # way from the beginning; the other workers start with the smallest
-      # modules, so only a few large modules are in memory at a time.
-      units_to_compile.sort_by! { |unit| -unit.bitcode_bytesize }
-
       settings_line = CodegenWorker::Settings.from_compiler(self).to_json
+      work_queue = CodegenWorkQueue.new(units_to_compile)
       lock = Sync::Mutex.new
-      largest_unit_index = 0
-      smallest_unit_index = units_to_compile.size - 1
       first_failure_message = nil.as(String?)
-
-      # Each hands out the next unit from its end of the list, or `nil` once
-      # all are taken or a worker failed.
-      take_largest_unit = -> : CompilationUnit? do
-        lock.synchronize do
-          next nil if first_failure_message || largest_unit_index > smallest_unit_index
-
-          unit = units_to_compile[largest_unit_index]
-          largest_unit_index += 1
-          unit
-        end
-      end
-      take_smallest_unit = -> : CompilationUnit? do
-        lock.synchronize do
-          next nil if first_failure_message || largest_unit_index > smallest_unit_index
-
-          unit = units_to_compile[smallest_unit_index]
-          smallest_unit_index -= 1
-          unit
-        end
-      end
-      count_finished_unit = -> : Nil do
-        lock.synchronize { @progress_tracker.stage_progress += 1 }
-      end
 
       worker_count = n_threads.clamp(1..units_to_compile.size)
       @last_codegen_worker_count = worker_count
       workers_done = Channel(Nil).new(worker_count)
-      largest_first_worker_count = (worker_count // 4).clamp(1..)
-      worker_count.times do |worker_index|
-        take_next_unit = worker_index < largest_first_worker_count ? take_largest_unit : take_smallest_unit
+      worker_count.times do
         spawn do
           failure_message = begin
-            run_codegen_worker(worker_executable, settings_line, take_next_unit, count_finished_unit)
+            run_codegen_worker(worker_executable, settings_line, work_queue) do
+              lock.synchronize { @progress_tracker.stage_progress += 1 }
+            end
           rescue ex
             "#{ex.message} (#{ex.class})"
           end
           if failure_message
+            work_queue.stop
             lock.synchronize { first_failure_message ||= failure_message }
           end
           workers_done.send(nil)
@@ -1249,21 +1219,22 @@ module Crystal
       end
     end
 
-    # Runs one worker process, giving it one unit at a time until
-    # *take_next_unit* returns `nil`. Returns a description of what went
-    # wrong, or `nil` when every unit it was given has its object file.
+    # Runs one worker process, giving it one unit of *work_queue* at a time
+    # until the queue hands out no more, and yielding after each finished
+    # unit. Returns a description of what went wrong, or `nil` when every
+    # unit it was given has its object file.
     private def run_codegen_worker(worker_executable : String, settings_line : String,
-                                   take_next_unit : -> CompilationUnit?,
-                                   count_finished_unit : -> Nil) : String?
+                                   work_queue : CodegenWorkQueue, & : -> Nil) : String?
       process = Process.new(worker_executable, [CodegenWorker::COMMAND],
         input: :pipe, output: :pipe, error: :inherit)
       failure_message = nil
       begin
         process.input.puts settings_line
-        while unit = take_next_unit.call
+        while unit = work_queue.take
           process.input.puts unit.codegen_worker_job.to_json
           process.input.flush
           outcome_line = process.output.gets
+          work_queue.finished(unit)
           unless outcome_line
             failure_message = "the worker stopped while compiling #{unit.original_name}"
             break
@@ -1272,7 +1243,7 @@ module Crystal
             failure_message = error_message
             break
           end
-          count_finished_unit.call
+          yield
         end
         process.input.close
       rescue ex : IO::Error
@@ -1281,6 +1252,73 @@ module Crystal
       status = process.wait
       failure_message ||= "the worker exited abnormally (#{status})" unless status.success?
       failure_message
+    end
+
+    # Hands the units to compile out to the object file workers.
+    #
+    # The largest modules take the longest to optimize and need the most
+    # memory, roughly in proportion to their bitcode size. They are handed
+    # out first, so the longest one is under way from the start, but only
+    # while the bitcode being compiled stays within twice the largest
+    # module: a worker that cannot take a large module takes the smallest
+    # one instead. The largest modules are therefore never all in memory
+    # at once.
+    private class CodegenWorkQueue
+      @units : Array(CompilationUnit)
+      @in_flight_bytesize_limit : Int64
+
+      def initialize(units : Array(CompilationUnit))
+        @units = units.sort_by { |unit| -unit.bitcode_bytesize }
+        @taken = Array(Bool).new(@units.size, false)
+        @first_untaken_index = 0
+        @last_untaken_index = @units.size - 1
+        @in_flight_bytesize = 0_i64
+        largest_unit = @units.first?
+        @in_flight_bytesize_limit = largest_unit ? largest_unit.bitcode_bytesize * 2 : 0_i64
+        @stopped = false
+        @lock = Sync::Mutex.new
+      end
+
+      # Returns the next unit to compile, or `nil` when none is left or the
+      # queue was stopped.
+      def take : CompilationUnit?
+        @lock.synchronize do
+          next nil if @stopped
+
+          while @first_untaken_index <= @last_untaken_index && @taken[@first_untaken_index]
+            @first_untaken_index += 1
+          end
+          while @first_untaken_index <= @last_untaken_index && @taken[@last_untaken_index]
+            @last_untaken_index -= 1
+          end
+          next nil if @first_untaken_index > @last_untaken_index
+
+          index = index_of_largest_unit_within_limit || @last_untaken_index
+          @taken[index] = true
+          unit = @units[index]
+          @in_flight_bytesize += unit.bitcode_bytesize
+          unit
+        end
+      end
+
+      # Tells the queue that *unit*, handed out by `#take`, is done.
+      def finished(unit : CompilationUnit) : Nil
+        @lock.synchronize { @in_flight_bytesize -= unit.bitcode_bytesize }
+      end
+
+      # Makes `#take` hand out no more units.
+      def stop : Nil
+        @lock.synchronize { @stopped = true }
+      end
+
+      private def index_of_largest_unit_within_limit : Int32?
+        return @first_untaken_index if @in_flight_bytesize == 0
+
+        room = @in_flight_bytesize_limit - @in_flight_bytesize
+        (@first_untaken_index..@last_untaken_index).find do |index|
+          !@taken[index] && @units[index].bitcode_bytesize <= room
+        end
+      end
     end
 
     private def parallel_codegen(units, n_threads)
