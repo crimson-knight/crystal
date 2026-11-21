@@ -229,6 +229,24 @@ module Crystal
     # `#resident_ir_megabytes`). With 0 there is no limit on their number.
     property resident_modules : Int32 = DEFAULT_RESIDENT_MODULES
 
+    # The default of `#module_segment_instructions`.
+    DEFAULT_MODULE_SEGMENT_INSTRUCTIONS = 0
+
+    # The most LLVM instructions one type's functions hold in one object
+    # file, in multi-module mode. A type that grows beyond that is compiled
+    # as several object files (*segments*): the functions generated after a
+    # segment reached the limit go to the next one. No object file job then
+    # needs the time and memory of a whole large type. With 0 every type is
+    # one object file.
+    property module_segment_instructions : Int32 = DEFAULT_MODULE_SEGMENT_INSTRUCTIONS
+
+    # How many types the last multi-module IR generation compiled as several
+    # segments, how many segments those types have together, and the most
+    # segments of one type.
+    getter last_segmented_type_count = 0
+    getter last_segment_count = 0
+    getter last_maximum_segment_count = 0
+
     # The spill counters of the last multi-module IR generation.
     getter last_module_spill : ModuleSpill?
 
@@ -761,8 +779,12 @@ module Crystal
       llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
         program.codegen node, debug: debug, frame_pointers: frame_pointers,
           single_module: is_single_module, release_typed_bodies: !@incremental,
-          module_spill: module_spill
+          module_spill: module_spill, module_segment_instructions: @module_segment_instructions.to_i64
       end
+      list_of_segment_counts = llvm_modules.each_value.map { |info| info.list_of_later_segments.size + 1 }.select { |count| count > 1 }.to_a
+      @last_segmented_type_count = list_of_segment_counts.size
+      @last_segment_count = list_of_segment_counts.sum
+      @last_maximum_segment_count = list_of_segment_counts.max? || 0
       # Printed as soon as the stage ends: a build that is stopped after IR
       # generation still shows them.
       print_module_spill_stats
@@ -1578,6 +1600,14 @@ module Crystal
 
     private def print_module_spill_stats
       return unless @progress_tracker.stats?
+
+      if @last_segmented_type_count > 0
+        puts
+        puts "LLVM module segments (limit #{@module_segment_instructions} instructions):"
+        puts " - types compiled as several object files: #{@last_segmented_type_count} (#{@last_segment_count} segments, at most #{@last_maximum_segment_count} for one type)"
+        STDOUT.flush
+      end
+
       return unless module_spill = @last_module_spill
 
       megabyte = 1024 * 1024
@@ -1620,6 +1650,14 @@ module Crystal
         puts " - modules in flight at most: #{(pool.maximum_in_flight_bitcode_bytes / megabyte).round(1)} MB of bitcode, " \
              "estimated #{pool.maximum_in_flight_memory_bytes // megabyte} MB of worker memory " \
              "(budget #{pool.memory_budget_bytes // megabyte} MB)"
+        if longest_job = pool.longest_job
+          puts " - longest object file job: #{longest_job.seconds.round(1)} s, #{longest_job.name} " \
+               "(#{(longest_job.bitcode_bytesize / megabyte).round(1)} MB of bitcode)"
+        end
+        if largest_job = pool.largest_job
+          puts " - largest worker memory: #{largest_job.peak_memory_bytes // megabyte} MB, reached building #{largest_job.name} " \
+               "(#{(largest_job.bitcode_bytesize / megabyte).round(1)} MB of bitcode, #{largest_job.seconds.round(1)} s)"
+        end
       end
 
       # Phase 4: Report modules skipped via source-file-level caching

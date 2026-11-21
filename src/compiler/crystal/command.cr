@@ -648,6 +648,9 @@ class Crystal::Command
         opts.on("--resident-modules NUM", "Keep at most NUM idle LLVM modules in memory during IR generation, spilling the others to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_MODULES}, 0 is no limit)") do |resident_modules|
           compiler.resident_modules = resident_modules.to_i? || raise Error.new("Invalid resident module count: #{resident_modules}")
         end
+        opts.on("--module-segment-instructions NUM", "Compile a type whose functions hold more than NUM LLVM instructions as several object files (default #{Crystal::Compiler::DEFAULT_MODULE_SEGMENT_INSTRUCTIONS}, 0 is one object file per type)") do |module_segment_instructions|
+          compiler.module_segment_instructions = module_segment_instructions.to_i? || raise Error.new("Invalid number of instructions per module segment: #{module_segment_instructions}")
+        end
         unless run
           opts.on("--target TRIPLE", "Target triple") do |triple|
             compiler.codegen_target = Codegen::Target.new(triple)
@@ -742,6 +745,7 @@ class Crystal::Command
     abort! "number of release units cannot be lower than 1", :USAGE_ERROR if compiler.release_units < 1
     abort! "number of resident modules cannot be lower than 0", :USAGE_ERROR if compiler.resident_modules < 0
     abort! "megabytes of resident IR cannot be lower than 0", :USAGE_ERROR if compiler.resident_ir_megabytes < 0
+    abort! "instructions per module segment cannot be lower than 0", :USAGE_ERROR if compiler.module_segment_instructions < 0
 
     if compiler.no_cache? && compiler.incremental?
       raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
@@ -813,6 +817,9 @@ class Crystal::Command
     end
     opts.on("--resident-modules NUM", "Keep at most NUM idle LLVM modules in memory during IR generation, spilling the others to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_MODULES}, 0 is no limit)") do |resident_modules|
       compiler.resident_modules = resident_modules.to_i? || raise Error.new("Invalid resident module count: #{resident_modules}")
+    end
+    opts.on("--module-segment-instructions NUM", "Compile a type whose functions hold more than NUM LLVM instructions as several object files (default #{Crystal::Compiler::DEFAULT_MODULE_SEGMENT_INSTRUCTIONS}, 0 is one object file per type)") do |module_segment_instructions|
+      compiler.module_segment_instructions = module_segment_instructions.to_i? || raise Error.new("Invalid number of instructions per module segment: #{module_segment_instructions}")
     end
     opts.on("-s", "--stats", "Enable statistics output") do
       compiler.progress_tracker.stats = true

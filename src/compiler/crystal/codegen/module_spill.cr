@@ -156,6 +156,15 @@ module Crystal
       # generator's total (see `CodeGenVisitor#account_module_ir`).
       property accounted_ir_bytes = 0_i64
 
+      # How many instructions were built into the parts on disk.
+      getter spilled_instruction_count = 0_i64
+
+      # The modules that hold the functions this type got after this module
+      # reached the size limit of one object file (see
+      # `CodeGenVisitor#module_segment_instructions`), oldest first. Only
+      # the type's first module has any.
+      getter list_of_later_segments = [] of ModuleInfo
+
       def initialize(@name : String, @mod : LLVM::Module, @typer : LLVMTyper)
       end
 
@@ -187,6 +196,18 @@ module Crystal
         @builder.try(&.instruction_count) || 0_i64
       end
 
+      # How many instructions were built into this module, in memory and on
+      # disk.
+      def generated_instruction_count : Int64
+        @spilled_instruction_count + built_instruction_count
+      end
+
+      # The module the type's next function is generated into: the newest
+      # segment, or this module while the type has one module.
+      def latest_segment : ModuleInfo
+        @list_of_later_segments.last? || self
+      end
+
       # An estimate of the memory LLVM holds for the part in memory.
       def estimated_ir_bytes : Int64
         ModuleSpill::BYTES_PER_MODULE + built_instruction_count * ModuleSpill::BYTES_PER_BUILT_INSTRUCTION
@@ -199,6 +220,7 @@ module Crystal
       # Drops every handle into the context of the part in memory. The
       # caller disposes the context.
       def detach : Nil
+        @spilled_instruction_count += built_instruction_count
         @mod = nil
         @typer = nil
         @builder = nil
@@ -214,6 +236,50 @@ module Crystal
 
     # When set, idle modules are spilled to disk (see `ModuleSpill`).
     property module_spill : ModuleSpill?
+
+    # The size limit of one type's module, in built instructions (0: no
+    # limit). A type that reaches it gets a further module, a *segment*, for
+    # the functions generated from then on, and each segment is compiled to
+    # an object file of its own. A segment is a module like any other: its
+    # functions are external definitions, and the other segments declare
+    # the ones they call. The limit is checked when a function is about to
+    # be generated, so a type's segments hold the same functions in every
+    # build that generates the type's functions in the same order.
+    property module_segment_instructions = 0_i64
+
+    # The name of segment *segment_index* (1 for the second module) of the
+    # type named *type_name*. No type name contains a `#`.
+    def self.segment_module_name(type_name : String, segment_index : Int32) : String
+      "#{type_name}##{segment_index + 1}"
+    end
+
+    # The function named *mangled_name* in one of the segments of
+    # *first_module_info* that are in memory, newest segment first.
+    private def typed_fun_in_segments?(first_module_info : ModuleInfo, mangled_name : String) : LLVMTypedFunction?
+      first_module_info.list_of_later_segments.reverse_each do |segment|
+        next unless segment.resident?
+        if func = typed_fun?(segment, mangled_name)
+          return func
+        end
+      end
+      first_module_info.resident? ? typed_fun?(first_module_info, mangled_name) : nil
+    end
+
+    # The module the next function of the type of *first_module_info* is
+    # generated into: the type's newest segment, or a new one when that
+    # reached the size limit.
+    private def segment_for_next_fun(first_module_info : ModuleInfo) : ModuleInfo
+      latest_segment = first_module_info.latest_segment
+      return latest_segment if @module_segment_instructions <= 0 || first_module_info.same?(@main_module_info)
+      return latest_segment if latest_segment.generated_instruction_count < @module_segment_instructions
+
+      list_of_later_segments = first_module_info.list_of_later_segments
+      segment_name = CodeGenVisitor.segment_module_name(first_module_info.name, list_of_later_segments.size + 1)
+      segment = new_module_info(segment_name)
+      @modules[segment_name] = segment
+      list_of_later_segments << segment
+      segment
+    end
 
     # The modules that are in memory, except the main one (it always is).
     @resident_modules = [] of ModuleInfo

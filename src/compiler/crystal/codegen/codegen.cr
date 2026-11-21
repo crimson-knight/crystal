@@ -154,7 +154,7 @@ module Crystal
 
     def codegen(node, single_module = false, debug = Debug::Default,
                 frame_pointers = FramePointers::Auto, release_typed_bodies = false,
-                module_spill : ModuleSpill? = nil)
+                module_spill : ModuleSpill? = nil, module_segment_instructions : Int64 = 0_i64)
       LLVMTyper.reset_closure_counter
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
@@ -163,6 +163,7 @@ module Crystal
       # `DUMP` prints every module when code generation finishes, so they
       # all stay in memory.
       visitor.module_spill = module_spill unless single_module || ENV["DUMP"]?
+      visitor.module_segment_instructions = module_segment_instructions unless single_module
       visitor.accept node
       visitor.process_finished_hooks
       visitor.finish
@@ -449,7 +450,7 @@ module Crystal
 
     # A builder for the module of *module_info*, in that module's context.
     def new_builder(module_info : ModuleInfo)
-      CrystalLLVMBuilder.new module_info.mod.context.new_builder, module_info.typer, ->{ c_printf_fun }
+      CrystalLLVMBuilder.new module_info.mod.context.new_builder, module_info.typer, -> { c_printf_fun }
     end
 
     # Here we only initialize simple constants, those

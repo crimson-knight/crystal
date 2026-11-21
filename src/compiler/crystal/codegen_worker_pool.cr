@@ -40,6 +40,18 @@ module Crystal
 
     getter memory_budget_bytes : Int64
 
+    # What a worker told about one job: the time it took, and the worker's
+    # peak memory when the job was done (see `CodegenWorker::Outcome`).
+    record JobReport, name : String, bitcode_bytesize : Int64, seconds : Float64, peak_memory_bytes : Int64
+
+    # The job that took the longest.
+    getter longest_job : JobReport?
+
+    # The job during which a worker reached the largest peak memory of all
+    # workers. A worker's peak only rises during a job that needs more than
+    # every job the worker had before, so this is that job's own memory.
+    getter largest_job : JobReport?
+
     # The default budget: 1.25 GiB per allowed thread, at most a fifth of the
     # machine's memory.
     def self.default_memory_budget_bytes(thread_count : Int32) : Int64
@@ -150,11 +162,26 @@ module Crystal
       job = @list_of_jobs[job_index]
       spawn do
         failure_message = begin
-          seat.compile(job)
+          peak_memory_bytes_before = seat.peak_memory_bytes
+          failure_message_of_job = seat.compile(job)
+          record_job_report(job, seat, peak_memory_bytes_before) unless failure_message_of_job
+          failure_message_of_job
         rescue ex
           "#{ex.message} (#{ex.class})"
         end
         finished_jobs.send FinishedJob.new(seat, job_index, failure_message)
+      end
+    end
+
+    private def record_job_report(job : CodegenWorker::Job, seat : Seat, peak_memory_bytes_before : Int64) : Nil
+      report = JobReport.new(job.name, job.bitcode_bytesize, seat.seconds_of_last_job, seat.peak_memory_bytes)
+      longest_job = @longest_job
+      @longest_job = report if longest_job.nil? || report.seconds > longest_job.seconds
+
+      largest_job = @largest_job
+      rose_during_this_job = report.peak_memory_bytes > peak_memory_bytes_before
+      if rose_during_this_job && (largest_job.nil? || report.peak_memory_bytes > largest_job.peak_memory_bytes)
+        @largest_job = report
       end
     end
 
@@ -203,6 +230,11 @@ module Crystal
         !@process.nil?
       end
 
+      # What the worker told with its last answer: the time of that job and
+      # the peak memory of the worker process so far.
+      getter seconds_of_last_job = 0.0
+      getter peak_memory_bytes = 0_i64
+
       # Has the worker compile *job*. Returns what went wrong, or `nil` when
       # the object file was written.
       def compile(job : CodegenWorker::Job) : String?
@@ -212,7 +244,10 @@ module Crystal
         outcome_line = process.output.gets
         return "the worker stopped while compiling #{job.name}" unless outcome_line
 
-        CodegenWorker::Outcome.from_json(outcome_line).error_message
+        outcome = CodegenWorker::Outcome.from_json(outcome_line)
+        @seconds_of_last_job = outcome.seconds
+        @peak_memory_bytes = outcome.peak_memory_bytes
+        outcome.error_message
       rescue ex : IO::Error
         "lost the connection to the worker (#{ex.message})"
       end

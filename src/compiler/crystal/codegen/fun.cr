@@ -48,13 +48,16 @@ class Crystal::CodeGenVisitor
       return declare_fun(mangled_name, known_signature)
     end
 
-    # The function is in the part of its module that is in memory, or it
-    # is generated into that part now. Reading a function to declare it
-    # does not count as a use of its module: a module is kept in memory for
-    # the functions it is about to get, not for the ones it has.
-    self_type_module_info = @single_module ? @main_module_info : type_module_info(self_type)
-    func = self_type_module_info.resident? ? typed_fun?(self_type_module_info, mangled_name) : nil
-    return check_mod_fun(self_type_module_info, mangled_name, func) if func
+    # The function is in a part of its type's modules that is in memory, or
+    # it is generated now, into the type's newest module. Reading a function
+    # to declare it does not count as a use of its module: a module is kept
+    # in memory for the functions it is about to get, not for the ones it has.
+    first_module_info = @single_module ? @main_module_info : type_module_info(self_type)
+    if func = typed_fun_in_segments?(first_module_info, mangled_name)
+      # It is not in the current module (checked above), so it is declared.
+      return declare_fun(mangled_name, func)
+    end
+    self_type_module_info = segment_for_next_fun(first_module_info)
 
     # Declaring the new function here reads it from its module, which must
     # stay in memory until then.
@@ -784,7 +787,7 @@ class Crystal::CodeGenVisitor
   def type_module(type) : ModuleInfo
     return @main_module_info if @single_module
 
-    module_info = type_module_info(type)
+    module_info = segment_for_next_fun(type_module_info(type))
     use_module(module_info)
     module_info
   end

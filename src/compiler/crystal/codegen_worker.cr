@@ -78,13 +78,35 @@ module Crystal
     end
 
     # The answer to a job. `error_message` is set when the job failed.
+    # `seconds` is the time the job took in the worker, and
+    # `peak_memory_bytes` the most memory the worker process has held so far
+    # (over all its jobs; 0 when the system does not tell).
     struct Outcome
       include JSON::Serializable
 
       getter error_message : String?
+      getter seconds : Float64 = 0.0
+      getter peak_memory_bytes : Int64 = 0_i64
 
-      def initialize(@error_message = nil)
+      def initialize(@error_message = nil, @seconds = 0.0, @peak_memory_bytes = 0_i64)
       end
+    end
+
+    # The largest resident size this process has had.
+    def self.peak_memory_bytes : Int64
+      {% if flag?(:unix) && !flag?(:wasm32) %}
+        if LibC.getrusage(LibC::RUSAGE_SELF, out usage) == 0
+          {% if flag?(:darwin) %}
+            usage.ru_maxrss.to_i64
+          {% else %}
+            usage.ru_maxrss.to_i64 * 1024
+          {% end %}
+        else
+          0_i64
+        end
+      {% else %}
+        0_i64
+      {% end %}
     end
 
     def initialize(@input : IO = STDIN, @output : IO = STDOUT)
@@ -107,9 +129,11 @@ module Crystal
     end
 
     private def compile(compiler : Compiler, job : Job) : Outcome
-      compiler.compile_bitcode_file_to_object(job.bitcode_filename, job.object_filename, job.llvm_ir_filename, job.verifies_module,
-        job.list_of_more_bitcode_filenames)
-      Outcome.new
+      elapsed = Time.measure do
+        compiler.compile_bitcode_file_to_object(job.bitcode_filename, job.object_filename, job.llvm_ir_filename, job.verifies_module,
+          job.list_of_more_bitcode_filenames)
+      end
+      Outcome.new(seconds: elapsed.total_seconds, peak_memory_bytes: CodegenWorker.peak_memory_bytes)
     rescue ex
       Outcome.new(error_message: "#{job.bitcode_filename}: #{ex.message} (#{ex.class})")
     end
