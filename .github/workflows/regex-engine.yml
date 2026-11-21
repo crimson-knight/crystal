@@ -60,3 +60,20 @@ jobs:
         run: bin/crystal scripts/print_regex_config.cr
       - name: Run Regex specs
         run: bin/crystal spec --order=random spec/std/regex*
+  mica:
+    runs-on: ubuntu-latest
+    name: "Mica"
+    container: crystallang/crystal:1.20.3-alpine@sha256:0e8bfa2eba31977ce50e6d4522de6cb4b0036f1115eaa3383d559cce38fcd08d
+    steps:
+      - name: Download Crystal source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Remove PCRE2
+        run: apk del pcre2-dev
+      - name: Assert select Mica
+        run: bin/crystal eval -Duse_mica 'abort unless Regex::Engine == Regex::MicaEngine'
+      - name: Show Mica config
+        run: bin/crystal eval -Duse_mica 'puts Regex::Engine.version'
+      - name: Run Regex specs
+        run: bin/crystal spec --order=random spec/std/regex* -Duse_mica
