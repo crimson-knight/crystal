@@ -1,0 +1,136 @@
+require "./codegen"
+
+{% if flag?(:darwin) %}
+  lib LibC
+    fun system(command : UInt8*) : Int
+  end
+
+  # :nodoc:
+  lib LibDarwinMallocStatistics
+    struct MallocStatistics
+      blocks_in_use : UInt32
+      size_in_use : LibC::SizeT
+      max_size_in_use : LibC::SizeT
+      size_allocated : LibC::SizeT
+    end
+
+    fun malloc_zone_statistics(zone : Void*, stats : MallocStatistics*)
+  end
+{% end %}
+
+module Crystal
+  # Measures what the compiler holds when IR generation ends, the moment of
+  # a large build's peak memory. A diagnostic: it frees the generated IR to
+  # measure it, so the compiler exits when the report is written.
+  #
+  # Enabled by setting `CRYSTAL_PEAK_PROBE` to a directory. The probe writes
+  # there:
+  #
+  # * `probe.txt`: the collector's numbers and the C allocator's bytes in use
+  #   at the end of IR generation, then the C allocator's bytes after freeing,
+  #   in turn, the function-signature module, the modules in memory and the
+  #   main module, and the collector's numbers after a full collection.
+  # * `vmmap-*.txt` and `footprint-*.txt` (macOS): the system's own account
+  #   of the process at the end of IR generation and after each step.
+  # * `census.txt`: the memory census (see `MemoryCensus`) after everything
+  #   IR generation held was freed.
+  module PeakProbe
+    def self.directory : String?
+      ENV["CRYSTAL_PEAK_PROBE"]?.presence
+    end
+
+    def self.enabled? : Bool
+      !directory.nil?
+    end
+
+    # The bytes the C allocator has handed out and not got back. LLVM
+    # allocates there.
+    def self.malloc_bytes_in_use : Int64
+      {% if flag?(:darwin) %}
+        stats = uninitialized LibDarwinMallocStatistics::MallocStatistics
+        LibDarwinMallocStatistics.malloc_zone_statistics(nil, pointerof(stats))
+        stats.size_in_use.to_i64
+      {% else %}
+        0_i64
+      {% end %}
+    end
+
+    def self.malloc_bytes_allocated : Int64
+      {% if flag?(:darwin) %}
+        stats = uninitialized LibDarwinMallocStatistics::MallocStatistics
+        LibDarwinMallocStatistics.malloc_zone_statistics(nil, pointerof(stats))
+        stats.size_allocated.to_i64
+      {% else %}
+        0_i64
+      {% end %}
+    end
+
+    def self.record(io : IO, label : String, system_report : Bool = true) : Nil
+      {% unless flag?(:gc_none) || flag?(:wasm32) %}
+        stats = GC.prof_stats
+        io.printf("%-44s gc_heap_mb=%.1f gc_free_mb=%.1f gc_unmapped_mb=%.1f gc_since_gc_mb=%.1f gc_collections=%d malloc_in_use_mb=%.1f malloc_allocated_mb=%.1f\n",
+          label, stats.heap_size / 1e6, stats.free_bytes / 1e6, stats.unmapped_bytes / 1e6,
+          stats.bytes_since_gc / 1e6, stats.gc_no, malloc_bytes_in_use / 1e6, malloc_bytes_allocated / 1e6)
+        io.flush
+      {% end %}
+      {% if flag?(:darwin) %}
+        if system_report && (directory = self.directory)
+          name = label.gsub(/[^a-z0-9]+/i, "-")
+          LibC.system("/usr/bin/vmmap -summary #{Process.pid} > #{Process.quote(File.join(directory, "vmmap-#{name}.txt"))} 2>&1")
+          LibC.system("/usr/bin/footprint #{Process.pid} > #{Process.quote(File.join(directory, "footprint-#{name}.txt"))} 2>&1")
+        end
+      {% end %}
+    end
+  end
+
+  class CodeGenVisitor
+    # See `PeakProbe`. Exits the compiler.
+    def run_peak_probe(node : ASTNode) : NoReturn
+      directory = PeakProbe.directory || raise "BUG: the peak probe ran without CRYSTAL_PEAK_PROBE"
+      Dir.mkdir_p(directory)
+      File.open(File.join(directory, "probe.txt"), "w") do |io|
+        PeakProbe.record(io, "end of IR generation")
+
+        resident = @modules.values.select { |info| info.resident? && !info.same?(@main_module_info) }
+        io.printf("modules in memory: %d (of %d), estimated IR %.1f MB, generated functions in them %d\n",
+          resident.size, @modules.size, resident.sum(&.estimated_ir_bytes) / 1e6,
+          resident.sum(&.list_of_generated_fun_names.size))
+
+        if signatures = @fun_signatures
+          io.printf("function signatures: %d declarations\n", signatures.fun_types.size)
+          context = signatures.mod.context
+          signatures.detach
+          context.dispose
+          @fun_signatures = nil
+        end
+        PeakProbe.record(io, "after freeing the signature module", system_report: false)
+
+        resident.each do |info|
+          context = info.mod.context
+          info.detach
+          context.dispose
+        end
+        PeakProbe.record(io, "after freeing the modules in memory", system_report: false)
+
+        main_context = @main_module_info.mod.context
+        @main_module_info.detach
+        main_context.dispose
+        PeakProbe.record(io, "after freeing the main module")
+
+        {% unless flag?(:gc_none) || flag?(:wasm32) %}
+          GC.collect
+          PeakProbe.record(io, "after a full collection", system_report: false)
+          LibGC.set_force_unmap_on_gcollect(1)
+          3.times { GC.collect }
+          LibGC.set_force_unmap_on_gcollect(0)
+          {% if flag?(:darwin) %}
+            LibDarwinMalloc.malloc_zone_pressure_relief(nil, 0)
+          {% end %}
+          PeakProbe.record(io, "after unmapping free heap blocks")
+        {% end %}
+      end
+      MemoryCensus.report(@program, node, "Codegen (crystal)", File.join(directory, "census.txt"))
+      exit 0
+    end
+  end
+end

@@ -166,6 +166,7 @@ module Crystal
       visitor.accept node
       visitor.process_finished_hooks
       visitor.finish
+      visitor.run_peak_probe(node) if PeakProbe.enabled?
       visitor.report_owner_shape_sharing
 
       {visitor.modules, visitor.module_source_files}
@@ -449,7 +450,7 @@ module Crystal
 
     # A builder for the module of *module_info*, in that module's context.
     def new_builder(module_info : ModuleInfo)
-      CrystalLLVMBuilder.new module_info.mod.context.new_builder, module_info.typer, ->{ c_printf_fun }
+      CrystalLLVMBuilder.new module_info.mod.context.new_builder, module_info.typer, -> { c_printf_fun }
     end
 
     # Here we only initialize simple constants, those
