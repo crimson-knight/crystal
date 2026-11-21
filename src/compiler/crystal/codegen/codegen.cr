@@ -294,7 +294,8 @@ module Crystal
     # blocks one type may add to its group's module. Once a type has generated
     # this many, the rest of its functions go to a module of the type's own, so
     # a large type does not make one group's object file slow to build. About
-    # 1.2 MB of bitcode; a Grant model with some thirty columns is under it.
+    # 1.2 MB of bitcode: each model of the Grant 300-model app stays under
+    # it, and its 15 largest types go over it.
     MODULE_GROUP_TYPE_BLOCK_LIMIT = 16_384
 
     def initialize(@program : Program, @node : ASTNode,
