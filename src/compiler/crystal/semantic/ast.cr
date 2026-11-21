@@ -587,10 +587,6 @@ module Crystal
       splice_out_of_bindings
     end
 
-    def each_observer(& : ASTNode ->) : Nil
-      @observers.each { |observer| yield observer }
-    end
-
     # Marks this variable as closured.
     def mark_as_closured
       self.closured = true
