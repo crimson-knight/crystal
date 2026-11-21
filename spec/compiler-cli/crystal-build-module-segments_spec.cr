@@ -26,7 +26,7 @@ describe "`crystal build --module-segment-instructions`" do
 
         build.output.should match(/types compiled as several object files: [1-9]\d* \(\d+ segments, at most \d\d+ for one type\)/)
         build.output.should contain("object files were built by 4 worker processes")
-        build.output.should match(/longest object file job: \d+\.\d s, /)
+        build.output.should match(/longest object file job: \d+\.\d s \(\d+\.\d s of processor time\), /)
         list_of_ledger_files(cache_dir, ".o").size.should be > 10
         list_of_ledger_files(cache_dir, ".o").size.should eq(list_of_ledger_files(cache_dir, ".bc").size)
 

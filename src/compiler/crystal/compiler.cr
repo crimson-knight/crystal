@@ -1651,8 +1651,13 @@ module Crystal
              "estimated #{pool.maximum_in_flight_memory_bytes // megabyte} MB of worker memory " \
              "(budget #{pool.memory_budget_bytes // megabyte} MB)"
         if longest_job = pool.longest_job
-          puts " - longest object file job: #{longest_job.seconds.round(1)} s, #{longest_job.name} " \
-               "(#{(longest_job.bitcode_bytesize / megabyte).round(1)} MB of bitcode)"
+          puts " - processor time of all object file jobs: #{pool.total_cpu_seconds.round(1)} s"
+          puts " - longest object file job: #{longest_job.seconds.round(1)} s (#{longest_job.cpu_seconds.round(1)} s of processor time), " \
+               "#{longest_job.name} (#{(longest_job.bitcode_bytesize / megabyte).round(1)} MB of bitcode)"
+        end
+        pool.list_of_longest_jobs.skip(1).each do |job_report|
+          puts "   then: #{job_report.seconds.round(1)} s (#{job_report.cpu_seconds.round(1)} s of processor time), " \
+               "#{job_report.name} (#{(job_report.bitcode_bytesize / megabyte).round(1)} MB of bitcode)"
         end
         if largest_job = pool.largest_job
           puts " - largest worker memory: #{largest_job.peak_memory_bytes // megabyte} MB, reached building #{largest_job.name} " \

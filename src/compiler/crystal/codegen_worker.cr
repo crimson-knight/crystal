@@ -78,17 +78,20 @@ module Crystal
     end
 
     # The answer to a job. `error_message` is set when the job failed.
-    # `seconds` is the time the job took in the worker, and
-    # `peak_memory_bytes` the most memory the worker process has held so far
-    # (over all its jobs; 0 when the system does not tell).
+    # `seconds` is the time the job took in the worker, `cpu_seconds` the
+    # processor time of it (which does not grow when the machine is busy
+    # with other work), and `peak_memory_bytes` the most memory the worker
+    # process has held so far (over all its jobs; 0 when the system does not
+    # tell).
     struct Outcome
       include JSON::Serializable
 
       getter error_message : String?
       getter seconds : Float64 = 0.0
+      getter cpu_seconds : Float64 = 0.0
       getter peak_memory_bytes : Int64 = 0_i64
 
-      def initialize(@error_message = nil, @seconds = 0.0, @peak_memory_bytes = 0_i64)
+      def initialize(@error_message = nil, @seconds = 0.0, @cpu_seconds = 0.0, @peak_memory_bytes = 0_i64)
       end
     end
 
@@ -129,11 +132,14 @@ module Crystal
     end
 
     private def compile(compiler : Compiler, job : Job) : Outcome
+      times_before = Process.times
       elapsed = Time.measure do
         compiler.compile_bitcode_file_to_object(job.bitcode_filename, job.object_filename, job.llvm_ir_filename, job.verifies_module,
           job.list_of_more_bitcode_filenames)
       end
-      Outcome.new(seconds: elapsed.total_seconds, peak_memory_bytes: CodegenWorker.peak_memory_bytes)
+      times_after = Process.times
+      cpu_seconds = (times_after.utime + times_after.stime) - (times_before.utime + times_before.stime)
+      Outcome.new(seconds: elapsed.total_seconds, cpu_seconds: cpu_seconds, peak_memory_bytes: CodegenWorker.peak_memory_bytes)
     rescue ex
       Outcome.new(error_message: "#{job.bitcode_filename}: #{ex.message} (#{ex.class})")
     end

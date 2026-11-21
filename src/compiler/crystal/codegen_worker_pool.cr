@@ -40,12 +40,22 @@ module Crystal
 
     getter memory_budget_bytes : Int64
 
-    # What a worker told about one job: the time it took, and the worker's
-    # peak memory when the job was done (see `CodegenWorker::Outcome`).
-    record JobReport, name : String, bitcode_bytesize : Int64, seconds : Float64, peak_memory_bytes : Int64
+    # What a worker told about one job: the time and the processor time it
+    # took, and the worker's peak memory when the job was done (see
+    # `CodegenWorker::Outcome`).
+    record JobReport, name : String, bitcode_bytesize : Int64, seconds : Float64, cpu_seconds : Float64, peak_memory_bytes : Int64
+
+    # The processor time of all jobs together.
+    getter total_cpu_seconds = 0.0
 
     # The job that took the longest.
     getter longest_job : JobReport?
+
+    # How many of the longest jobs `#list_of_longest_jobs` keeps.
+    LONGEST_JOB_COUNT = 5
+
+    # The jobs that took the longest, longest first.
+    getter list_of_longest_jobs = [] of JobReport
 
     # The job during which a worker reached the largest peak memory of all
     # workers. A worker's peak only rises during a job that needs more than
@@ -140,6 +150,7 @@ module Crystal
         if failure_message = finished_job.failure_message
           first_failure_message ||= failure_message
         else
+          record_job_report(@list_of_jobs[finished_job.job_index], finished_job.seat)
           list_of_idle_seats << finished_job.seat
           yield
         end
@@ -162,10 +173,7 @@ module Crystal
       job = @list_of_jobs[job_index]
       spawn do
         failure_message = begin
-          peak_memory_bytes_before = seat.peak_memory_bytes
-          failure_message_of_job = seat.compile(job)
-          record_job_report(job, seat, peak_memory_bytes_before) unless failure_message_of_job
-          failure_message_of_job
+          seat.compile(job)
         rescue ex
           "#{ex.message} (#{ex.class})"
         end
@@ -173,13 +181,19 @@ module Crystal
       end
     end
 
-    private def record_job_report(job : CodegenWorker::Job, seat : Seat, peak_memory_bytes_before : Int64) : Nil
-      report = JobReport.new(job.name, job.bitcode_bytesize, seat.seconds_of_last_job, seat.peak_memory_bytes)
+    # Called by the fiber that hands the jobs out, once *seat* has answered
+    # *job* and before it gets another one.
+    private def record_job_report(job : CodegenWorker::Job, seat : Seat) : Nil
+      report = JobReport.new(job.name, job.bitcode_bytesize, seat.seconds_of_last_job, seat.cpu_seconds_of_last_job, seat.peak_memory_bytes)
+      @total_cpu_seconds += report.cpu_seconds
       longest_job = @longest_job
       @longest_job = report if longest_job.nil? || report.seconds > longest_job.seconds
+      @list_of_longest_jobs << report
+      @list_of_longest_jobs.sort_by! { |job_report| -job_report.seconds }
+      @list_of_longest_jobs.pop if @list_of_longest_jobs.size > LONGEST_JOB_COUNT
 
       largest_job = @largest_job
-      rose_during_this_job = report.peak_memory_bytes > peak_memory_bytes_before
+      rose_during_this_job = report.peak_memory_bytes > seat.peak_memory_bytes_before_last_job
       if rose_during_this_job && (largest_job.nil? || report.peak_memory_bytes > largest_job.peak_memory_bytes)
         @largest_job = report
       end
@@ -233,7 +247,9 @@ module Crystal
       # What the worker told with its last answer: the time of that job and
       # the peak memory of the worker process so far.
       getter seconds_of_last_job = 0.0
+      getter cpu_seconds_of_last_job = 0.0
       getter peak_memory_bytes = 0_i64
+      getter peak_memory_bytes_before_last_job = 0_i64
 
       # Has the worker compile *job*. Returns what went wrong, or `nil` when
       # the object file was written.
@@ -246,6 +262,8 @@ module Crystal
 
         outcome = CodegenWorker::Outcome.from_json(outcome_line)
         @seconds_of_last_job = outcome.seconds
+        @cpu_seconds_of_last_job = outcome.cpu_seconds
+        @peak_memory_bytes_before_last_job = @peak_memory_bytes
         @peak_memory_bytes = outcome.peak_memory_bytes
         outcome.error_message
       rescue ex : IO::Error
