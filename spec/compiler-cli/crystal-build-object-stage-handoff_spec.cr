@@ -52,6 +52,32 @@ describe "`crystal build` with the object stage handoff" do
     end
   end
 
+  it "hands over modules that IR generation spilled to disk in several parts" do
+    with_tempfile("handoff-spill-cache") do |cache_dir|
+      with_temp_executable "handoff-spill" do |output_path|
+        build = build_with_four_threads("multi-type.cr", output_path, cache_dir, "--resident-modules", "2").should(be_success)
+        build.output.should contain(HANDOFF_STATS_LINE)
+        build.output.should match(/modules made of several parts: [1-9]\d/)
+        build.output.should contain("no previous .o files were reused")
+
+        # Every unit has one object, built from all of its parts.
+        list_of_bitcode_files = list_of_cache_files(cache_dir, "*.bc")
+        list_of_part_files = list_of_bitcode_files.select(&.matches?(/\.part\d+\.bc\z/))
+        list_of_part_files.size.should be > 10
+        (list_of_bitcode_files - list_of_part_files).each do |bitcode_file|
+          File.size(bitcode_file.rchop(".bc") + ".o").should be > 0
+        end
+
+        Process.capture_result(output_path)
+          .should(be_success)
+          .output.should(eq(MULTI_TYPE_OUTPUT))
+
+        unchanged_build = build_with_four_threads("multi-type.cr", output_path, cache_dir, "--resident-modules", "2").should(be_success)
+        unchanged_build.output.should contain("all previous .o files were reused")
+      end
+    end
+  end
+
   it "reuses the object files of an unchanged build and rebuilds only a missing one" do
     with_tempfile("handoff-reuse-cache") do |cache_dir|
       with_temp_executable "handoff-reuse" do |output_path|
