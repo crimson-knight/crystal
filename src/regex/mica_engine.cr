@@ -36,9 +36,38 @@ module Regex::MicaEngine
     # PCRE2 leaves invalid UTF-8 in a pattern compiled with NO_UTF_CHECK
     # undefined; Mica reads each invalid byte as U+FFFD.
     source = source.scrub if options.no_utf_check?
-    @expression = MicaEngine.compile(source, MicaEngine.compile_options(options)) do |error|
-      raise error
+    @expression = MicaEngine.cached_expression(source, MicaEngine.compile_options(options))
+  end
+
+  # How many compiled expressions `cached_expression` keeps.
+  EXPRESSION_CACHE_CAPACITY = 256
+
+  @@expression_cache = Hash({String, Regex::Mica::Regex::CompileOptions}, Regex::Mica::Regex::Expression).new
+  @@expression_cache_lock = Thread::Mutex.new
+
+  # Returns the compiled expression for *source* and *options*, compiling it
+  # on first use. Programs often build the same pattern again and again
+  # (`str.gsub(/#{name}:/, ...)` in a loop). PCRE2 compiles such a pattern
+  # in a few microseconds outside the GC heap; Mica compiles it in Crystal
+  # and builds its search plan on the first searches, which in a program
+  # with a large heap costs garbage collections. An expression is
+  # immutable and safe to share between fibers and threads, so `Regex`
+  # values with the same source and options share one. The cache holds
+  # the most recent `EXPRESSION_CACHE_CAPACITY` expressions.
+  protected def self.cached_expression(source : String, options : Regex::Mica::Regex::CompileOptions) : Regex::Mica::Regex::Expression
+    key = {source, options}
+    if expression = @@expression_cache_lock.synchronize { @@expression_cache[key]? }
+      return expression
     end
+
+    expression = compile(source, options) { |error| raise error }
+    @@expression_cache_lock.synchronize do
+      if @@expression_cache.size >= EXPRESSION_CACHE_CAPACITY
+        @@expression_cache.delete(@@expression_cache.first_key)
+      end
+      @@expression_cache[key] = expression
+    end
+    expression
   end
 
   protected def self.compile(source : String, options : Regex::Mica::Regex::CompileOptions, & : ArgumentError -> _) : Regex::Mica::Regex::Expression
