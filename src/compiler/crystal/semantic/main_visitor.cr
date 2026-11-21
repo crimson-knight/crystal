@@ -1673,6 +1673,7 @@ module Crystal
       end
       node.with_scope = with_scope unless node.obj
       node.parent_visitor = self
+      self.keeps_vars = true if node.scope.is_a?(LibType)
     end
 
     def recalculate_call(node : Call)
@@ -1806,6 +1807,10 @@ module Crystal
     # Fill function literal argument types for C functions
     def check_lib_call(node, obj_type)
       return unless obj_type.is_a?(LibType)
+
+      # See `keeps_vars?`. `Call#recalculate_lib_call` says so too; here it is
+      # known before the arguments are visited.
+      self.keeps_vars = true
 
       # Error quickly if we can't find a fun
       method = obj_type.lookup_first_def(node.name, false)
