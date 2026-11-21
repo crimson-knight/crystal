@@ -107,6 +107,7 @@ module Crystal
       end
       print_typed_defs_by_source(io)
       print_identical_copies(io)
+      print_owner_shapes(io)
       stats = @program.block_instance_stats
       io.printf("sharing  block instances typed %d, shared %d, reused by their first call %d, diverged %d, late yields %d, block type differs %d, yields depend on block %d\n",
         stats.typed, stats.shared, stats.reused_by_first_call, stats.diverged, stats.late_yields, stats.block_type_differs, stats.yields_depend_on_block)
@@ -410,6 +411,94 @@ module Crystal
         io.printf("identical cached %-40s %12d copies  %10.1f MB  %d owners, %d distinct, %d distinct with owner erased\n",
           name[0, 40], count, bytes / 1e6, owners.size, distinct.size, erased.size)
       end
+    end
+
+    # Reports what `OwnerShapeSharing` would share among the cached copies, how
+    # the owner enters the bodies of the defs whose copies differ only by
+    # owner, and what keeps the rest apart.
+    private def print_owner_shapes(io : IO) : Nil
+      main_node = @main_node || return
+      sharing = OwnerShapeSharing.new(@program)
+      sharing.analyze(main_node)
+      stats = sharing.stats
+      io.printf("shapes   %d typed defs, %d groups, %d share another def's function, %d unshareable, %d pinned, %d rounds, %.1f s\n",
+        stats.typed_defs, stats.groups, stats.shared, stats.unshareable, stats.pinned, stats.rounds, stats.seconds)
+
+      all_bytes = 0_i64
+      shared_bytes = 0_i64
+      shared_copies = 0_i64
+      blockers = Hash(String, {Int64, Int64}).new
+      sources = Hash(String, OwnerShapeSource).new
+      @cached_typed_defs.each do |typed_def|
+        shape = sharing.shape?(typed_def) || next
+        print_data = fingerprint(typed_def)
+        all_bytes += print_data.bytes
+        source = sources[source_key(typed_def)] ||= OwnerShapeSource.new
+        source.copies += 1
+        source.bytes += print_data.bytes
+        source.erased << print_data.content_without_owner
+        source.groups << {shape.first, shape.second}
+        source.owner_use |= shape.owner_use
+        if sharing.representative?(typed_def)
+          shared_bytes += print_data.bytes
+          shared_copies += 1
+          source.shared_copies += 1
+          source.shared_bytes += print_data.bytes
+        end
+        if blocker = shape.blocker
+          current = blockers[blocker]? || {0_i64, 0_i64}
+          blockers[blocker] = {current[0] + 1, current[1] + print_data.bytes}
+          source.blockers[blocker] = (source.blockers[blocker]? || 0) + 1
+        end
+      end
+      io.printf("shapes   %-48s %12d copies  %10.1f MB\n", "cached copies", @cached_typed_defs.size, all_bytes / 1e6)
+      io.printf("shapes   %-48s %12d copies  %10.1f MB\n", "cached copies that share another def's function", shared_copies, shared_bytes / 1e6)
+      blockers.to_a.sort_by { |entry| -entry[1][1] }.first(40).each do |reason, (count, bytes)|
+        io.printf("shapes blocker %-74s %9d copies %9.1f MB\n", reason[0, 74], count, bytes / 1e6)
+      end
+
+      # Source defs whose copies differ only by owner: fewer distinct bodies
+      # with the owner erased than copies.
+      owner_only = sources.to_a.select { |entry| entry[1].erased.size < entry[1].copies }
+      owner_only.sort_by! { |entry| -entry[1].bytes }
+      io.printf("shapes   %-48s %12d copies  %10.1f MB  %d source defs, %d copies shared (%.1f MB)\n", "defs whose copies differ only by owner",
+        owner_only.sum { |entry| entry[1].copies }, owner_only.sum { |entry| entry[1].bytes } / 1e6, owner_only.size,
+        owner_only.sum { |entry| entry[1].shared_copies }, owner_only.sum { |entry| entry[1].shared_bytes } / 1e6)
+      {owner_only.first(50), owner_only}.each_with_index do |list, index|
+        label = index == 0 ? "top 50" : "all"
+        OwnerShapeSharing::OwnerUse.each do |use|
+          matching = list.select { |entry| entry[1].owner_use.includes?(use) }
+          io.printf("shapes use %-7s %-18s %6d source defs %9d copies %9.1f MB, shared %9d copies %9.1f MB\n", label, use.to_s,
+            matching.size, matching.sum { |entry| entry[1].copies }, matching.sum { |entry| entry[1].bytes } / 1e6,
+            matching.sum { |entry| entry[1].shared_copies }, matching.sum { |entry| entry[1].shared_bytes } / 1e6)
+        end
+        combos = Hash(String, {Int64, Int64, Int64, Int64, Int64}).new
+        list.each do |_, source|
+          key = source.owner_use.none? ? "(owner only in types)" : source.owner_use.to_s
+          current = combos[key]? || {0_i64, 0_i64, 0_i64, 0_i64, 0_i64}
+          combos[key] = {current[0] + 1, current[1] + source.copies, current[2] + source.bytes, current[3] + source.shared_copies, current[4] + source.shared_bytes}
+        end
+        combos.to_a.sort_by { |entry| -entry[1][2] }.first(30).each do |key, (defs, copies, bytes, shared, shared_size)|
+          io.printf("shapes mix %-7s %-80s %5d source defs %8d copies %8.1f MB, shared %8d copies %8.1f MB\n", label, key[0, 80], defs, copies, bytes / 1e6, shared, shared_size / 1e6)
+        end
+      end
+      owner_only.first(50).each do |name, source|
+        blocker = source.blockers.to_a.max_by?(&.[1]).try(&.[0]) || ""
+        io.printf("shapes def %-40s %6d copies %7.1f MB  %5d erased, %5d groups, %5d shared  [%s]  %s\n", name[0, 40], source.copies, source.bytes / 1e6,
+          source.erased.size, source.groups.size, source.shared_copies, source.owner_use.to_s, blocker[0, 70])
+      end
+    end
+
+    # Totals for the typed copies of one source def (see `print_owner_shapes`).
+    class OwnerShapeSource
+      property copies = 0_i64
+      property bytes = 0_i64
+      property shared_copies = 0_i64
+      property shared_bytes = 0_i64
+      property owner_use = OwnerShapeSharing::OwnerUse::None
+      getter erased = Set(UInt64).new
+      getter groups = Set({UInt64, UInt64}).new
+      getter blockers = Hash(String, Int32).new
     end
 
     private def source_key(typed_def : Def) : String

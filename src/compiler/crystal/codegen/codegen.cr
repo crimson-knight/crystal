@@ -157,9 +157,11 @@ module Crystal
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
       visitor.release_typed_bodies = release_typed_bodies
+      visitor.release_shared_bodies
       visitor.accept node
       visitor.process_finished_hooks
       visitor.finish
+      visitor.report_owner_shape_sharing
 
       {visitor.modules, visitor.module_source_files}
     end
@@ -227,6 +229,11 @@ module Crystal
     # once its function is generated (see `ReleasedBody`).
     property? release_typed_bodies = false
     @released_body_count = 0
+
+    # The groups of typed defs that share one function, or `nil` when sharing
+    # is off (see `OwnerShapeSharing`).
+    getter owner_shape_sharing : OwnerShapeSharing?
+    getter generated_fun_count = 0
     getter context : Context
     getter llvm_typer : LLVMTyper
     getter alloca_block : LLVM::BasicBlock
@@ -294,6 +301,9 @@ module Crystal
                    @frame_pointers : FramePointers = :auto,
                    @llvm_context : LLVM::Context = LLVM::Context.new)
       @abi = ABI.from(@program.target_machine)
+      if @program.share_owner_shapes? && !@program.compiler.try(&.incremental?)
+        @owner_shape_sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
+      end
       # LLVM::Context.register(@llvm_context, "main")
       @llvm_mod = configure_module(@llvm_context.new_module("main_module"))
       @main_mod = @llvm_mod
@@ -578,6 +588,28 @@ module Crystal
 
     def type
       context.type.not_nil!
+    end
+
+    # Prints the sharing counters to standard error when
+    # `CRYSTAL_OWNER_SHAPES_STATS` is set.
+    def report_owner_shape_sharing : Nil
+      return unless ENV["CRYSTAL_OWNER_SHAPES_STATS"]?.presence
+      if sharing = @owner_shape_sharing
+        stats = sharing.stats
+        STDERR.printf("owner shapes: %d typed defs, %d groups, %d share another def's function, %d unshareable, %d pinned, %d bodies released, %d rounds, %.1f s\n",
+          stats.typed_defs, stats.groups, stats.shared, stats.unshareable, stats.pinned, stats.released_bodies, stats.rounds, stats.seconds)
+      end
+      STDERR.printf("owner shapes: %d LLVM functions generated\n", @generated_fun_count)
+      if sharing && (pattern = ENV["CRYSTAL_OWNER_SHAPES_DEBUG"]?.presence)
+        regex = Regex.new(pattern)
+        sharing.shapes.each do |shape|
+          typed_def = shape.typed_def
+          label = "#{typed_def.owner?}##{typed_def.name}"
+          next unless label.matches?(regex)
+          representative = sharing.representative?(typed_def)
+          STDERR.puts "owner shapes: #{label} shareable=#{shape.shareable?} pinned=#{shape.pinned?} group=#{shape.first.to_s(16)} function=#{representative ? representative.owner.to_s : "own"} blocker=#{shape.blocker}"
+        end
+      end
     end
 
     def finish
