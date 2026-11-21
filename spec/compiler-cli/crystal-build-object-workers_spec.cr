@@ -51,22 +51,20 @@ describe "`crystal build` with object file workers" do
         build_multi_type(output_path, cache_dir).should(be_success)
         bitcode_file = Dir.glob(File.join(cache_dir, "**", "*.bc")).sort!.first
 
-        version_lines = Process.capture(crystal, "--version").lines
-        host_target = version_lines.find!(&.starts_with?("Default target: ")).lchop("Default target: ")
+        host_target = Process.capture_result(crystal, "--version").output[/Default target: (\S+)/, 1]
         settings = {target_triple: host_target, mcpu: nil, mattr: nil,
                     optimization_mode: "O3", code_model: "Default"}
-        jobs = [
-          {bitcode_filename: bitcode_file, object_filename: object_path},
-          {bitcode_filename: bitcode_file + ".missing", object_filename: object_path + ".missing"},
-        ]
-        input = IO::Memory.new([settings, *jobs].join('\n', &.to_json) + "\n")
+        job = {bitcode_filename: bitcode_file, object_filename: object_path}
+        job_without_bitcode = {bitcode_filename: bitcode_file + ".missing", object_filename: object_path + ".missing"}
+        input = IO::Memory.new("#{settings.to_json}\n#{job.to_json}\n#{job_without_bitcode.to_json}\n")
 
         result = Process.capture_result(crystal, "internal-codegen-worker", input: input).should(be_success)
 
-        list_of_outcomes = result.output.lines.map { |line| JSON.parse(line)["error_message"].as_s? }
-        list_of_outcomes.size.should eq(2)
-        list_of_outcomes[0].should be_nil
-        list_of_outcomes[1].to_s.should contain(".missing")
+        list_of_outcome_lines = result.output.lines
+        list_of_outcome_lines.size.should eq(2)
+        list_of_outcome_lines[0].should eq("{}")
+        list_of_outcome_lines[1].should contain(%("error_message":))
+        list_of_outcome_lines[1].should contain(".missing")
         File.size(object_path).should be > 0
         File.exists?(object_path + ".missing").should be_false
       end
