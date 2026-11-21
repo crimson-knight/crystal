@@ -70,6 +70,11 @@ module Crystal
         getter stage_progress_total : Int32
         getter list_of_unit_summaries : Array(UnitSummary)
         getter stats_report_before_codegen : String
+        getter stats_report_after_codegen : String
+
+        # The incremental cache of this build, written under a pending name:
+        # it becomes the cache once the executable is linked.
+        getter pending_incremental_cache_filename : String?
         getter list_of_warnings : Array(String)
         getter? error_on_warnings : Bool
 
@@ -78,8 +83,8 @@ module Crystal
                        @output_filename, @writes_dwarf_companion, @cleans_cache_directory,
                        @lock_file_descriptor, @verbose, @color, @stats, @progress, @stage_number,
                        @stage_started_at_unix_ms, @stage_progress, @stage_progress_total,
-                       @list_of_unit_summaries, @stats_report_before_codegen, @list_of_warnings,
-                       @error_on_warnings)
+                       @list_of_unit_summaries, @stats_report_before_codegen, @stats_report_after_codegen,
+                       @pending_incremental_cache_filename, @list_of_warnings, @error_on_warnings)
         end
 
         # A compiler that builds objects, links and reports as the one this
@@ -123,6 +128,7 @@ module Crystal
         @compiler.link_object_files(@handoff.linker_name, @handoff.linker_command,
           @handoff.list_of_linker_arguments, @handoff.output_filename, @handoff.output_directory)
         write_dwarf_companion
+        keep_incremental_cache
         CacheDir.instance.cleanup if @handoff.cleans_cache_directory?
 
         @progress_tracker.clear
@@ -130,6 +136,7 @@ module Crystal
           print @handoff.stats_report_before_codegen
           @compiler.print_codegen_stats(@handoff.list_of_unit_summaries)
           puts " - object files were built and linked by a compiler process of their own (object stage handoff)"
+          print @handoff.stats_report_after_codegen
         end
       end
 
@@ -149,6 +156,19 @@ module Crystal
           stage_progress: @handoff.stage_progress, stage_progress_total: @handoff.stage_progress_total) do
           @compiler.build_objects_in_workers(@handoff.list_of_jobs, @handoff.thread_count, @handoff.worker_executable)
         end
+      end
+
+      # The executable is linked: the cache written before the handoff
+      # describes it from now on.
+      private def keep_incremental_cache : Nil
+        pending_incremental_cache_filename = @handoff.pending_incremental_cache_filename
+        return unless pending_incremental_cache_filename
+        # Writing the cache is best effort: without the file, the next build
+        # compares against the previous cache and compiles again.
+        return unless File.exists?(pending_incremental_cache_filename)
+
+        File.rename(pending_incremental_cache_filename,
+          File.join(File.dirname(pending_incremental_cache_filename), IncrementalCache::CACHE_FILENAME))
       end
 
       private def write_dwarf_companion : Nil
