@@ -47,6 +47,9 @@ module Crystal
     # Cleared when the clone can never be shared (see `#add_yield`).
     property? shareable = true
 
+    # Why the last check failed (shown by the memory census).
+    getter dependence_reason : String?
+
     @checked_yield_count = -1
     @incomplete_checks = 0
     @independent = false
@@ -98,16 +101,20 @@ module Crystal
     def yields_independent_of_block?(typed_def : Def) : Bool
       return false unless shareable?
       return @independent if @checked_yield_count == @yields.size
+      return false if @incomplete_checks > MAX_INCOMPLETE_CHECKS
 
       unless all_blocks_typed?(typed_def)
         # A block that is typed later can add edges the walk has not seen.
         # Ask again on the next call, a few times at most.
         @incomplete_checks += 1
-        @shareable = false if @incomplete_checks > MAX_INCOMPLETE_CHECKS
+        @dependence_reason = "a block in the def is not typed yet"
         return false
       end
 
+      # The walk can come back to this clone through a nested one; it then
+      # reads the conservative answer.
       @checked_yield_count = @yields.size
+      @independent = false
       @independent = compute_yields_independent_of_block(typed_def)
     end
 
@@ -141,19 +148,32 @@ module Crystal
       seen = Set(UInt64).new
       while node = pending.pop?
         next unless seen.add?(node.object_id)
-        return false if seen.size > DEPENDENCY_WALK_LIMIT
+        if seen.size > DEPENDENCY_WALK_LIMIT
+          @dependence_reason = "walk limit"
+          return false
+        end
 
         if node.same?(typed_def)
           # The clone's return type goes to its callers, never back into it:
           # a def that yields cannot call itself with the same block.
           next
         elsif node.is_a?(YieldBlockBinder)
-          return false if node.block.same?(@first_block)
+          if node.block.same?(@first_block)
+            @dependence_reason = "a yield expression follows the block's value"
+            return false
+          end
           pending.concat(node.block.args)
           next
         elsif node.is_a?(BlockInstanceWatcher)
+          # A block in this clone's body shares a nested clone. The nested
+          # clone is identical to a private one, so the block's type reaches
+          # the nested call's type, and it reaches the block's parameters
+          # only if the nested clone's `yield` expressions depend on its block.
           pending << node.call
-          pending.concat(node.block.args)
+          nested = node.typed_def.block_instance
+          unless nested && nested.yields_independent_of_block?(node.typed_def)
+            pending.concat(node.block.args)
+          end
           next
         elsif node.is_a?(MetaTypeVar)
           # Instance, class and global vars are typed for the whole program,
@@ -166,18 +186,25 @@ module Crystal
             pending << nested.first_call
             next
           end
-        elsif node.is_a?(Call)
-          if block = node.block
-            pending.concat(block.args)
-          end
         end
 
-        node.each_observer { |observer| pending << observer }
+        node.each_observer { |observer| push_dependent(pending, observer) }
         if enclosing_call = node.enclosing_call
-          pending << enclosing_call
+          push_dependent(pending, enclosing_call)
         end
       end
       true
+    end
+
+    # *node* reads a value that follows the block's type. A call that reads
+    # it as its receiver, as an argument or as the type of its own block may
+    # target another def, so the parameters of its block follow too. (A call
+    # reached only because its result changed is pushed without them.)
+    private def push_dependent(pending : Array(ASTNode), node : ASTNode) : Nil
+      pending << node
+      if node.is_a?(Call) && (block = node.block)
+        pending.concat(block.args)
+      end
     end
   end
 

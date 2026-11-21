@@ -565,7 +565,8 @@ class Crystal::Call
     end
     first = sharable.first?
     unless first
-      stats.note_unshared(candidates.first.name, "untyped block, no clone with block-independent yields")
+      reason = candidates.first.block_instance.try(&.dependence_reason) || "clone not ready"
+      stats.note_unshared(candidates.first.name, "untyped block, no block-independent clone (#{reason})")
       return nil
     end
 
