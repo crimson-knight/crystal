@@ -79,6 +79,15 @@ Errors:
 | A byte index inside a character | `ArgumentError` (`"bad offset into UTF string"`), as with PCRE2 |
 | A search past its work allowance | `Regex::Error`, as PCRE2's match limit |
 
+Compiled patterns are shared: `Regex` values with the same source and
+options share one Mica expression (immutable and safe to share between
+fibers and threads), and the engine keeps the 256 most recently compiled.
+PCRE2 compiles a pattern in microseconds outside the garbage-collected
+heap; Mica compiles in Crystal and builds its search plan during the first
+searches, so a pattern rebuilt in a loop (`str.gsub(/#{name}:/, ...)`)
+would otherwise cost allocations, and garbage collections in a program
+with a large heap.
+
 Limits: patterns compile under Mica's `TRUSTED_PATTERN` limits (64 KiB of
 pattern, 1,000,000 program states, 64 MiB of Pike VM workspace) and search
 under `TRUSTED_INPUT` (an allowance that grows with the haystack and the
