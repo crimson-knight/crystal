@@ -170,8 +170,8 @@ describe "`crystal build` with the object stage handoff" do
         Dir.mkdir_p(program_dir)
         program_path = File.join(program_dir, "program.cr")
         build_program = ->(list_of_extra_args : Array(String)) do
-          Process.capture_result(crystal, "build", "--incremental", "--threads", "4", "--stats", *list_of_extra_args,
-            "-o", output_path, program_path, env: {"CRYSTAL_CACHE_DIR" => cache_dir})
+          list_of_arguments = [crystal, "build", "--incremental", "--threads", "4", "--stats"] + list_of_extra_args + ["-o", output_path, program_path]
+          Process.capture_result(list_of_arguments, env: {"CRYSTAL_CACHE_DIR" => cache_dir})
         end
 
         File.write(program_path, "class Greeter\n  def greeting(count)\n    count > 0 ? \"hello again\" : \"hello\"\n  end\nend\nputs Greeter.new.greeting(ARGV.size)\n")
