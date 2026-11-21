@@ -7,10 +7,7 @@ class Crystal::CodeGenVisitor
 
   def typed_fun?(module_info : ModuleInfo, name : String) : LLVMTypedFunction?
     if func = module_info.mod.functions[name]?
-      # A module parsed back from bitcode starts without recorded types:
-      # the function itself tells its type.
-      type = module_info.fun_types[name] ||= func.value_type
-      LLVMTypedFunction.new(type, func)
+      LLVMTypedFunction.new(module_info.fun_types[name], func)
     end
   end
 
@@ -37,13 +34,15 @@ class Crystal::CodeGenVisitor
       return existing_fun
     end
 
-    # Declared in another module before: its recorded signature is enough.
+    # Declared in another module before, or generated into a module part
+    # that is on disk by now: its recorded signature is enough.
     if known_signature = known_fun_signature?(mangled_name)
       return declare_fun(mangled_name, known_signature)
     end
 
-    # Declaring the function here reads it from its own module, which must
-    # stay in memory until then.
+    # The function is in the part of its module that is in memory, or it
+    # is generated into that part now. Declaring it here reads it from that
+    # part, which must stay in memory until then.
     self_type_module_info = type_module(self_type)
     pin_module(self_type_module_info)
     func = typed_fun?(self_type_module_info, mangled_name) ||
@@ -131,7 +130,7 @@ class Crystal::CodeGenVisitor
 
     # The module gets a new function, and stays in memory while this frame
     # holds values of it.
-    fun_module_info.changed_since_spill = true
+    fun_module_info.list_of_generated_fun_names << mangled_name
     pin_module(fun_module_info)
 
     typed_function = with_cloned_context do |old_context|

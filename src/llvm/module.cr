@@ -137,6 +137,13 @@ class LLVM::Module
     end
   end
 
+  # Moves everything *other* defines or declares into this module, as a
+  # linker does: a declaration here is replaced by the definition there.
+  # Both modules must be in the same context. *other* is destroyed.
+  def link(other : Module) : Nil
+    raise "BUG: failed to link LLVM module #{other.name} into #{name}" unless LibLLVM.link_modules2(self, other) == 0
+  end
+
   def write_bitcode_to_fd(fd : Int, should_close = false, buffered = false)
     LibLLVM.write_bitcode_to_fd(self, fd, should_close ? 1 : 0, buffered ? 1 : 0)
   end

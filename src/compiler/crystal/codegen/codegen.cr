@@ -618,8 +618,8 @@ module Crystal
       end
 
       @modules.each do |name, info|
-        # A spilled module was finished when it was written, and is verified
-        # when its compilation unit loads it.
+        # A module part on disk was finished when it was written, and is
+        # verified when its compilation unit is built.
         next unless info.resident?
 
         mod = info.mod
@@ -634,7 +634,7 @@ module Crystal
       end
 
       dispose_di_builders
-      record_resident_modules_in_spill_statistics
+      spill_last_parts_of_spilled_modules
 
       if type_info_path = ENV["CRYSTAL_DUMP_TYPE_INFO"]?.presence
         dump_type_info(type_info_path)

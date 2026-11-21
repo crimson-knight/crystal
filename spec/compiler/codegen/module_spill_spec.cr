@@ -1,10 +1,10 @@
 require "../../spec_helper"
 
 # A program with many types that call into each other, so that with a tiny
-# resident set most modules are spilled and read back several times. It uses
-# what a reloaded module has to get right: struct and tuple values passed
-# across modules, unions sized by structs, generics, closures, string constants, class
-# variables, constants, exceptions and virtual dispatch.
+# resident set most modules are spilled in several parts. It uses what the
+# parts of a module have to agree on: struct and tuple values passed across
+# modules, unions sized by structs, generics, closures, string constants,
+# class variables, constants, exceptions and virtual dispatch.
 private MODULE_SPILL_PROGRAM = <<-CRYSTAL
   require "prelude"
 
@@ -117,8 +117,8 @@ private MODULE_SPILL_PROGRAM = <<-CRYSTAL
   add_offset = ->(number : Int32) { number + offset }
   puts (1..4).map { |number| (value = risky(number)).is_a?(Int32) ? add_offset.call(value) : value rescue "rescued" }.inspect
 
-  # A union whose size comes from a struct inside a tuple: a module that is
-  # read back must lay it out as large as a module that never left memory.
+  # A union whose size comes from a struct inside a tuple: a module created
+  # after others were freed must lay it out as large as the first modules.
   record Wide, first : Int64, second : Int64, third : Int64, fourth : Int64 do
     def sum : Int64
       first + second + third + fourth
@@ -215,20 +215,9 @@ describe "Compiler#resident_modules and Compiler#resident_ir_megabytes" do
 
       module_spill = compiler.last_module_spill.should_not be_nil
       module_spill.spill_count.should be > 100
-      module_spill.reload_count.should be > 100
+      module_spill.multi_part_module_count.should be > 10
       module_spill.peak_resident_ir_bytes.should be < 16 * 1024 * 1024
-      module_spill.list_of_mismatched_struct_names.should be_empty
       Process.capture(executable).should eq(MODULE_SPILL_PROGRAM_OUTPUT)
-    end
-  end
-
-  it "drops a module that did not change since it was read back without writing it again" do
-    with_tempfile("module_spill_unchanged") do |directory|
-      Dir.mkdir_p(directory)
-      _, compiler = compile_module_spill_program(directory, 2, "unchanged")
-
-      module_spill = compiler.last_module_spill.should_not be_nil
-      module_spill.write_count.should be < module_spill.spill_count
     end
   end
 
@@ -249,15 +238,32 @@ describe "Compiler#resident_modules and Compiler#resident_ir_megabytes" do
 
       module_spill = compiler.last_module_spill.should_not be_nil
       module_spill.spill_count.should be > 100
-      module_spill.reload_count.should be > 100
-      module_spill.write_count.should be <= module_spill.spill_count
-      module_spill.list_of_mismatched_struct_names.should be_empty
+      module_spill.multi_part_module_count.should be > 10
+      module_spill.peak_resident_count.should be < 40
       Process.capture(executable).should eq(MODULE_SPILL_PROGRAM_OUTPUT)
 
-      # Every spill file became its unit's cached .bc file.
+      # Every spill file became a cached bitcode file of its unit: the
+      # first part is the unit's .bc file, next to the unit's one object.
       list_of_cache_files = Dir.children(module_spill_cache_directory(directory))
       list_of_cache_files.select(&.ends_with?(".new.bc")).should be_empty
-      list_of_cache_files.count(&.ends_with?(".bc")).should eq(list_of_cache_files.count(&.ends_with?(".o")))
+      list_of_part_files = list_of_cache_files.select(&.matches?(/\.part\d+\.bc\z/))
+      list_of_part_files.size.should be > 10
+      (list_of_cache_files.count(&.ends_with?(".bc")) - list_of_part_files.size).should eq(list_of_cache_files.count(&.ends_with?(".o")))
+    end
+  end
+
+  it "replaces the cached parts of a module when a later build keeps it in memory" do
+    with_tempfile("module_spill_then_resident") do |directory|
+      Dir.mkdir_p(directory)
+      compile_module_spill_program(directory, 2, "spilled")
+      cache_directory = module_spill_cache_directory(directory)
+      Dir.children(cache_directory).count(&.matches?(/\.part\d+\.bc\z/)).should be > 10
+
+      executable, compiler = compile_module_spill_program(directory, 0, "resident")
+
+      compiler.last_module_spill.should be_nil
+      Dir.children(cache_directory).count(&.matches?(/\.part\d+\.bc\z/)).should eq(0)
+      Process.capture(executable).should eq(MODULE_SPILL_PROGRAM_OUTPUT)
     end
   end
 

@@ -59,11 +59,6 @@ struct LLVM::Function
     attrs
   end
 
-  # The type of this function, as it was declared.
-  def value_type : Type
-    Type.new LibLLVM.global_get_value_type(self)
-  end
-
   @[Deprecated]
   def function_type
     Type.new LibLLVM.get_element_type(LibLLVM.type_of(self))

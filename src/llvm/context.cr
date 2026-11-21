@@ -103,17 +103,6 @@ class LLVM::Context
     the_struct
   end
 
-  # Returns the named struct type that already exists in this context (for
-  # example one that came with a module parsed from bitcode), if any.
-  def named_struct?(name : String) : Type?
-    {% if LibLLVM::IS_LT_120 %}
-      nil
-    {% else %}
-      type = LibLLVM.get_type_by_name2(self, name)
-      type ? Type.new(type) : nil
-    {% end %}
-  end
-
   def struct(element_types : Array(LLVM::Type), name = nil, packed = false) : Type
     if name
       self.struct(name, packed) { element_types }

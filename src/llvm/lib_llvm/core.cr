@@ -87,16 +87,11 @@ lib LibLLVM
 
   fun struct_type_in_context = LLVMStructTypeInContext(c : ContextRef, element_types : TypeRef*, element_count : UInt, packed : Bool) : TypeRef
   fun struct_create_named = LLVMStructCreateNamed(c : ContextRef, name : Char*) : TypeRef
-  {% unless LibLLVM::IS_LT_120 %}
-    fun get_type_by_name2 = LLVMGetTypeByName2(c : ContextRef, name : Char*) : TypeRef
-  {% end %}
-  fun global_get_value_type = LLVMGlobalGetValueType(global : ValueRef) : TypeRef
   fun get_struct_name = LLVMGetStructName(ty : TypeRef) : Char*
   fun struct_set_body = LLVMStructSetBody(struct_ty : TypeRef, element_types : TypeRef*, element_count : UInt, packed : Bool)
   fun count_struct_element_types = LLVMCountStructElementTypes(struct_ty : TypeRef) : UInt
   fun get_struct_element_types = LLVMGetStructElementTypes(struct_ty : TypeRef, dest : TypeRef*)
   fun is_packed_struct = LLVMIsPackedStruct(struct_ty : TypeRef) : Bool
-  fun is_opaque_struct = LLVMIsOpaqueStruct(struct_ty : TypeRef) : Bool
 
   fun get_element_type = LLVMGetElementType(ty : TypeRef) : TypeRef
   fun array_type = LLVMArrayType(element_type : TypeRef, element_count : UInt) : TypeRef

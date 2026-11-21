@@ -53,25 +53,13 @@ module Crystal
     end
 
     # Completes the debug info of a module that is about to be verified or
-    # written as bitcode. A module that was parsed back from bitcode and got
-    # more debug info since then has a new compile unit to complete; its
-    # module flags are already there.
+    # written as bitcode.
     def finish_module_debug_info(module_info : ModuleInfo) : Nil
-      if module_info.has_debug_info_flags?
-        if di_builder = module_info.di_builder
-          di_builder.end
-          di_builder.dispose
-          module_info.di_builder = nil
-        end
-        return
-      end
-
       mod = module_info.mod
       di_builder = di_builder(module_info)
       di_builder.end
       di_builder.dispose
       module_info.di_builder = nil
-      module_info.has_debug_info_flags = true
 
       if @program.has_flag?("msvc")
         # Windows uses CodeView instead of DWARF

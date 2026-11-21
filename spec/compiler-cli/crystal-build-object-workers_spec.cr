@@ -45,6 +45,37 @@ describe "`crystal build` with object file workers" do
     end
   end
 
+  it "hands modules that IR generation spilled to disk to the workers and reuses their objects" do
+    with_tempfile("object-workers-spill-cache") do |cache_dir|
+      with_temp_executable "object-workers-spill" do |output_path|
+        first_build = build_multi_type(output_path, cache_dir, "--resident-modules", "2").should(be_success)
+        first_build.output.should contain("object files were built by 4 worker processes")
+        first_build.output.should contain("no previous .o files were reused")
+        first_build.output.should match(/modules spilled to disk: [1-9]\d\d/)
+
+        Process.capture_result(output_path)
+          .should(be_success)
+          .output.should(eq(MULTI_TYPE_OUTPUT))
+
+        # Every spill file became its unit's .bc file, with an object next to it.
+        Dir.glob(File.join(cache_dir, "**", "*.new.bc")).should be_empty
+        list_of_bitcode_files = Dir.glob(File.join(cache_dir, "**", "*.bc"))
+        list_of_bitcode_files.size.should be > 4
+        list_of_bitcode_files.each do |bitcode_file|
+          File.exists?(bitcode_file.rchop(".bc") + ".o").should be_true
+        end
+
+        second_build = build_multi_type(output_path, cache_dir, "--resident-modules", "2").should(be_success)
+        second_build.output.should contain("all previous .o files were reused")
+        Dir.glob(File.join(cache_dir, "**", "*.new.bc")).should be_empty
+
+        Process.capture_result(output_path)
+          .should(be_success)
+          .output.should(eq(MULTI_TYPE_OUTPUT))
+      end
+    end
+  end
+
   it "builds an object file from a bitcode file in the worker subcommand" do
     with_tempfile("object-worker-cache", "object-worker.o") do |cache_dir, object_path|
       with_temp_executable "object-worker" do |output_path|

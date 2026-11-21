@@ -1,25 +1,31 @@
 require "./codegen"
 
 module Crystal
-  # Settings and counters for keeping only a bounded set of LLVM modules in
+  # Settings and counters for keeping only a bounded amount of LLVM IR in
   # memory during IR generation.
   #
   # In multi-module mode every type gets an LLVM module in an LLVM context of
   # its own, and a large program has thousands of them. With a `ModuleSpill`
-  # the code generator keeps resident only the modules it is generating code
-  # into right now, plus the most recently used idle ones, as many as fit
-  # under *resident_ir_bytes* of estimated IR and under *resident_limit*
-  # modules. The least recently used idle module is written to its bitcode
-  # file and its context is disposed; it is parsed back from that file when
-  # code generation needs it again.
+  # the code generator keeps in memory only the modules it is generating
+  # code into right now, plus the most recently used idle ones, as many as
+  # fit under *resident_ir_bytes* of estimated IR and under *resident_limit*
+  # modules. The least recently used idle module is written to a bitcode
+  # file and its context is disposed.
+  #
+  # A module on disk is never read back during IR generation. When a type
+  # whose module is on disk gets another function, the type gets a new,
+  # empty module: the next *part* of its module. Functions of the parts on
+  # disk are external declarations there, like the functions of any other
+  # module. The parts of a type are linked into one module again when its
+  # object file is built, so every byte of IR is written once and the
+  # optimizer sees the module it would have seen without spilling.
   class ModuleSpill
     # An estimate of the memory LLVM holds for a module, from what is cheap
-    # to count. The factors come from the Grant 300-model program: its
-    # modules took about 10 GB for 31 million built instructions
-    # (see notes/spill-v2.md of the memory-ceiling work).
-    BYTES_PER_MODULE              = 65_536_i64
-    BYTES_PER_BUILT_INSTRUCTION   =    300_i64
-    BYTES_PER_LOADED_BITCODE_BYTE =     10_i64
+    # to count: a fixed amount for the context, and an amount for each
+    # instruction the code generator built (instructions carry their
+    # operands, debug locations and a share of the types and declarations).
+    BYTES_PER_MODULE            = 65_536_i64
+    BYTES_PER_BUILT_INSTRUCTION =    300_i64
 
     # How many idle modules stay in memory (0: as many as fit in the bytes).
     getter resident_limit : Int32
@@ -27,43 +33,27 @@ module Crystal
     # How many bytes of estimated IR stay in memory (0: no limit in bytes).
     getter resident_ir_bytes : Int64
 
-    # The largest estimate of the IR in memory at once.
+    # The target triple written into every spilled module.
+    getter target_triple : String
+
+    # The largest number of modules that were in memory at once, and the
+    # largest estimate of their IR.
+    getter peak_resident_count = 0
     getter peak_resident_ir_bytes = 0_i64
 
     # How many instructions the code generator built into spillable modules.
     getter built_instruction_count = 0_i64
 
-    # How many bytes of bitcode were written and read back.
-    getter written_bitcode_bytes = 0_i64
-    getter reloaded_bitcode_bytes = 0_i64
-
-    # The time spent writing and reading bitcode.
-    getter write_time = Time::Span.zero
-    getter reload_time = Time::Span.zero
-
-    # How many structs of reloaded modules got their body from the Crystal
-    # type, and the names of those whose loaded body differs from it (see
-    # `LLVMTyper#named_struct`; the list should stay empty).
-    getter completed_struct_count = 0
-    getter list_of_mismatched_struct_names = [] of String
-
-    # The target triple written into every spilled module.
-    getter target_triple : String
-
-    # How many times a module was dropped from memory.
+    # How many module parts were written to disk, their size and the time
+    # it took.
     getter spill_count = 0
+    getter written_bitcode_bytes = 0_i64
+    getter write_time = Time::Span.zero
 
-    # How many of those spills had to write the module's bitcode (a module
-    # that did not change since it was loaded is dropped without a write).
-    getter write_count = 0
+    # How many types have a module of more than one part.
+    getter multi_part_module_count = 0
 
-    # How many times a spilled module was parsed back from its bitcode.
-    getter reload_count = 0
-
-    # The largest number of modules that were in memory at once.
-    getter peak_resident_count = 0
-
-    def initialize(@resident_limit : Int32, @resident_ir_bytes : Int64, @target_triple : String, &@bitcode_path : String -> String)
+    def initialize(@resident_limit : Int32, @resident_ir_bytes : Int64, @target_triple : String, &@bitcode_path : String, Int32 -> String)
     end
 
     def limits_module_count? : Bool
@@ -74,9 +64,10 @@ module Crystal
       @resident_ir_bytes > 0
     end
 
-    # The bitcode file of the module of the type named *module_name*.
-    def bitcode_path(module_name : String) : String
-      @bitcode_path.call(module_name)
+    # The bitcode file of part *part_index* of the module of the type named
+    # *module_name*.
+    def bitcode_path(module_name : String, part_index : Int32) : String
+      @bitcode_path.call(module_name, part_index)
     end
 
     # The number of idle modules left in memory when the limit is exceeded.
@@ -90,46 +81,29 @@ module Crystal
       @resident_ir_bytes - @resident_ir_bytes // 8
     end
 
-    def record_spill(built_instruction_count : Int64) : Nil
+    def record_spill(bitcode_bytes : Int64, time : Time::Span, part_index : Int32) : Nil
       @spill_count += 1
-      @built_instruction_count += built_instruction_count
+      @written_bitcode_bytes += bitcode_bytes
+      @write_time += time
+      @multi_part_module_count += 1 if part_index == 1
     end
 
     def record_built_instructions(built_instruction_count : Int64) : Nil
       @built_instruction_count += built_instruction_count
     end
 
-    def record_write(bitcode_bytes : Int64, time : Time::Span) : Nil
-      @write_count += 1
-      @written_bitcode_bytes += bitcode_bytes
-      @write_time += time
-    end
-
-    def record_reload(bitcode_bytes : Int64, time : Time::Span) : Nil
-      @reload_count += 1
-      @reloaded_bitcode_bytes += bitcode_bytes
-      @reload_time += time
-    end
-
     def record_resident(count : Int32, ir_bytes : Int64) : Nil
       @peak_resident_count = count if count > @peak_resident_count
       @peak_resident_ir_bytes = ir_bytes if ir_bytes > @peak_resident_ir_bytes
     end
-
-    # Takes over the struct counters of the typer of a reloaded module that
-    # is about to be dropped.
-    def record_typer(typer : LLVMTyper) : Nil
-      @completed_struct_count += typer.completed_struct_count
-      typer.list_of_mismatched_struct_names.each do |name|
-        @list_of_mismatched_struct_names << name if @list_of_mismatched_struct_names.size < 20
-      end
-    end
   end
 
   class CodeGenVisitor
-    # An LLVM module of the program, with every handle the code generator
-    # keeps into the module's LLVM context. A spilled module has none of
-    # them: its bitcode is in the file at `#spill_path`.
+    # The LLVM module of a type, with every handle the code generator keeps
+    # into the module's LLVM context.
+    #
+    # With a `ModuleSpill` the module can consist of several parts: the ones
+    # in the files of `#list_of_spill_paths`, and the one in memory, if any.
     class ModuleInfo
       # The name of the type this module belongs to (empty for the main module).
       getter name : String
@@ -142,6 +116,9 @@ module Crystal
       # `CodeGenVisitor#typed_fun?` and `CodeGenVisitor#add_typed_fun`.
       getter fun_types = {} of String => LLVM::Type
 
+      # The names of the functions that were generated into the part in memory.
+      getter list_of_generated_fun_names = [] of String
+
       # The string constants of this module.
       getter strings = {} of String => LLVM::Value
 
@@ -152,9 +129,6 @@ module Crystal
       getter fun_metadatas = {} of LLVM::Function => Array(FunMetadata)
       property di_builder : DIBuilder?
 
-      # True once the module flags that announce debug info were added.
-      property? has_debug_info_flags = false
-
       # How many code generation frames are using this module. A module in
       # use is never spilled.
       property pin_count = 0
@@ -163,15 +137,9 @@ module Crystal
       # last asked for.
       property last_used_at = 0_i64
 
-      # True if the module differs from the bitcode at `#spill_path`.
-      property? changed_since_spill = true
-
-      # The bitcode file of this module, once it was spilled.
-      property spill_path : String?
-
-      # The size of the bitcode this module was last parsed from (0 for a
-      # module that was never spilled).
-      property loaded_bitcode_bytes = 0_i64
+      # The bitcode files of the parts of this module that were spilled, in
+      # the order they were written.
+      getter list_of_spill_paths = [] of String
 
       # The estimate of this module's IR that is part of the code
       # generator's total (see `CodeGenVisitor#account_module_ir`).
@@ -181,11 +149,11 @@ module Crystal
       end
 
       def mod : LLVM::Module
-        @mod || raise "BUG: LLVM module #{@name.inspect} is used while spilled to disk"
+        @mod || raise "BUG: LLVM module #{@name.inspect} is used while it is on disk"
       end
 
       def typer : LLVMTyper
-        @typer || raise "BUG: LLVM typer of module #{@name.inspect} is used while spilled to disk"
+        @typer || raise "BUG: LLVM typer of module #{@name.inspect} is used while the module is on disk"
       end
 
       def builder : CrystalLLVMBuilder
@@ -203,37 +171,33 @@ module Crystal
         @pin_count == 0
       end
 
-      # How many instructions were built into this module since it was
-      # created or last parsed from bitcode.
+      # How many instructions were built into the part in memory.
       def built_instruction_count : Int64
         @builder.try(&.instruction_count) || 0_i64
       end
 
-      # An estimate of the memory LLVM holds for this module.
+      # An estimate of the memory LLVM holds for the part in memory.
       def estimated_ir_bytes : Int64
-        ModuleSpill::BYTES_PER_MODULE +
-          built_instruction_count * ModuleSpill::BYTES_PER_BUILT_INSTRUCTION +
-          @loaded_bitcode_bytes * ModuleSpill::BYTES_PER_LOADED_BITCODE_BYTE
+        ModuleSpill::BYTES_PER_MODULE + built_instruction_count * ModuleSpill::BYTES_PER_BUILT_INSTRUCTION
       end
 
-      # Hands this spilled module the module parsed back from its bitcode.
+      # Hands this module, whose earlier parts are all on disk, a new part.
       def attach(@mod : LLVM::Module, @typer : LLVMTyper) : Nil
-        @changed_since_spill = false
       end
 
-      # Drops every handle into the module's context. The caller disposes
-      # the context.
+      # Drops every handle into the context of the part in memory. The
+      # caller disposes the context.
       def detach : Nil
         @mod = nil
         @typer = nil
         @builder = nil
         @di_builder = nil
         @fun_types.clear
+        @list_of_generated_fun_names.clear
         @strings.clear
         @debug_files.clear
         @debug_types.clear
         @fun_metadatas.clear
-        @changed_since_spill = false
       end
     end
 
@@ -248,10 +212,10 @@ module Crystal
     # The sum of `ModuleInfo#accounted_ir_bytes` of the modules in memory.
     @resident_ir_bytes = 0_i64
 
-    # A module that only holds declarations: one for each function that was
-    # declared in a module other than its own. With it, the next module that
-    # calls such a function declares it without reading the function's own
-    # module, which may be on disk by then. It is never compiled.
+    # A module that only holds declarations: one for each function that
+    # another module than its own declared, and one for each function of a
+    # module part on disk. A module that calls such a function declares it
+    # from here. It is never compiled.
     @fun_signatures : ModuleInfo?
 
     private def fun_signatures : ModuleInfo
@@ -271,8 +235,7 @@ module Crystal
       typed_fun?(fun_signatures, mangled_name)
     end
 
-    # Records the signature of *func*, a function of *fun_module_info* that
-    # another module just declared.
+    # Records the signature of *func*, a function of *fun_module_info*.
     private def record_fun_signature(fun_module_info : ModuleInfo, mangled_name : String, func : LLVMTypedFunction) : Nil
       return unless @module_spill
       # The main module is always in memory.
@@ -321,37 +284,40 @@ module Crystal
     end
 
     private def new_module_info(type_name : String) : ModuleInfo
-      llvm_context = LLVM::Context.new
-      # LLVM::Context.register(llvm_context, type_name)
-
-      llvm_mod = configure_module(llvm_context.new_module(type_name))
-      llvm_typer = LLVMTyper.new(@program, llvm_context, data_layout: llvm_mod.data_layout)
-
+      llvm_mod, llvm_typer = new_module_and_typer(type_name)
       module_info = ModuleInfo.new(type_name, llvm_mod, llvm_typer)
       module_info.builder = new_builder(module_info)
       module_became_resident(module_info)
       module_info
     end
 
+    # An empty module for the type named *type_name*, in a context of its own.
+    private def new_module_and_typer(type_name : String) : {LLVM::Module, LLVMTyper}
+      llvm_context = LLVM::Context.new
+      # LLVM::Context.register(llvm_context, type_name)
+
+      llvm_mod = configure_module(llvm_context.new_module(type_name))
+      {llvm_mod, LLVMTyper.new(@program, llvm_context, data_layout: llvm_mod.data_layout)}
+    end
+
     private def module_became_resident(module_info : ModuleInfo) : Nil
       @resident_modules << module_info
       @idle_resident_module_count += 1
       account_module_ir(module_info)
-      @module_spill.try &.record_resident(@resident_modules.size + 1, @resident_ir_bytes)
     end
 
-    # Makes sure *module_info* is in memory, marks it as the most recently used
-    # module and spills the least recently used idle modules if there are
-    # more of them than the limit allows.
+    # Makes sure *module_info* has a part in memory, marks it as the most
+    # recently used module and spills the least recently used idle modules
+    # if more IR is in memory than the limits allow.
     #
-    # A handle into another module than *module_info* is only safe to keep across
-    # this call if that module is pinned.
+    # A handle into another module than *module_info* is only safe to keep
+    # across this call if that module is pinned.
     private def use_module(module_info : ModuleInfo) : Nil
       spill = @module_spill
       return unless spill
       return if module_info.same?(@main_module_info)
 
-      reload_module(module_info, spill) unless module_info.resident?
+      start_next_part(module_info) unless module_info.resident?
       module_info.last_used_at = (@module_use_clock += 1)
 
       spill.record_resident(@resident_modules.size + 1, @resident_ir_bytes)
@@ -384,25 +350,34 @@ module Crystal
       end
     end
 
-    private def spill_module(module_info : ModuleInfo, spill : ModuleSpill) : Nil
-      finish_module_debug_info(module_info) unless @debug.none?
+    # Writes the part of *module_info* that is in memory to its bitcode
+    # file and frees it. *finishes_debug_info* is false for a module whose
+    # debug info is complete already.
+    private def spill_module(module_info : ModuleInfo, spill : ModuleSpill, finishes_debug_info : Bool = true) : Nil
+      # Whoever calls one of this part's functions from now on declares it
+      # from its signature.
+      module_info.list_of_generated_fun_names.each do |mangled_name|
+        generated_fun = typed_fun?(module_info, mangled_name)
+        raise "BUG: #{mangled_name} was generated into #{module_info.name.inspect} but is not there" unless generated_fun
 
-      mod = module_info.mod
-      # A module that did not change since it was parsed from its file is
-      # dropped without writing it again.
-      if module_info.changed_since_spill?
-        mod.target = spill.target_triple
-        path = module_info.spill_path ||= spill.bitcode_path(module_info.name)
-        write_time = Time.measure do
-          unless mod.write_bitcode_to_file(path) == 0
-            raise "BUG: failed to write the LLVM bitcode of #{module_info.name.inspect} to #{path}"
-          end
-        end
-        spill.record_write(File.size(path), write_time)
+        record_fun_signature(module_info, mangled_name, generated_fun)
       end
 
-      spill.record_spill(module_info.built_instruction_count)
-      spill.record_typer(module_info.typer)
+      finish_module_debug_info(module_info) if finishes_debug_info && !@debug.none?
+
+      mod = module_info.mod
+      mod.target = spill.target_triple
+      part_index = module_info.list_of_spill_paths.size
+      path = spill.bitcode_path(module_info.name, part_index)
+      write_time = Time.measure do
+        unless mod.write_bitcode_to_file(path) == 0
+          raise "BUG: failed to write the LLVM bitcode of #{module_info.name.inspect} to #{path}"
+        end
+      end
+      module_info.list_of_spill_paths << path
+      spill.record_spill(File.size(path), write_time, part_index)
+      spill.record_built_instructions(module_info.built_instruction_count)
+
       @resident_ir_bytes -= module_info.accounted_ir_bytes
       module_info.accounted_ir_bytes = 0_i64
 
@@ -414,37 +389,27 @@ module Crystal
       @idle_resident_module_count -= 1
     end
 
-    # Adds the counters of the modules that are in memory when IR
-    # generation ends to the spill statistics.
-    def record_resident_modules_in_spill_statistics : Nil
-      return unless spill = @module_spill
-
-      @resident_modules.each do |module_info|
-        spill.record_typer(module_info.typer)
-        spill.record_built_instructions(module_info.built_instruction_count)
-      end
-    end
-
-    private def reload_module(module_info : ModuleInfo, spill : ModuleSpill) : Nil
-      path = module_info.spill_path || raise "BUG: LLVM module #{module_info.name.inspect} is neither in memory nor on disk"
-
-      llvm_context = LLVM::Context.new
-      started_at = Time.instant
-      bitcode = LLVM::MemoryBuffer.from_file(path)
-      begin
-        llvm_mod = LLVM::Module.parse(bitcode, llvm_context)
-      ensure
-        bitcode.dispose
-      end
-      # A parsed module is named after its file. The name goes into debug
-      # info, so the module gets back the one it was created with.
-      llvm_mod.name = module_info.name
-      module_info.loaded_bitcode_bytes = File.size(path)
-      spill.record_reload(module_info.loaded_bitcode_bytes, Time.instant - started_at)
-
-      module_info.attach(llvm_mod, LLVMTyper.new(@program, llvm_context, adopts_existing_structs: true, data_layout: llvm_mod.data_layout))
+    # Gives *module_info*, whose parts are all on disk, a new part in memory.
+    private def start_next_part(module_info : ModuleInfo) : Nil
+      llvm_mod, llvm_typer = new_module_and_typer(module_info.name)
+      module_info.attach(llvm_mod, llvm_typer)
       module_info.builder = new_builder(module_info)
       module_became_resident(module_info)
+    end
+
+    # Called when IR generation is over and every module in memory is
+    # complete and verified. A module that has parts on disk gets its last
+    # part written there too: its compilation unit is then a list of files.
+    def spill_last_parts_of_spilled_modules : Nil
+      return unless spill = @module_spill
+
+      @resident_modules.dup.each do |module_info|
+        if module_info.list_of_spill_paths.empty?
+          spill.record_built_instructions(module_info.built_instruction_count)
+        else
+          spill_module(module_info, spill, finishes_debug_info: false)
+        end
+      end
     end
   end
 end
