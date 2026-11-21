@@ -16,7 +16,7 @@ module Crystal
   class LLVMTyper
     private def create_llvm_type(type : MixedUnionType, wants_size)
       llvm_name = llvm_name(type, wants_size)
-      if s = @structs[llvm_name]?
+      if s = known_struct?(llvm_name)
         return s
       end
 

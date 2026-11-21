@@ -344,7 +344,7 @@ class Crystal::CodeGenVisitor
     return unless debug_type
 
     file, dir = file_and_dir(location.filename)
-    builder = di_builder(@main_mod)
+    builder = di_builder(@main_module_info)
     file_metadata = builder.create_file(file, dir)
     global_name = class_var_global_name(class_var)
     gv_expr = builder.create_global_variable_expression(

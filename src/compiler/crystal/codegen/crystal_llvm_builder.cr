@@ -2,7 +2,9 @@ module Crystal
   class CrystalLLVMBuilder
     property end : Bool
 
-    def initialize(@builder : LLVM::Builder, @llvm_typer : LLVMTyper, @printf : LLVMTypedFunction)
+    # *printf* returns the declaration of `printf` in the module code is
+    # being generated into; it is only called by `#printf`.
+    def initialize(@builder : LLVM::Builder, @llvm_typer : LLVMTyper, @printf : -> LLVMTypedFunction)
       @end = false
     end
 
@@ -46,7 +48,7 @@ module Crystal
       end
 
       begin
-        call @printf, [global_string_pointer(format)] + args, bundle: funclet
+        call @printf.call, [global_string_pointer(format)] + args, bundle: funclet
       ensure
         funclet.dispose
       end
