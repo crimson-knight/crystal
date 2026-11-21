@@ -56,6 +56,7 @@ class Crystal::Program
     parser = @program.new_parser(generated_source, var_scopes: [vars.dup])
     virtual_file = VirtualFile.new(the_macro, generated_source, node.location)
     @program.virtual_files << virtual_file
+    VirtualFile.current_program_files = @program.virtual_files
     parser.filename = virtual_file
     parser.macro_expansion_pragmas = macro_expansion_pragmas
     parser.visibility = visibility
@@ -71,6 +72,8 @@ class Crystal::Program
 
   def macro_run(filename, args)
     compiled_macro_run = @compiled_macros_cache[filename] ||= macro_compile(filename)
+    # Compiling the macro program made its own virtual files the current ones.
+    VirtualFile.current_program_files = @program.virtual_files
     compiled_file = compiled_macro_run.filename
 
     out_io = IO::Memory.new

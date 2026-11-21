@@ -304,3 +304,26 @@ describe "Location" do
     filename.as(VirtualFile).source.should contain("def foo")
   end
 end
+
+describe "CodeError" do
+  it "still prints the macro expansion it points at after its program is gone" do
+    error = expect_raises(Crystal::TypeException) do
+      semantic(%(
+        macro define_bad
+          def bad
+            nope
+          end
+        end
+
+        define_bad
+        bad
+        ))
+    end
+    5.times { GC.collect }
+
+    message = error.to_s
+    message.should contain("undefined local variable or method 'nope'")
+    message.should contain("define_bad")
+    message.should contain("def bad")
+  end
+end

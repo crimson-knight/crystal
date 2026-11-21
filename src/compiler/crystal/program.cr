@@ -177,6 +177,8 @@ module Crystal
     def initialize
       super(self, self, "main")
 
+      VirtualFile.current_program_files = @virtual_files
+
       # Every crystal program comes with some predefined types that we initialize here,
       # like Object, Value, Reference, etc.
       types = self.types
