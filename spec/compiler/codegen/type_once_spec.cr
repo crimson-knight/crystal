@@ -204,6 +204,62 @@ describe "Code gen: @[TypeOnce]" do
       )).to_i.should eq(16)
   end
 
+  it "passes a captured block typed through an alias" do
+    run(SHAPES + %(
+      alias Transform = Int32 -> Int32
+
+      class Shape
+        @[TypeOnce]
+        def apply(&block : Transform) : Int32
+          block.call(area)
+        end
+      end
+
+      Square.new(3).apply { |value| value + 1 } + Line.new(3).apply { |value| value * 2 }
+      )).to_i.should eq(16)
+  end
+
+  it "runs a strict file: overrides marked, a block typed through an alias" do
+    run(%(
+      require "prelude"
+      require "strict"
+
+      alias Transform = Int32 -> Int32
+
+      abstract class Shape
+        def initialize(@side : Int32)
+        end
+
+        abstract def area : Int32
+
+        def apply(&block : Transform) : Int32
+          block.call(area)
+        end
+
+        def describe(times : Int32) : String
+          (area * times).to_s
+        end
+      end
+
+      class Square < Shape
+        @[Override]
+        def area : Int32
+          @side * @side
+        end
+      end
+
+      class Line < Shape
+        @[Override]
+        def area : Int32
+          @side
+        end
+      end
+
+      total = Square.new(3).apply { |value| value + 1 } + Line.new(3).apply { |value| value * 2 }
+      total.to_s + " " + Square.new(2).describe(2) + Line.new(5).describe(1)
+      )).to_string.should eq("16 85")
+  end
+
   it "generates one function for all receivers" do
     with_once = SHAPES + %(
       Square.new(3).describe(2)

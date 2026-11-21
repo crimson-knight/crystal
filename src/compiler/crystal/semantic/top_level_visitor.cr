@@ -507,14 +507,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       node.raise "enums can't define an `initialize` method, try using `def self.new`"
     end
 
-    if node.type_once?
-      check_type_once_def(node, target_type)
-    elsif @program.strict_file?(node.location)
-      check_strict_def(node)
-    end
-
     replaced = target_type.add_def node
-    check_override(node, target_type, replaced)
+    @program.record_declared_def(node, target_type, replaced)
 
     node.set_type @program.nil
 

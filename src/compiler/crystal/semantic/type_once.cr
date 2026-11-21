@@ -1,5 +1,4 @@
 require "./call"
-require "./top_level_visitor"
 
 # `@[TypeOnce]`: a method that is typed once, against the types its signature
 # declares, and reused by every caller.
@@ -11,12 +10,12 @@ require "./top_level_visitor"
 # dispatch at run time, and the 300 callers share one typed copy and one
 # generated function.
 #
-# Rules (checked where the method is declared):
+# Rules (checked by `StrictDefChecker`, in `strict_files.cr`):
 #
 # * every parameter has a type restriction and the method declares its return
 #   type, so the signature says everything a caller can observe;
 # * no free variables (`forall`), no splat that collects arguments, no `yield` (a captured block with
-#   a declared proc type is fine);
+#   a declared proc type, written out or named through an `alias`, is fine);
 # * the body holds no macro expression (`{% %}`, `{{ }}`): those read the
 #   concrete receiver through `@type`;
 # * not `abstract`, not `initialize`.
@@ -37,42 +36,6 @@ require "./top_level_visitor"
 # what every subclass offers, and instance variables the declaring class
 # itself has.
 module Crystal
-  class TopLevelVisitor
-    private def check_type_once_def(node : Def, target_type : Type) : Nil
-      description = "@[TypeOnce] method '#{node.name}'"
-      node.raise "#{description} can't be abstract" if node.abstract?
-      node.raise "#{description} can't be 'initialize': an object is built for its own class" if node.name == "initialize"
-      if node.macro_def?
-        node.raise "#{description} can't have macro expressions in its body: they read the concrete receiver through @type"
-      end
-      if free_vars = node.free_vars
-        node.raise "#{description} can't have free variables (forall #{free_vars.join(", ")}): each binding is a separate typed copy"
-      end
-      splat_index = node.splat_index
-      if (splat_index && !node.args[splat_index].name.empty?) || node.double_splat
-        node.raise "#{description} can't have a splat parameter: each number of arguments is a separate typed copy"
-      end
-      if node.block_arity && !node.block_arg
-        node.raise "#{description} can't yield: a method that yields is typed into each caller. Capture the block with a typed parameter (&block : Int32 -> String)"
-      end
-      node.args.each do |arg|
-        next if arg.name.empty?
-        unless arg.restriction
-          arg.raise "#{description} needs a type restriction on parameter '#{arg.name}'"
-        end
-      end
-      if block_arg = node.block_arg
-        restriction = block_arg.restriction
-        unless restriction.is_a?(ProcNotation) && restriction.output
-          block_arg.raise "#{description} needs the block's input and output types (&#{block_arg.name} : Int32 -> String)"
-        end
-      end
-      unless node.return_type
-        node.raise "#{description} needs a return type: callers get the declared type, not one inferred per caller"
-      end
-    end
-  end
-
   class Call
     # Returns *match* with the receiver and argument types replaced by the
     # types the def declares, when the def is `@[TypeOnce]` and this call

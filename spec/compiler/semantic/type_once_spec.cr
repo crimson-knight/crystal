@@ -285,6 +285,40 @@ describe "Semantic: @[TypeOnce]" do
         ), "@[TypeOnce] method 'read' can't yield"
     end
 
+    it "rejects a method that yields to a typed block parameter" do
+      assert_error %(
+        @[TypeOnce]
+        def read(record : Int32, &block : Int32 -> Int32) : Int32
+          yield record
+        end
+        ), "@[TypeOnce] method 'read' can't yield"
+    end
+
+    it "accepts a captured block typed through an alias" do
+      result = semantic(%(
+        alias Transform = Int32 -> Int32
+
+        class Record
+        end
+
+        class First < Record
+        end
+
+        class Second < Record
+        end
+
+        @[TypeOnce]
+        def read(record : Record, &block : Transform) : Int32
+          block.call(1)
+        end
+
+        read(First.new) { |x| x }
+        read(Second.new) { |x| x }
+        ), inject_primitives: true)
+      result.program.type_once_typed.should eq(1)
+      result.program.type_once_reused.should eq(1)
+    end
+
     it "requires the types of a captured block" do
       assert_error %(
         @[TypeOnce]

@@ -181,9 +181,14 @@ end
 #
 # A marked def that replaces and overrides nothing is an error. In a strict
 # file (first line `# crystal: strict`, or `require "strict"`), an unmarked
-# def that replaces or overrides one is an error too.
+# def with the name and argument types of an earlier definition in the same
+# type, or of an inherited method, is an error too. Every method follows
+# that rule, `initialize`, `to_s`, `==` and `hash` included. A def with the
+# same name and different argument types is a new overload and needs no
+# mark.
 #
 # A compiler without this feature builds the same code unchanged once the
-# annotation is declared: `annotation Override; end`.
+# annotation is declared: `annotation Override; end` (the `strict` shard
+# does it).
 annotation Override
 end
