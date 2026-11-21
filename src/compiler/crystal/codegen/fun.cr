@@ -537,7 +537,7 @@ class Crystal::CodeGenVisitor
 
     llvm_args_types = external.args.map { |arg| llvm_c_type(arg.type) }
     llvm_return_type = llvm_c_return_type(external.type)
-    @abi.abi_info(llvm_args_types, llvm_return_type, !llvm_return_type.void?, llvm_context)
+    abi.abi_info(llvm_args_types, llvm_return_type, !llvm_return_type.void?, llvm_context)
   end
 
   def abi_info(external : Def, node : Call)
@@ -545,7 +545,7 @@ class Crystal::CodeGenVisitor
       llvm_c_type((external.args[i]? || arg).type)
     end
     llvm_return_type = llvm_c_return_type(external.type)
-    @abi.abi_info(llvm_args_types, llvm_return_type, !llvm_return_type.void?, llvm_context)
+    abi.abi_info(llvm_args_types, llvm_return_type, !llvm_return_type.void?, llvm_context)
   end
 
   def setup_context_fun(mangled_name, target_def, llvm_args_types, llvm_return_type) : Nil

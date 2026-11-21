@@ -76,6 +76,19 @@ struct LLVM::Type
     LibLLVM.is_packed_struct(self) != 0
   end
 
+  # Returns whether this struct type was declared without a body. An opaque
+  # struct has no elements and no size.
+  def opaque_struct? : Bool
+    raise "Not a Struct" unless kind == Kind::Struct
+    LibLLVM.is_opaque_struct(self) != 0
+  end
+
+  # Gives this named struct type its body.
+  def struct_set_body(element_types : Array(LLVM::Type), packed : Bool = false) : Nil
+    raise "Not a Struct" unless kind == Kind::Struct
+    LibLLVM.struct_set_body(self, element_types.to_unsafe.as(LibLLVM::TypeRef*), element_types.size, packed ? 1 : 0)
+  end
+
   # Assuming this type is a struct, returns its name.
   # The name can be `nil` if the struct is anonymous.
   # Raises if this type is not a struct.

@@ -2,6 +2,9 @@ module Crystal
   class CrystalLLVMBuilder
     property end : Bool
 
+    # How many instructions were built with this builder.
+    getter instruction_count = 0_i64
+
     # *printf* returns the declaration of `printf` in the module code is
     # being generated into; it is only called by `#printf`.
     def initialize(@builder : LLVM::Builder, @llvm_typer : LLVMTyper, @printf : -> LLVMTypedFunction)
@@ -89,6 +92,7 @@ module Crystal
       def {{name.id}}(*args, **kwargs)
         return llvm_nil if @end
 
+        @instruction_count += 1
         @builder.{{name.id}}(*args, **kwargs)
       end
     {% end %}

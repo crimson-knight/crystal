@@ -155,6 +155,7 @@ module Crystal
     def codegen(node, single_module = false, debug = Debug::Default,
                 frame_pointers = FramePointers::Auto, release_typed_bodies = false,
                 module_spill : ModuleSpill? = nil)
+      LLVMTyper.reset_closure_counter
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
       visitor.release_typed_bodies = release_typed_bodies
@@ -301,7 +302,7 @@ module Crystal
       @llvm_mod = configure_module(@llvm_context.new_module("main_module"))
       @main_mod = @llvm_mod
       @main_llvm_context = @main_mod.context
-      @llvm_typer = LLVMTyper.new(@program, @llvm_context)
+      @llvm_typer = LLVMTyper.new(@program, @llvm_context, data_layout: @main_mod.data_layout)
       @main_llvm_typer = @llvm_typer
       @main_module_info = ModuleInfo.new("", @main_mod, @main_llvm_typer)
       # The main module is in use for the whole code generation.
@@ -404,6 +405,13 @@ module Crystal
     end
 
     getter llvm_context
+
+    # The C ABI, computing sizes with the data layout of the module code is
+    # being generated into.
+    private def abi : ABI
+      @abi.target_data = @llvm_typer.data_layout
+      @abi
+    end
 
     def configure_module(llvm_mod)
       llvm_mod.data_layout = @program.target_machine.data_layout
@@ -626,6 +634,7 @@ module Crystal
       end
 
       dispose_di_builders
+      record_resident_modules_in_spill_statistics
 
       if type_info_path = ENV["CRYSTAL_DUMP_TYPE_INFO"]?.presence
         dump_type_info(type_info_path)

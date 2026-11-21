@@ -5,6 +5,9 @@ module Crystal
   class LLVMTyper
     getter landing_pad_type : LLVM::Type
 
+    # The data layout this typer computes sizes, alignments and offsets with.
+    getter data_layout : LLVM::TargetData { @layout }
+
     alias TypeCache = Hash(Type, LLVM::Type)
 
     @layout : LLVM::TargetData
@@ -12,10 +15,39 @@ module Crystal
 
     @@closure_counter = 0
 
+    # Starts the numbering of closure structs over. Each code generation
+    # does, so that a program gets the same struct names (and the same
+    # bitcode) whatever was compiled before it in this process.
+    def self.reset_closure_counter : Nil
+      @@closure_counter = 0
+    end
+
+    # How many named structs of a loaded module this typer gave their body
+    # (see `#named_struct`).
+    getter completed_struct_count = 0
+
+    # The names of the structs of a loaded module whose body is not the one
+    # this typer computes from the Crystal type.
+    getter list_of_mismatched_struct_names = [] of String
+
     # *adopts_existing_structs* is for a context that already holds a module
-    # parsed from bitcode: named struct types that came with the module are
-    # reused, so new code and loaded code agree on every struct type.
-    def initialize(@program : Program, @llvm_context : LLVM::Context, @adopts_existing_structs : Bool = false)
+    # parsed from bitcode. Code generated from now on and the loaded code
+    # must use the very same struct type for a Crystal type, so the typer
+    # takes over the named struct types that came with the module. It takes
+    # over their identity only: every body and every size is still computed
+    # from the Crystal type, exactly as a typer in a new context does (see
+    # `#named_struct`).
+    #
+    # *data_layout* computes sizes and offsets. LLVM caches the layout of a
+    # struct in the data layout object, by the address of the struct type,
+    # and never forgets one. A typer whose context can be disposed while
+    # the compiler goes on must therefore get the data layout of a module of
+    # that context (`LLVM::Module#data_layout`), which goes away with it:
+    # in a data layout that outlives the context, a struct type of a later
+    # context that is allocated at the same address would get the size of
+    # the struct that used to be there.
+    def initialize(@program : Program, @llvm_context : LLVM::Context, @adopts_existing_structs : Bool = false,
+                   data_layout : LLVM::TargetData? = nil)
       @cache = TypeCache.new
       @struct_cache = TypeCache.new
 
@@ -50,23 +82,39 @@ module Crystal
 
       @structs = {} of String => LLVM::Type
 
-      machine = program.target_machine
-      @layout = machine.data_layout
-      loaded_landing_pad_type = @adopts_existing_structs ? @llvm_context.named_struct?("landing_pad") : nil
-      @landing_pad_type = loaded_landing_pad_type || @llvm_context.struct([@llvm_context.void_pointer, @llvm_context.int32], "landing_pad")
+      @layout = data_layout || program.target_machine.data_layout
+      # Every instance variable needs a value before a method of the typer runs.
+      @landing_pad_type = @llvm_context.int32
+      @landing_pad_type = named_struct("landing_pad") { [@llvm_context.void_pointer, @llvm_context.int32] of LLVM::Type }
     end
 
-    # The named struct this typer already made, or (for a context loaded from
-    # bitcode) the one that came with the loaded module.
-    private def known_struct?(llvm_name : String) : LLVM::Type?
-      if known = @structs[llvm_name]?
-        return known
+    # Makes the struct type named *llvm_name*. The block is given the struct
+    # before it has a body (so that a recursive type can refer to itself)
+    # and returns the element types.
+    #
+    # In a context loaded from bitcode, the struct that came with the loaded
+    # module is used, so that old and new code share one type. Its body is
+    # still computed here from the Crystal type: a loaded struct without a
+    # body gets that body, and so does every struct nested in it. Nothing is
+    # ever sized from a struct without a body.
+    #
+    # A `wants_size` struct only serves to compute sizes and is never part
+    # of a module, so it is always made new.
+    private def named_struct(llvm_name : String, packed : Bool = false, wants_size : Bool = false, & : LLVM::Type -> Array(LLVM::Type)) : LLVM::Type
+      loaded_struct = @adopts_existing_structs && !wants_size ? @llvm_context.named_struct?(llvm_name) : nil
+      unless loaded_struct
+        return @llvm_context.struct(llvm_name, packed) { |new_struct| yield new_struct }
       end
-      return nil unless @adopts_existing_structs
 
-      if existing = @llvm_context.named_struct?(llvm_name)
-        @structs[llvm_name] = existing
+      element_types = yield loaded_struct
+      if loaded_struct.opaque_struct?
+        loaded_struct.struct_set_body(element_types, packed)
+        @completed_struct_count += 1
+      elsif loaded_struct.struct_element_types != element_types || loaded_struct.packed_struct? != packed
+        # The loaded code was generated with the loaded body, so it stays.
+        @list_of_mismatched_struct_names << llvm_name
       end
+      loaded_struct
     end
 
     def type_id_pointer
@@ -76,13 +124,13 @@ module Crystal
     @proc_type : LLVM::Type?
 
     def proc_type
-      @proc_type ||= known_struct?("->") || (@structs["->"] = @llvm_context.struct [@llvm_context.void_pointer, @llvm_context.void_pointer], "->")
+      @proc_type ||= @structs["->"] ||= named_struct("->") { [@llvm_context.void_pointer, @llvm_context.void_pointer] of LLVM::Type }
     end
 
     @nil_type : LLVM::Type?
 
     def nil_type
-      @nil_type ||= known_struct?("Nil") || (@structs["Nil"] = @llvm_context.struct([] of LLVM::Type, "Nil"))
+      @nil_type ||= @structs["Nil"] ||= named_struct("Nil") { [] of LLVM::Type }
     end
 
     def nil_value
@@ -200,11 +248,11 @@ module Crystal
     private def create_llvm_type(type : TupleInstanceType, wants_size)
       llvm_name = llvm_name(type, wants_size)
 
-      if s = known_struct?(llvm_name)
+      if !wants_size && (s = @structs[llvm_name]?)
         return s
       end
 
-      @llvm_context.struct(llvm_name) do |a_struct|
+      named_struct(llvm_name, wants_size: wants_size) do |a_struct|
         if wants_size
           @wants_size_cache[type] = a_struct
         else
@@ -218,11 +266,11 @@ module Crystal
 
     private def create_llvm_type(type : NamedTupleInstanceType, wants_size)
       llvm_name = llvm_name(type, wants_size)
-      if s = known_struct?(llvm_name)
+      if !wants_size && (s = @structs[llvm_name]?)
         return s
       end
 
-      @llvm_context.struct(llvm_name) do |a_struct|
+      named_struct(llvm_name, wants_size: wants_size) do |a_struct|
         if wants_size
           @wants_size_cache[type] = a_struct
         else
@@ -303,11 +351,11 @@ module Crystal
       end
 
       llvm_name = llvm_name(type, wants_size)
-      if s = known_struct?(llvm_name)
+      if !wants_size && (s = @structs[llvm_name]?)
         return s
       end
 
-      @llvm_context.struct(llvm_name, type.packed?) do |a_struct|
+      named_struct(llvm_name, type.packed?, wants_size) do |a_struct|
         if wants_size
           @wants_size_struct_cache[type] = a_struct
         else
@@ -336,11 +384,11 @@ module Crystal
 
     private def create_llvm_c_union_struct_type(type, wants_size)
       llvm_name = llvm_name(type, wants_size)
-      if s = known_struct?(llvm_name)
+      if !wants_size && (s = @structs[llvm_name]?)
         return s
       end
 
-      @llvm_context.struct(llvm_name) do |a_struct|
+      named_struct(llvm_name, wants_size: wants_size) do |a_struct|
         if wants_size
           @wants_size_struct_cache[type] = a_struct
         else
@@ -574,8 +622,10 @@ module Crystal
       when .struct?
         llvm_name = type.struct_name
         if llvm_name
-          known_struct?(llvm_name) || begin
-            @llvm_context.struct(llvm_name, type.packed_struct?) do |the_struct|
+          if known_struct = @structs[llvm_name]?
+            known_struct
+          else
+            named_struct(llvm_name, type.packed_struct?) do |the_struct|
               @structs[llvm_name] = the_struct
               copy_types(type.struct_element_types)
             end

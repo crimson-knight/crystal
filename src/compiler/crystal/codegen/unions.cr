@@ -16,11 +16,11 @@ module Crystal
   class LLVMTyper
     private def create_llvm_type(type : MixedUnionType, wants_size)
       llvm_name = llvm_name(type, wants_size)
-      if s = known_struct?(llvm_name)
+      if !wants_size && (s = @structs[llvm_name]?)
         return s
       end
 
-      @llvm_context.struct(llvm_name) do |a_struct|
+      named_struct(llvm_name, wants_size: wants_size) do |a_struct|
         if wants_size
           @wants_size_cache[type] = a_struct
         else

@@ -3,7 +3,7 @@ require "../../spec_helper"
 # A program with many types that call into each other, so that with a tiny
 # resident set most modules are spilled and read back several times. It uses
 # what a reloaded module has to get right: struct and tuple values passed
-# across modules, unions, generics, closures, string constants, class
+# across modules, unions sized by structs, generics, closures, string constants, class
 # variables, constants, exceptions and virtual dispatch.
 private MODULE_SPILL_PROGRAM = <<-CRYSTAL
   require "prelude"
@@ -116,6 +116,47 @@ private MODULE_SPILL_PROGRAM = <<-CRYSTAL
   offset = 10
   add_offset = ->(number : Int32) { number + offset }
   puts (1..4).map { |number| (value = risky(number)).is_a?(Int32) ? add_offset.call(value) : value rescue "rescued" }.inspect
+
+  # A union whose size comes from a struct inside a tuple: a module that is
+  # read back must lay it out as large as a module that never left memory.
+  record Wide, first : Int64, second : Int64, third : Int64, fourth : Int64 do
+    def sum : Int64
+      first + second + third + fourth
+    end
+  end
+
+  class Shelf(T)
+    @last : {T, Int32}?
+
+    def initialize
+      @slots = {} of String => T
+    end
+
+    def put(key : String, value : T) : Nil
+      @slots[key] = value
+      @last = {value, @slots.size}
+    end
+
+    def last : {T, Int32}?
+      @last
+    end
+
+    def first_entry : {String, T}?
+      @slots.first?
+    end
+  end
+
+  shelf = Shelf(Wide).new
+  puts shelf.last.inspect
+  {% for index in 1..6 %}
+    shelf.put("slot{{index}}", Wide.new({{index}}_i64, 2_i64, 3_i64, 4_i64))
+  {% end %}
+  if last = shelf.last
+    puts last[0].sum, last[1]
+  end
+  if first_entry = shelf.first_entry
+    puts first_entry[0], first_entry[1].sum
+  end
   CRYSTAL
 
 private MODULE_SPILL_PROGRAM_OUTPUT = <<-OUTPUT
@@ -134,16 +175,22 @@ private MODULE_SPILL_PROGRAM_OUTPUT = <<-OUTPUT
   shape1=11,shape2=6,shape3=1,shape4=1,shape5=1,shape6=1,shape7=1,shape8=1,shape9=1
   0=16,2=8
   ["rescued", 12, "rescued", "big"]
+  nil
+  15
+  6
+  slot1
+  10
 
   OUTPUT
 
-private def compile_module_spill_program(directory, resident_modules, executable_name, debug = Crystal::Debug::Default, n_threads = 1)
+private def compile_module_spill_program(directory, resident_modules, executable_name, debug = Crystal::Debug::Default, n_threads = 1, resident_ir_megabytes = 0)
   program = File.join(directory, "program.cr")
   File.write(program, MODULE_SPILL_PROGRAM)
   executable = File.join(directory, executable_name)
 
   compiler = Crystal::Compiler.new
   compiler.resident_modules = resident_modules
+  compiler.resident_ir_megabytes = resident_ir_megabytes
   compiler.debug = debug
   compiler.n_threads = n_threads
   ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
@@ -155,15 +202,40 @@ private def module_spill_cache_directory(directory)
   Crystal::CacheDir.instance.directory_for(File.join(directory, "program.cr"))
 end
 
-describe "Compiler#resident_modules" do
-  it "defaults to keeping every module in memory" do
+describe "Compiler#resident_modules and Compiler#resident_ir_megabytes" do
+  it "limit the IR in memory by its size by default, not the number of modules" do
     Crystal::Compiler.new.resident_modules.should eq(0)
+    Crystal::Compiler.new.resident_ir_megabytes.should eq(Crystal::Compiler::DEFAULT_RESIDENT_IR_MEGABYTES)
+  end
+
+  it "builds a program with many types from 1 megabyte of resident IR" do
+    with_tempfile("module_spill_bytes") do |directory|
+      Dir.mkdir_p(directory)
+      executable, compiler = compile_module_spill_program(directory, 0, "one_megabyte", resident_ir_megabytes: 1)
+
+      module_spill = compiler.last_module_spill.should_not be_nil
+      module_spill.spill_count.should be > 100
+      module_spill.reload_count.should be > 100
+      module_spill.peak_resident_ir_bytes.should be < 16 * 1024 * 1024
+      module_spill.list_of_mismatched_struct_names.should be_empty
+      Process.capture(executable).should eq(MODULE_SPILL_PROGRAM_OUTPUT)
+    end
+  end
+
+  it "drops a module that did not change since it was read back without writing it again" do
+    with_tempfile("module_spill_unchanged") do |directory|
+      Dir.mkdir_p(directory)
+      _, compiler = compile_module_spill_program(directory, 2, "unchanged")
+
+      module_spill = compiler.last_module_spill.should_not be_nil
+      module_spill.write_count.should be < module_spill.spill_count
+    end
   end
 
   it "keeps every module in memory with 0" do
     with_tempfile("module_spill_off") do |directory|
       Dir.mkdir_p(directory)
-      executable, compiler = compile_module_spill_program(directory, 0, "all_resident")
+      executable, compiler = compile_module_spill_program(directory, 0, "all_resident", resident_ir_megabytes: 0)
 
       compiler.last_module_spill.should be_nil
       Process.capture(executable).should eq(MODULE_SPILL_PROGRAM_OUTPUT)
@@ -179,6 +251,7 @@ describe "Compiler#resident_modules" do
       module_spill.spill_count.should be > 100
       module_spill.reload_count.should be > 100
       module_spill.write_count.should be <= module_spill.spill_count
+      module_spill.list_of_mismatched_struct_names.should be_empty
       Process.capture(executable).should eq(MODULE_SPILL_PROGRAM_OUTPUT)
 
       # Every spill file became its unit's cached .bc file.

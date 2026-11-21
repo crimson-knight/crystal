@@ -96,6 +96,7 @@ lib LibLLVM
   fun count_struct_element_types = LLVMCountStructElementTypes(struct_ty : TypeRef) : UInt
   fun get_struct_element_types = LLVMGetStructElementTypes(struct_ty : TypeRef, dest : TypeRef*)
   fun is_packed_struct = LLVMIsPackedStruct(struct_ty : TypeRef) : Bool
+  fun is_opaque_struct = LLVMIsOpaqueStruct(struct_ty : TypeRef) : Bool
 
   fun get_element_type = LLVMGetElementType(ty : TypeRef) : TypeRef
   fun array_type = LLVMArrayType(element_type : TypeRef, element_count : UInt) : TypeRef

@@ -181,15 +181,15 @@ module Crystal
       ivars.each_with_index do |(name, ivar), idx|
         next if ivar.type.is_a?(NilType)
         if (ivar_type = ivar.type?) && (ivar_debug_type = get_debug_type(ivar_type))
-          offset = type.extern_union? ? 0_u64 : @program.target_machine.data_layout.offset_of_element(struct_type, idx &+ (type.struct? ? 0 : 1))
-          size = @program.target_machine.data_layout.size_in_bits(llvm_embedded_type(ivar_type))
+          offset = type.extern_union? ? 0_u64 : llvm_typer.data_layout.offset_of_element(struct_type, idx &+ (type.struct? ? 0 : 1))
+          size = llvm_typer.data_layout.size_in_bits(llvm_embedded_type(ivar_type))
 
           member = di_builder.create_member_type(nil, name[1..-1], nil, 0, size, size, 8u64 * offset, LLVM::DIFlags::Zero, ivar_debug_type)
           element_types << member
         end
       end
 
-      size = @program.target_machine.data_layout.size_in_bits(struct_type)
+      size = llvm_typer.data_layout.size_in_bits(struct_type)
       if type.extern_union?
         debug_type = di_builder.create_union_type(nil, original_type.to_s, current_debug_file, 0, size, size, LLVM::DIFlags::Zero, element_types)
       else
@@ -211,7 +211,7 @@ module Crystal
     def create_debug_type(type : MixedUnionType, original_type : Type)
       element_types = [] of LibLLVM::MetadataRef
       struct_type = llvm_type(type)
-      struct_type_size = @program.target_machine.data_layout.size_in_bits(struct_type)
+      struct_type_size = llvm_typer.data_layout.size_in_bits(struct_type)
       is_struct = struct_type.struct_element_types.size == 1
 
       tmp_debug_type = di_builder.create_replaceable_composite_type(nil, original_type.to_s, nil, 0)
@@ -221,15 +221,15 @@ module Crystal
         next if ivar_type.is_a?(NilType)
         if ivar_debug_type = get_debug_type(ivar_type)
           embedded_type = llvm_type(ivar_type)
-          size = @program.target_machine.data_layout.size_in_bits(embedded_type)
+          size = llvm_typer.data_layout.size_in_bits(embedded_type)
           align = align_of(ivar_type)
           member = di_builder.create_member_type(nil, ivar_type.to_s, nil, 0, size, align, 0, LLVM::DIFlags::Zero, ivar_debug_type)
           element_types << member
         end
       end
 
-      size = @program.target_machine.data_layout.size_in_bits(struct_type.struct_element_types[is_struct ? 0 : 1])
-      offset = @program.target_machine.data_layout.offset_of_element(struct_type, 1) * 8u64
+      size = llvm_typer.data_layout.size_in_bits(struct_type.struct_element_types[is_struct ? 0 : 1])
+      offset = llvm_typer.data_layout.offset_of_element(struct_type, 1) * 8u64
       debug_type = di_builder.create_union_type(nil, "", current_debug_file, 0, size, size, LLVM::DIFlags::Zero, element_types)
       unless is_struct
         element_types.clear
@@ -251,13 +251,13 @@ module Crystal
         next if ivar_type.is_a?(NilType)
         if ivar_debug_type = get_debug_type(ivar_type)
           embedded_type = llvm_type(ivar_type)
-          size = @program.target_machine.data_layout.size_in_bits(embedded_type)
+          size = llvm_typer.data_layout.size_in_bits(embedded_type)
           member = di_builder.create_member_type(nil, ivar_type.to_s, nil, 0, size, size, 0, LLVM::DIFlags::Zero, ivar_debug_type)
           element_types << member
         end
       end
 
-      size = @program.target_machine.data_layout.size_in_bits(struct_type)
+      size = llvm_typer.data_layout.size_in_bits(struct_type)
       debug_type = di_builder.create_union_type(nil, original_type.to_s, current_debug_file, 0, size, size, LLVM::DIFlags::Zero, element_types)
       di_builder.replace_temporary(tmp_debug_type, debug_type)
       debug_type
@@ -289,15 +289,15 @@ module Crystal
       ivars.each_with_index do |ivar_type, idx|
         next if ivar_type.is_a?(NilType)
         if ivar_debug_type = get_debug_type(ivar_type)
-          offset = @program.target_machine.data_layout.offset_of_element(struct_type, idx &+ (type.struct? ? 0 : 1))
-          size = @program.target_machine.data_layout.size_in_bits(llvm_embedded_type(ivar_type))
+          offset = llvm_typer.data_layout.offset_of_element(struct_type, idx &+ (type.struct? ? 0 : 1))
+          size = llvm_typer.data_layout.size_in_bits(llvm_embedded_type(ivar_type))
 
           member = di_builder.create_member_type(nil, "[#{idx}]", nil, 0, size, size, 8u64 * offset, LLVM::DIFlags::Zero, ivar_debug_type)
           element_types << member
         end
       end
 
-      size = @program.target_machine.data_layout.size_in_bits(struct_type)
+      size = llvm_typer.data_layout.size_in_bits(struct_type)
       debug_type = di_builder.create_struct_type(nil, original_type.to_s, nil, 0, size, size, LLVM::DIFlags::Zero, nil, element_types)
       unless type.struct?
         debug_type = di_builder.create_pointer_type(debug_type, 8u64 * llvm_typer.pointer_size, 8u64 * llvm_typer.pointer_size, original_type.to_s)
@@ -317,15 +317,15 @@ module Crystal
       ivars.each_with_index do |ivar, idx|
         next if (ivar_type = ivar.type).is_a?(NilType)
         if ivar_debug_type = get_debug_type(ivar_type)
-          offset = @program.target_machine.data_layout.offset_of_element(struct_type, idx &+ (type.struct? ? 0 : 1))
-          size = @program.target_machine.data_layout.size_in_bits(llvm_embedded_type(ivar_type))
+          offset = llvm_typer.data_layout.offset_of_element(struct_type, idx &+ (type.struct? ? 0 : 1))
+          size = llvm_typer.data_layout.size_in_bits(llvm_embedded_type(ivar_type))
 
           member = di_builder.create_member_type(nil, ivar.name, nil, 0, size, size, 8u64 * offset, LLVM::DIFlags::Zero, ivar_debug_type)
           element_types << member
         end
       end
 
-      size = @program.target_machine.data_layout.size_in_bits(struct_type)
+      size = llvm_typer.data_layout.size_in_bits(struct_type)
       debug_type = di_builder.create_struct_type(nil, original_type.to_s, nil, 0, size, size, LLVM::DIFlags::Zero, nil, element_types)
       unless type.struct?
         debug_type = di_builder.create_pointer_type(debug_type, 8u64 * llvm_typer.pointer_size, 8u64 * llvm_typer.pointer_size, original_type.to_s)
@@ -354,7 +354,7 @@ module Crystal
           di_builder.create_basic_type("Void", size_ptr, size_ptr, LLVM::DwarfTypeEncoding::Address)
         end
 
-      offset_func = @program.target_machine.data_layout.offset_of_element(struct_type, 0)
+      offset_func = llvm_typer.data_layout.offset_of_element(struct_type, 0)
       element_types << di_builder.create_member_type(
         nil, "func", nil, 0,
         size_ptr, size_ptr, 8u64 * offset_func,
@@ -363,14 +363,14 @@ module Crystal
 
       void_type = di_builder.create_basic_type("Void", 8, 8, LLVM::DwarfTypeEncoding::Address)
       ctx_ptr_type = di_builder.create_pointer_type(void_type, size_ptr, size_ptr, "Void*")
-      offset_ctx = @program.target_machine.data_layout.offset_of_element(struct_type, 1)
+      offset_ctx = llvm_typer.data_layout.offset_of_element(struct_type, 1)
       element_types << di_builder.create_member_type(
         nil, "closure_data", nil, 0,
         size_ptr, size_ptr, 8u64 * offset_ctx,
         LLVM::DIFlags::Zero, ctx_ptr_type
       )
 
-      total_size = @program.target_machine.data_layout.size_in_bits(struct_type)
+      total_size = llvm_typer.data_layout.size_in_bits(struct_type)
       di_builder.create_struct_type(
         nil, original_type.to_s, nil, 0,
         total_size, total_size,
@@ -410,7 +410,7 @@ module Crystal
     end
 
     private def align_of(type)
-      @program.target_machine.data_layout.abi_alignment(llvm_type(type)) * 8
+      llvm_typer.data_layout.abi_alignment(llvm_type(type)) * 8
     end
 
     # see also the other DWARF enums in `crystal/dwarf/abbrev.cr` (note that

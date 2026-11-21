@@ -33,6 +33,13 @@ class LLVM::Module
     LibLLVM.set_module_data_layout(self, data)
   end
 
+  # The data layout of this module. It belongs to the module: it is valid
+  # as long as the module is, and the struct layouts it caches are those of
+  # this module's context only.
+  def data_layout : TargetData
+    TargetData.new(LibLLVM.get_module_data_layout(self))
+  end
+
   def append_inline_asm(asm_string : String)
     LibLLVM.append_module_inline_asm(self, asm_string, asm_string.bytesize)
   end
