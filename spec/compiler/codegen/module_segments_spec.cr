@@ -162,7 +162,7 @@ describe "Compiler#module_segment_instructions" do
       executable, compiler = compile_module_segments_program(directory, "one_module_per_type", 0)
 
       compiler.last_segmented_type_count.should eq(0)
-      Dir.children(module_segments_cache_directory(directory)).count(&.starts_with?("L-edger35")).should eq(0)
+      Dir.children(module_segments_cache_directory(directory)).count(&.starts_with?("L-edger-seg")).should eq(0)
       Process.capture(executable).should eq(MODULE_SEGMENTS_PROGRAM_OUTPUT)
     end
   end
@@ -179,7 +179,7 @@ describe "Compiler#module_segment_instructions" do
       # Each segment of `Ledger` is a unit with a bitcode file and an
       # object file of its own.
       list_of_cache_files = Dir.children(module_segments_cache_directory(directory))
-      list_of_ledger_objects = list_of_cache_files.select { |name| name.matches?(/\AL-edger(35\d+)?\.o0\.o\z/) }
+      list_of_ledger_objects = list_of_cache_files.select { |name| name.matches?(/\AL-edger(-seg\d+)?\.o0\.o\z/) }
       list_of_ledger_objects.size.should be > 10
       list_of_ledger_objects.each do |object_name|
         list_of_cache_files.should contain(object_name.rchop(".o") + ".bc")
@@ -209,7 +209,7 @@ describe "Compiler#module_segment_instructions" do
       Dir.mkdir_p(directory)
       _, compiler = compile_module_segments_program(directory, "first", 40)
       cache_directory = module_segments_cache_directory(directory)
-      ledger_segment_count = Dir.children(cache_directory).count(&.matches?(/\AL-edger(35\d+)?\.o0\.o\z/))
+      ledger_segment_count = Dir.children(cache_directory).count(&.matches?(/\AL-edger(-seg\d+)?\.o0\.o\z/))
       first_build_times = segment_object_times(cache_directory, "Ledger", ledger_segment_count)
 
       sleep 1.1.seconds
@@ -229,7 +229,7 @@ describe "Compiler#module_segment_instructions" do
       Dir.mkdir_p(directory)
       compile_module_segments_program(directory, "first", 40)
       cache_directory = module_segments_cache_directory(directory)
-      ledger_segment_count = Dir.children(cache_directory).count(&.matches?(/\AL-edger(35\d+)?\.o0\.o\z/))
+      ledger_segment_count = Dir.children(cache_directory).count(&.matches?(/\AL-edger(-seg\d+)?\.o0\.o\z/))
       first_build_times = segment_object_times(cache_directory, "Ledger", ledger_segment_count)
 
       sleep 1.1.seconds

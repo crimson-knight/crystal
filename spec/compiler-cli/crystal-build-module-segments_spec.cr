@@ -15,7 +15,7 @@ private def build_large_type(output_path, cache_dir, *extra_args)
 end
 
 private def list_of_ledger_files(cache_dir, extension) : Array(String)
-  Dir.glob(File.join(cache_dir, "**", "L-edger*#{extension}")).select(&.matches?(/\/L-edger(35\d+)?\.o\w#{Regex.escape(extension)}\z/))
+  Dir.glob(File.join(cache_dir, "**", "L-edger*#{extension}")).select(&.matches?(/\/L-edger(-seg\d+)?\.o\w#{Regex.escape(extension)}\z/))
 end
 
 describe "`crystal build --module-segment-instructions`" do

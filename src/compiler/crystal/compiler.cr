@@ -2191,6 +2191,11 @@ module Crystal
               # Because OSX has case insensitive filenames, try to avoid
               # clash of 'a' and 'A' by using 'A-' for 'A'.
               str << char << '-'
+            when '#'
+              # The separator of a module segment's number (see
+              # `CodeGenVisitor.segment_module_name`). A `-` that does not
+              # follow a capital letter is in no other name.
+              str << "-seg"
             else
               str << char.ord
             end
