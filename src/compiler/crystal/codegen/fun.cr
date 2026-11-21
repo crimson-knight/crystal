@@ -26,6 +26,14 @@ class Crystal::CodeGenVisitor
   end
 
   def target_def_fun(target_def, self_type) : LLVMTypedFunction
+    if (sharing = @owner_shape_sharing) && (representative = sharing.representative?(target_def))
+      unless self_type.same?(target_def.owner)
+        raise "BUG: #{target_def.name} shares the function of another def but is called with self type #{self_type} instead of its owner #{target_def.owner}"
+      end
+      target_def = representative
+      self_type = representative.owner
+    end
+
     mangled_name = target_def.mangled_name(@program, self_type)
 
     # Already defined or declared in the module code is being generated
@@ -155,6 +163,7 @@ class Crystal::CodeGenVisitor
       args = codegen_fun_signature(mangled_name, target_def, self_type, is_fun_literal, is_closure)
 
       needs_body = !target_def.is_a?(External) || is_exported_fun
+      @generated_fun_count += 1 if needs_body
       if needs_body
         emit_def_debug_metadata target_def unless @debug.none?
         set_current_debug_location target_def if @debug.line_numbers?
@@ -328,6 +337,24 @@ class Crystal::CodeGenVisitor
       LibGC.set_force_unmap_on_gcollect(1)
       GC.collect
       LibGC.set_force_unmap_on_gcollect(0)
+    end
+  end
+
+  # Releases the bodies of the defs that share another def's function: codegen
+  # never generates them. Bodies that codegen inlines at the call (a literal,
+  # `self`, an instance variable, a def that takes a block) are kept.
+  def release_shared_bodies : Nil
+    sharing = @owner_shape_sharing
+    return unless sharing && release_typed_bodies?
+    sharing.each_shared_def do |typed_def, _representative|
+      next if typed_def.block_arg || typed_def.block_arity
+      case typed_def.body
+      when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral, Var, InstanceVar,
+           Primitive, ReleasedBody
+        next
+      end
+      release_typed_body(typed_def)
+      sharing.stats.released_bodies += 1
     end
   end
 
