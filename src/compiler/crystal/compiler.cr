@@ -186,6 +186,16 @@ module Crystal
     # --release automatically enable this option
     property? single_module = false
 
+    # The number of LLVM modules the per-type units of a multi-module build
+    # are grouped into. With 0 every type gets its own module. Otherwise a
+    # type's functions go to the module chosen by a hash of the type's name
+    # that is the same in every build, so a group's object file is reused
+    # from one build to the next like a per-type object file. Fewer modules
+    # hold less LLVM IR at the end of IR generation: every module carries its
+    # own context, type table, debug information and a declaration of each
+    # function it calls.
+    property module_groups : Int32 = 0
+
     # The most parts an optimized single-module build (`--release`) is split
     # into for machine code emission, each part emitted on its own thread; the
     # build uses at most `n_threads` parts. With 1 the module is emitted as one
@@ -642,7 +652,9 @@ module Crystal
 
       llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
         program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: is_single_module, release_typed_bodies: !@incremental
+          single_module: is_single_module, release_typed_bodies: !@incremental,
+          module_groups: @module_groups,
+          discard_value_names: discard_value_names?
       end
 
       output_dir = CacheDir.instance.directory_for(sources)
@@ -756,6 +768,13 @@ module Crystal
       CacheDir.instance.cleanup if @cleanup
 
       units
+    end
+
+    # Whether LLVM drops the names of arguments, basic blocks and instructions
+    # as IR is generated. Those names only show in printed IR, so they are kept
+    # when the build prints IR (`--emit llvm-ir`, `--ll`, the `DUMP` variable).
+    private def discard_value_names? : Bool
+      @emit_targets.none? && !@dump_ll && !ENV.has_key?("DUMP")
     end
 
     # The number of parts the single optimized module is emitted as: more than
@@ -1519,6 +1538,11 @@ module Crystal
           next if unit.reused_previous_compilation?
           puts " - #{unit.original_name} (#{unit.name}.bc)"
         end
+      end
+
+      if @module_groups > 0 && units.size > 1
+        own_module_count = units.count { |unit| !unit.original_name.starts_with?("_") }
+        puts " - the per-type units were grouped into #{units.size} modules (#{own_module_count} of them hold one large type each)"
       end
 
       if @last_codegen_worker_count > 0

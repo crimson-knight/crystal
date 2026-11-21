@@ -8,6 +8,16 @@ class LLVM::Context
     @builders = [] of LLVM::Builder
   end
 
+  # Sets whether values created in this context from now on keep their names.
+  # When names are discarded, only global values (functions, global variables)
+  # are named; arguments, basic blocks and instructions are numbered when the
+  # IR is printed. The compiled code is the same either way; a module without
+  # those names takes less memory and less bitcode.
+  def discard_value_names=(discard : Bool) : Bool
+    LibLLVM.context_set_discard_value_names(self, discard)
+    discard
+  end
+
   def new_module(name : String) : Module
     Module.new(LibLLVM.module_create_with_name_in_context(name, self), self)
   end

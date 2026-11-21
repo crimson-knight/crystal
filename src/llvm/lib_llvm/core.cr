@@ -23,6 +23,7 @@ lib LibLLVM
 
   fun create_context = LLVMContextCreate : ContextRef
   fun dispose_context = LLVMContextDispose(c : ContextRef)
+  fun context_set_discard_value_names = LLVMContextSetDiscardValueNames(c : ContextRef, discard : Bool)
 
   fun get_md_kind_id_in_context = LLVMGetMDKindIDInContext(c : ContextRef, name : Char*, s_len : UInt) : UInt
 
@@ -195,6 +196,7 @@ lib LibLLVM
 
   fun get_basic_block_name = LLVMGetBasicBlockName(bb : BasicBlockRef) : Char*
   fun get_basic_block_parent = LLVMGetBasicBlockParent(bb : BasicBlockRef) : ValueRef
+  fun count_basic_blocks = LLVMCountBasicBlocks(fn : ValueRef) : UInt
   fun get_first_basic_block = LLVMGetFirstBasicBlock(fn : ValueRef) : BasicBlockRef
   fun get_next_basic_block = LLVMGetNextBasicBlock(bb : BasicBlockRef) : BasicBlockRef
   fun append_basic_block_in_context = LLVMAppendBasicBlockInContext(c : ContextRef, fn : ValueRef, name : Char*) : BasicBlockRef

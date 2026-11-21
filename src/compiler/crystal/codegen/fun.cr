@@ -21,7 +21,14 @@ class Crystal::CodeGenVisitor
     mangled_name = target_def.mangled_name(@program, self_type)
     self_type_mod = type_module(self_type).mod
 
-    func = typed_fun?(self_type_mod, mangled_name) || codegen_fun(mangled_name, target_def, self_type)
+    func = typed_fun?(self_type_mod, mangled_name)
+    if !func && (group_mod = group_module_left_by?(self_type))
+      # The function was generated before the type moved out of its group.
+      if func = typed_fun?(group_mod, mangled_name)
+        self_type_mod = group_mod
+      end
+    end
+    func ||= codegen_fun(mangled_name, target_def, self_type)
     check_mod_fun self_type_mod, mangled_name, func
   end
 
@@ -66,14 +73,7 @@ class Crystal::CodeGenVisitor
     # Skip tracking in single-module mode since module-level caching doesn't apply there.
     if !@single_module && @program.compiler.try(&.incremental?)
       if (location = target_def.location) && (filename = location.filename).is_a?(String)
-        mod_type = self_type.remove_typedef
-        mod_name = case mod_type
-                   when Nil, Program, LibType
-                     ""
-                   else
-                     mod_type.instance_type.to_s
-                   end
-        (@module_source_files[mod_name] ||= Set(String).new).add(filename)
+        (@module_source_files[module_name_of(self_type)] ||= Set(String).new).add(filename)
       end
     end
 
@@ -257,6 +257,7 @@ class Crystal::CodeGenVisitor
     # Proc literals can be generated more than once (a block inlined at
     # several `yield`s), so only plain method defs are released.
     release_typed_body(target_def) unless is_fun_literal || is_closure || is_exported_fun
+    count_blocks_of_grouped_type(self_type, fun_module_info, typed_function) if @module_groups > 0
     typed_function
   end
 
@@ -710,24 +711,90 @@ class Crystal::CodeGenVisitor
     return @main_module_info if @single_module
 
     @types_to_modules[type] ||= begin
-      type = type.remove_typedef
-      case type
-      when Nil, Program, LibType
-        type_name = ""
-      else
-        type_name = type.instance_type.to_s
-      end
+      module_name = module_name_of(type)
 
-      @modules[type_name] ||= begin
+      @modules[module_name] ||= begin
         llvm_context = LLVM::Context.new
-        # LLVM::Context.register(llvm_context, type_name)
+        llvm_context.discard_value_names = true if @discard_value_names
+        # LLVM::Context.register(llvm_context, module_name)
 
         llvm_typer = LLVMTyper.new(@program, llvm_context)
-        llvm_mod = configure_module(llvm_context.new_module(type_name))
+        llvm_mod = configure_module(llvm_context.new_module(module_name))
         llvm_builder = new_builder(llvm_context)
 
         ModuleInfo.new(llvm_mod, llvm_typer, llvm_builder)
       end
     end
+  end
+
+  # The name of the LLVM module that holds the functions of *type*: the empty
+  # name of the main module for the program and lib types, otherwise the
+  # type's own name, or its group's name when types are grouped (see
+  # `Compiler#module_groups`).
+  def module_name_of(type) : String
+    type = type.remove_typedef
+    case type
+    when Nil, Program, LibType
+      ""
+    else
+      instance_type = type.instance_type
+      type_name = instance_type.to_s
+      if @module_groups > 0 && !@types_moved_out_of_their_group.includes?(instance_type)
+        CodeGenVisitor.module_group_name(type_name, @module_groups)
+      else
+        type_name
+      end
+    end
+  end
+
+  # Adds the basic blocks of *typed_function*, just generated for *self_type*
+  # in *fun_module_info*, to the type's count, when that module is the type's
+  # group. A type that reaches `MODULE_GROUP_TYPE_BLOCK_LIMIT` moves out: its
+  # functions generated from now on go to a module named after the type. The
+  # ones generated so far stay in the group (see `#group_module_left_by?`).
+  # Functions are generated in the same order in every build of the same
+  # program, so a type moves out at the same point every time.
+  private def count_blocks_of_grouped_type(self_type, fun_module_info, typed_function) : Nil
+    return if fun_module_info.mod == @main_mod
+
+    type = self_type.remove_typedef
+    return if type.is_a?(Program) || type.is_a?(LibType)
+    instance_type = type.instance_type
+    return if @types_moved_out_of_their_group.includes?(instance_type)
+
+    block_count = @grouped_type_block_counts.fetch(instance_type, 0) + typed_function.func.basic_blocks.size
+    @grouped_type_block_counts[instance_type] = block_count
+    return if block_count < MODULE_GROUP_TYPE_BLOCK_LIMIT
+
+    @types_moved_out_of_their_group << instance_type
+    @grouped_type_block_counts.delete(instance_type)
+    # Types that share the instance type (its metaclass, typedefs) follow.
+    @types_to_modules.clear
+  end
+
+  # The module of the group that *type* moved out of, if it did.
+  private def group_module_left_by?(type) : LLVM::Module?
+    return nil if @types_moved_out_of_their_group.empty?
+
+    type = type.remove_typedef
+    return nil if type.is_a?(Program) || type.is_a?(LibType)
+    instance_type = type.instance_type
+    return nil unless @types_moved_out_of_their_group.includes?(instance_type)
+
+    group_name = CodeGenVisitor.module_group_name(instance_type.to_s, @module_groups)
+    @modules[group_name]?.try(&.mod)
+  end
+
+  # The name of the group module for *type_name* among *group_count* groups.
+  # The group is picked by an FNV-1a hash of the name, which has the same
+  # value in every build (`String#hash` is seeded per process), so a type
+  # stays in its group from one build to the next. Type names start with an
+  # uppercase letter, so a group's name never equals a type's name.
+  def self.module_group_name(type_name : String, group_count : Int32) : String
+    hash = 0xcbf29ce484222325_u64
+    type_name.each_byte do |byte|
+      hash = (hash ^ byte) &* 0x100000001b3_u64
+    end
+    "_group_#{hash % group_count}"
   end
 end

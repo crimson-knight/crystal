@@ -45,6 +45,36 @@ describe "`crystal build` with object file workers" do
     end
   end
 
+  it "builds a multi-type program as a few grouped modules and reuses their objects" do
+    with_tempfile("module-groups-cache") do |cache_dir|
+      with_temp_executable "module-groups" do |output_path|
+        first_build = build_multi_type(output_path, cache_dir, "--module-groups", "3").should(be_success)
+        first_build.output.should contain("no previous .o files were reused")
+        first_build.output.should match(/the per-type units were grouped into [2-4] modules/)
+
+        Process.capture_result(output_path)
+          .should(be_success)
+          .output.should(eq(MULTI_TYPE_OUTPUT))
+
+        # Three groups and the main module, each with its object file.
+        list_of_bitcode_files = Dir.glob(File.join(cache_dir, "**", "*.bc"))
+        list_of_bitcode_files.size.should be <= 4
+        list_of_bitcode_files.map { |bitcode_file| File.basename(bitcode_file)[/\A_group_\d+/]? }
+          .compact.size.should eq(list_of_bitcode_files.size - 1)
+        list_of_bitcode_files.each do |bitcode_file|
+          File.exists?(bitcode_file.rchop(".bc") + ".o").should be_true
+        end
+
+        second_build = build_multi_type(output_path, cache_dir, "--module-groups", "3").should(be_success)
+        second_build.output.should contain("all previous .o files were reused")
+
+        Process.capture_result(output_path)
+          .should(be_success)
+          .output.should(eq(MULTI_TYPE_OUTPUT))
+      end
+    end
+  end
+
   it "builds an object file from a bitcode file in the worker subcommand" do
     with_tempfile("object-worker-cache", "object-worker.o") do |cache_dir, object_path|
       with_temp_executable "object-worker" do |output_path|

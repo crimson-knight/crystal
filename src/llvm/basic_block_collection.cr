@@ -21,6 +21,11 @@ struct LLVM::BasicBlockCollection
     block
   end
 
+  # The number of basic blocks of the function, without walking them.
+  def size : Int32
+    LibLLVM.count_basic_blocks(@function).to_i32
+  end
+
   def each(&) : Nil
     bb = LibLLVM.get_first_basic_block(@function)
     while bb

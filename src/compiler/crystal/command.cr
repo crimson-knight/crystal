@@ -607,6 +607,9 @@ class Crystal::Command
         opts.on("--single-module", "Generate a single LLVM module") do
           compiler.single_module = true
         end
+        opts.on("--module-groups NUM", "Group the per-type LLVM modules into NUM modules (0 keeps one module per type)") do |module_groups|
+          compiler.module_groups = module_groups.to_i? || raise Error.new("Invalid module group count: #{module_groups}")
+        end
         opts.on("--threads NUM", "Maximum number of threads to use") do |n_threads|
           compiler.n_threads = n_threads.to_i? || raise Error.new("Invalid thread count: #{n_threads}")
         end
@@ -705,6 +708,7 @@ class Crystal::Command
 
     abort! "maximum number of threads cannot be lower than 1", :USAGE_ERROR if compiler.n_threads < 1
     abort! "number of release units cannot be lower than 1", :USAGE_ERROR if compiler.release_units < 1
+    abort! "number of module groups cannot be negative", :USAGE_ERROR if compiler.module_groups < 0
 
     if compiler.no_cache? && compiler.incremental?
       raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
@@ -764,6 +768,9 @@ class Crystal::Command
     end
     opts.on("--single-module", "Generate a single LLVM module") do
       compiler.single_module = true
+    end
+    opts.on("--module-groups NUM", "Group the per-type LLVM modules into NUM modules (0 keeps one module per type)") do |module_groups|
+      compiler.module_groups = module_groups.to_i? || raise Error.new("Invalid module group count: #{module_groups}")
     end
     opts.on("--threads NUM", "Maximum number of threads to use") do |n_threads|
       compiler.n_threads = n_threads.to_i? || raise Error.new("Invalid thread count: #{n_threads}")

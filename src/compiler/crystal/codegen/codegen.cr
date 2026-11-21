@@ -153,9 +153,11 @@ module Crystal
     end
 
     def codegen(node, single_module = false, debug = Debug::Default,
-                frame_pointers = FramePointers::Auto, release_typed_bodies = false)
+                frame_pointers = FramePointers::Auto, release_typed_bodies = false,
+                module_groups = 0, discard_value_names = false)
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
-        debug: debug, frame_pointers: frame_pointers
+        debug: debug, frame_pointers: frame_pointers, module_groups: module_groups,
+        discard_value_names: discard_value_names
       visitor.release_typed_bodies = release_typed_bodies
       visitor.accept node
       visitor.process_finished_hooks
@@ -288,12 +290,22 @@ module Crystal
     # without regenerating LLVM IR.
     getter module_source_files = Hash(String, Set(String)).new
 
+    # With grouped modules (see `Compiler#module_groups`), the number of basic
+    # blocks one type may add to its group's module. Once a type has generated
+    # this many, the rest of its functions go to a module of the type's own, so
+    # a large type does not make one group's object file slow to build. About
+    # 1.2 MB of bitcode; a Grant model with some thirty columns is under it.
+    MODULE_GROUP_TYPE_BLOCK_LIMIT = 16_384
+
     def initialize(@program : Program, @node : ASTNode,
                    @single_module : Bool = false,
                    @debug = Debug::Default,
                    @frame_pointers : FramePointers = :auto,
-                   @llvm_context : LLVM::Context = LLVM::Context.new)
+                   @llvm_context : LLVM::Context = LLVM::Context.new,
+                   @module_groups : Int32 = 0,
+                   @discard_value_names : Bool = false)
       @abi = ABI.from(@program.target_machine)
+      @llvm_context.discard_value_names = true if @discard_value_names
       # LLVM::Context.register(@llvm_context, "main")
       @llvm_mod = configure_module(@llvm_context.new_module("main_module"))
       @main_mod = @llvm_mod
@@ -337,6 +349,8 @@ module Crystal
       @main_module_info = ModuleInfo.new(@main_mod, @main_llvm_typer, @builder)
       @modules = {"" => @main_module_info} of String => ModuleInfo
       @types_to_modules = {} of Type => ModuleInfo
+      @grouped_type_block_counts = {} of Type => Int32
+      @types_moved_out_of_their_group = Set(Type).new
 
       set_internal_fun_debug_location(@main, MAIN_NAME, nil)
 
