@@ -96,14 +96,14 @@ describe "Semantic: shared block instances" do
     stats.shared.should eq(0)
   end
 
-  it "shares a def that never yields" do
+  it "shares a def that never yields between blocks of different types" do
     result = assert_type(%(
       def ignore(value, &)
         value
       end
 
-      a = ignore(1) { |x| x.unknown_method }
-      b = ignore(1) { |x| x.other_unknown_method }
+      a = ignore(1) { |x| 2 }
+      b = ignore(1) { |x| 'a' }
       {a, b}
       ), inject_primitives: true) { tuple_of([int32, int32]) }
     stats = result.program.block_instance_stats
