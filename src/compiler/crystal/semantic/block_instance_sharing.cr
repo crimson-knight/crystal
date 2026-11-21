@@ -20,10 +20,15 @@ module Crystal
   # then on. The moment they differ, the watcher gives the later call a private
   # clone again, before the first block's new type reaches the clone's body.
   #
-  # A clone is shared only when the types of its `yield` expressions cannot
-  # depend on the block's type (see `BlockInstance#yields_independent_of_block?`),
-  # so a block typed against a shared clone sees the parameter types it would
-  # see with a private one.
+  # A clone is a function of the def, the argument types and the block's
+  # type (the block's type also binds the free variables of `& : T -> U`), so
+  # a block of the same type would get an identical private clone.
+  #
+  # A block that has no type before the def is typed gets its parameter types
+  # from the clone's `yield` expressions. Such a block only tries clones whose
+  # `yield` expressions cannot depend on the block's type
+  # (`BlockInstance#yields_independent_of_block?`): those expressions have the
+  # same types in every clone, so the block is typed as with a private one.
   class BlockInstance
     # Nodes visited before a clone is declared dependent on its block.
     DEPENDENCY_WALK_LIMIT = 600
@@ -42,14 +47,11 @@ module Crystal
     # Cleared when the clone can never be shared (see `#add_yield`).
     property? shareable = true
 
-    # Free variables bound from the block's return type (`& : T -> U`).
-    @output_free_vars : Array(String)?
-
     @checked_yield_count = -1
     @incomplete_checks = 0
     @independent = false
 
-    def initialize(@first_call : Call, @first_block : Block, @output_free_vars : Array(String)?)
+    def initialize(@first_call : Call, @first_block : Block, @block_return_type_declared : Bool)
     end
 
     # Records a `yield` of *typed_def* that was bound to the first block.
@@ -68,6 +70,19 @@ module Crystal
       live_watchers.each &.diverge
     end
 
+    # Whether another call's block may share *typed_def* at all.
+    def accepts_sharing?(typed_def : Def) : Bool
+      # `with scope yield` gives the first block a scope taken from the clone.
+      shareable? && @yields.none?(&.scope)
+    end
+
+    # Whether the clone was typed without ever reading the block: it has no
+    # `yield` and its block parameter declares no return type. Any block can
+    # share such a clone, whatever its type.
+    def ignores_block? : Bool
+      ready? && shareable? && @yields.empty? && !@block_return_type_declared
+    end
+
     def add_watcher(watcher : BlockInstanceWatcher) : Nil
       @watchers << watcher
     end
@@ -76,10 +91,10 @@ module Crystal
     # because the block's type changes.
     #
     # The block's type enters the clone through its `yield` nodes (each is
-    # bound to the block) and through free variables bound from the block's
-    # return type. This walks forward from both, along the same edges type
+    # bound to the block). This walks forward from them, along the edges type
     # inference propagates on, and fails when it reaches the first block's
-    # parameters.
+    # parameters. (A block return type that binds a free variable requires a
+    # typed block, which never needs this check.)
     def yields_independent_of_block?(typed_def : Def) : Bool
       return false unless shareable?
       return @independent if @checked_yield_count == @yields.size
@@ -120,20 +135,9 @@ module Crystal
     end
 
     private def compute_yields_independent_of_block(typed_def : Def) : Bool
-      return false if @yields.empty?
-      return false if typed_def.special_vars
-
+      # A def that never yields has no `yield` expressions to depend on.
       pending = [] of ASTNode
-      @yields.each do |node|
-        # `with scope yield` gives the block a scope taken from the clone.
-        return false if node.scope
-        pending << node
-      end
-      if output_free_vars = @output_free_vars
-        collector = FreeVarUseCollector.new(output_free_vars, pending)
-        collector.collect(typed_def)
-      end
-
+      pending.concat(@yields)
       seen = Set(UInt64).new
       while node = pending.pop?
         next unless seen.add?(node.object_id)
@@ -177,40 +181,6 @@ module Crystal
     end
   end
 
-  # Finds the nodes of a typed def that read a free variable: each mention of
-  # the variable, and the innermost expression that contains the mention.
-  class FreeVarUseCollector
-    def initialize(@names : Array(String), @uses : Array(ASTNode))
-      @children = BlockInstanceChildCollector.new
-    end
-
-    def collect(root : ASTNode) : Nil
-      # Each entry is a node and the innermost expression above it.
-      pending = [{root, root}] of {ASTNode, ASTNode}
-      while entry = pending.pop?
-        node, expression = entry
-        if node.is_a?(Path) && node.names.size == 1 && @names.includes?(node.names.first)
-          @uses << node
-          @uses << expression
-        end
-        expression = node unless type_syntax?(node)
-        @children.nodes.clear
-        node.accept_children(@children)
-        @children.nodes.each { |child| pending << {child, expression} }
-        if node.is_a?(ExpandableNode)
-          if expanded = node.expanded
-            pending << {expanded, expression}
-          end
-        end
-      end
-    end
-
-    private def type_syntax?(node : ASTNode) : Bool
-      node.is_a?(Path) || node.is_a?(Generic) || node.is_a?(Union) || node.is_a?(Metaclass) ||
-        node.is_a?(ProcNotation)
-    end
-  end
-
   # Collects the direct children of a node without descending further.
   class BlockInstanceChildCollector < Visitor
     getter nodes = [] of ASTNode
@@ -230,7 +200,9 @@ module Crystal
     getter call : Call
     getter? detached = false
 
-    def initialize(@typed_def : Def, @first_block : Block, @block : Block, @call : Call)
+    # *compares_types* is false for a clone that ignores its block: the
+    # watcher then only serves to end sharing if the clone yields later.
+    def initialize(@typed_def : Def, @first_block : Block, @block : Block, @call : Call, @compares_types : Bool)
     end
 
     def attach : Nil
@@ -244,7 +216,7 @@ module Crystal
     end
 
     def update(from = nil)
-      return if @detached
+      return if @detached || !@compares_types
       return if @first_block.type?.same?(@block.type?)
 
       diverge
@@ -255,6 +227,7 @@ module Crystal
 
       @detached = true
       @call.program.block_instance_stats.diverged += 1
+      @call.unbind_block_from_yields(@block, @typed_def)
       @call.give_private_block_instance(@typed_def)
     end
 
@@ -275,6 +248,16 @@ module Crystal
     property late_yields = 0
     property block_type_differs = 0
     property yields_depend_on_block = 0
+
+    # Calls that typed a private clone although other clones existed, by def
+    # name and reason. Filled only while the memory census is on.
+    getter unshared_reasons = Hash(String, Int32).new(0)
+
+    def note_unshared(def_name : String, reason : String) : Nil
+      return unless MemoryCensus.enabled?
+
+      @unshared_reasons["#{def_name}: #{reason}"] += 1
+    end
   end
 
   class Def
@@ -290,6 +273,12 @@ module Crystal
   end
 
   class YieldBlockBinder
+    # Forgets *nodes*. Their expressions keep this binder as an observer; an
+    # update from them recomputes the parameters from the remaining yields.
+    def remove_yields(nodes : Array(Yield)) : Nil
+      @yields.reject! { |entry| nodes.any?(&.same?(entry[0])) }
+    end
+
     def add_yield_once(node : Yield, yield_vars : Array(Var)?) : Nil
       return if @yields.any? { |entry| entry[0].same?(node) }
 

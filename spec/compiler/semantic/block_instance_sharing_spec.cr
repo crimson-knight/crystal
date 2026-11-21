@@ -87,13 +87,28 @@ describe "Semantic: shared block instances" do
         memo
       end
 
-      a = fold(1) { |x| x.is_a?(Int32) ? 'a' : 1.5 }
-      b = fold(1) { |x| x.is_a?(Int32) ? 'b' : 2.5 }
+      a = fold(1) { |x| x }
+      b = fold(1) { |x| x }
       {a, b}
-      ), inject_primitives: true) { tuple_of([union_of(char, float64), union_of(char, float64)]) }
+      ), inject_primitives: true) { tuple_of([int32, int32]) }
     stats = result.program.block_instance_stats
     stats.typed.should eq(2)
     stats.shared.should eq(0)
+  end
+
+  it "shares a def that never yields" do
+    result = assert_type(%(
+      def ignore(value, &)
+        value
+      end
+
+      a = ignore(1) { |x| x.unknown_method }
+      b = ignore(1) { |x| x.other_unknown_method }
+      {a, b}
+      ), inject_primitives: true) { tuple_of([int32, int32]) }
+    stats = result.program.block_instance_stats
+    stats.typed.should eq(1)
+    stats.shared.should eq(1)
   end
 
   it "does not let a block see the parameter types another block caused" do
@@ -242,7 +257,7 @@ describe "Semantic: shared block instances" do
     stats.shared.should eq(1)
   end
 
-  it "does not share a def that yields a value typed by the block's free variable" do
+  it "shares a def that yields a value typed by the block's free variable" do
     result = assert_type(%(
       def chain(value : T, & : -> U) forall T, U
         first = yield value
@@ -253,9 +268,12 @@ describe "Semantic: shared block instances" do
 
       a = chain(1) { |x| 'a' }
       b = chain(1) { |x| 'b' }
-      {a, b}
-      ), inject_primitives: true) { tuple_of([char, char]) }
-    result.program.block_instance_stats.shared.should eq(0)
+      c = chain(1) { |x| 1.5 }
+      {a, b, c}
+      ), inject_primitives: true) { tuple_of([char, char, float64]) }
+    stats = result.program.block_instance_stats
+    stats.typed.should eq(2)
+    stats.shared.should eq(1)
   end
 
   it "reports an error inside the block of a sharing call" do

@@ -93,6 +93,9 @@ module Crystal
       stats = @program.block_instance_stats
       io.printf("sharing  block instances typed %d, shared %d, reused by their first call %d, diverged %d, late yields %d, block type differs %d, yields depend on block %d\n",
         stats.typed, stats.shared, stats.reused_by_first_call, stats.diverged, stats.late_yields, stats.block_type_differs, stats.yields_depend_on_block)
+      stats.unshared_reasons.to_a.sort_by { |entry| -entry[1] }.first(40).each do |reason, count|
+        io.printf("unshared %-80s %8d calls\n", reason[0, 80], count)
+      end
       io.flush
     end
 
