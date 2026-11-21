@@ -504,6 +504,8 @@ class Crystal::Call
               end
               visitor.bind_initialize_instance_vars(owner)
             end
+
+            visitor.release_inference_state if program.release_inference_state?
           end
         end
 
@@ -1190,7 +1192,7 @@ class Crystal::Call
           fun_literal.expected_return_type = output_type if output_type
           fun_literal.from_block = true
           fun_literal.force_nil = true unless output
-          fun_literal.accept parent_visitor
+          parent_visitor.accept_captured_block(fun_literal, block)
         end
         block.fun_literal = fun_literal
       end

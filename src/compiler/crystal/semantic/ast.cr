@@ -506,6 +506,14 @@ module Crystal
     # it will also be bound to it.
     flag_property? mutably_closured, 3
 
+    # Is this var in the local vars of its cumulative meta var? (See
+    # `MainVisitor#check_mutably_closured`.)
+    flag_property? listed_as_local_var, 4
+
+    # A visitor that keeps its variables after it finishes holds this var:
+    # it stays bound as it is.
+    flag_property? kept_by_visitor, 5
+
     # Local variables associated with this meta variable.
     # Can be Var or MetaVar. Most meta variables have a single one, which is
     # stored directly; an array is created from the second one on.
@@ -534,6 +542,53 @@ module Crystal
       wrapped = @dependencies.first
       return false unless wrapped.is_a?(MetaVar)
       wrapped.nil_if_read? == nil_if_read? && wrapped.type?.same?(type?)
+    end
+
+    # Does this var only repeat its one dependency? Then every node that
+    # reads it can read the dependency instead.
+    def repeats_one_dependency? : Bool
+      return false unless @dependencies.size == 1
+      return false if @freeze_type || kept_by_visitor?
+      dependency = @dependencies.first
+      !dependency.same?(self) && dependency.type?.same?(type?)
+    end
+
+    # Puts the nodes that observe *var* in *var*'s place among the local
+    # vars, and says whether *var* was there. Binding those nodes to this meta
+    # var later gives them the types that binding *var* would have given them.
+    def replace_local_var_with_its_observers(var : MetaVar) : Bool
+      local_vars = @local_vars
+      if local_vars.is_a?(Array(ASTNode))
+        size = local_vars.size
+        local_vars.reject! &.same?(var)
+        return false if local_vars.size == size
+        var.each_observer { |observer| local_vars << observer }
+        case local_vars.size
+        when 0 then @local_vars = nil
+        when 1 then @local_vars = local_vars.first
+        end
+        true
+      elsif local_vars.same?(var)
+        @local_vars = nil
+        var.each_observer { |observer| add_local_var(observer) }
+        true
+      else
+        false
+      end
+    end
+
+    # `splice_out_of_bindings`, for a var that *meta_var* lists as a local
+    # var: the nodes that observe this var are listed in its place. Returns
+    # false, changing nothing, when the var cannot be taken out now.
+    def splice_out_of_bindings_leaving_observers_to(meta_var : MetaVar) : Bool
+      return false if @observers.empty? && @dependencies.first.notifying_observers?
+      return false unless meta_var.replace_local_var_with_its_observers(self)
+      self.listed_as_local_var = false
+      splice_out_of_bindings
+    end
+
+    def each_observer(& : ASTNode ->) : Nil
+      @observers.each { |observer| yield observer }
     end
 
     # Marks this variable as closured.

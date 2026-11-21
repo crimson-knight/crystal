@@ -334,6 +334,12 @@ module Crystal
     # types a private clone per call site, as before.
     property? share_block_instances : Bool = ENV["CRYSTAL_SHARE_BLOCK_INSTANCES"]? != "0"
 
+    # Whether a visitor that finished typing a def, block or proc literal
+    # lets go of the type-inference state only its visit used (see
+    # `MainVisitor#release_inference_state`). `CRYSTAL_RELEASE_INFERENCE_STATE=0`
+    # keeps all of it, as before.
+    property? release_inference_state : Bool = ENV["CRYSTAL_RELEASE_INFERENCE_STATE"]? != "0"
+
     getter block_instance_stats = BlockInstanceStats.new
   end
 end

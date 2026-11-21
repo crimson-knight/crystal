@@ -165,6 +165,19 @@ module Crystal
     # Type filters for `exp` in `!exp`, used after a `while`
     @before_not_type_filters : TypeFilters?
 
+    # The vars this visitor made that stand for a variable at one point of the
+    # code (an assignment, a type filter, the start of a `while`). When the
+    # visitor finishes, the ones that only repeat another node are taken out
+    # of the type-inference edges (see `release_inference_state`).
+    @point_vars : Array(MetaVar)?
+
+    # A visitor that types a lib call looks variables up again whenever that
+    # call is typed again, so it keeps its variables for good.
+    property? keeps_vars = false
+
+    # Has this visitor finished and let go of its variables?
+    getter? vars_released = false
+
     def initialize(program, vars = MetaVars.new, @typed_def = nil, meta_vars = nil)
       super(program, vars)
       @is_initialize = !!(typed_def && (
@@ -827,7 +840,7 @@ module Crystal
         check_mutably_closured(meta_var, simple_var)
       end
 
-      @vars[var_name] = simple_var
+      @vars[var_name] = track_point_var(simple_var)
 
       check_exception_handler_vars var_name, value
 
@@ -915,7 +928,7 @@ module Crystal
         end
 
         if simple_var
-          @vars[var_name] = simple_var
+          @vars[var_name] = track_point_var(simple_var)
 
           check_exception_handler_vars var_name, value
         end
@@ -1086,8 +1099,10 @@ module Crystal
 
       meta_vars = @meta_vars.dup
 
+      block_arg_vars = nil
       node.args.each do |arg|
-        bind_block_var(node, arg, meta_vars, before_block_vars)
+        block_arg_var = bind_block_var(node, arg, meta_vars, before_block_vars)
+        (block_arg_vars ||= [] of MetaVar) << block_arg_var if @program.release_inference_state?
       end
 
       # If the block has unpacking, like:
@@ -1114,6 +1129,7 @@ module Crystal
       @block_nest += 1
 
       block_visitor = MainVisitor.new(program, before_block_vars, @typed_def, meta_vars)
+      block_visitor.track_point_vars(block_arg_vars)
       block_visitor.yield_vars = @yield_vars
       block_visitor.match_context = @match_context
       block_visitor.untyped_def = @untyped_def
@@ -1143,7 +1159,11 @@ module Crystal
       # Check re-assigned variables and bind them.
       ignored_vars_after_block ||= node.args
       bind_vars block_visitor.vars, node.vars, ignored_vars_after_block
-      bind_vars block_visitor.vars, node.after_vars, ignored_vars_after_block
+      if @program.release_inference_state?
+        bind_vars_after_block block_visitor.vars, node.vars, node.after_vars, ignored_vars_after_block
+      else
+        bind_vars block_visitor.vars, node.after_vars, ignored_vars_after_block
+      end
 
       # Special vars, even if only assigned inside a block,
       # must be inside the def's metavars.
@@ -1153,11 +1173,125 @@ module Crystal
         end
       end
 
+      before_vars = node.vars
       node.vars = meta_vars
 
       node.bind_to node.body
 
+      if @program.release_inference_state?
+        # The visitor first: one that keeps its variables marks them, and
+        # the vars before the block are among them.
+        block_visitor.release_inference_state
+        release_vars_before_block(node, before_vars, meta_vars) if before_vars
+      end
+
       false
+    end
+
+    # A call with a block wraps every variable in scope in a "before" var:
+    # what the block reads, and what a second run of the block could read
+    # after the block assigned it. The block has been typed, once and for
+    # all, so a wrapper the block did not assign only repeats the variable it
+    # wraps. The nodes that read it read that variable from now on.
+    private def release_vars_before_block(node : Block, before_vars : MetaVars, meta_vars : MetaVars) : Nil
+      # A block made from a block argument (`&block`) is made again, from
+      # these same vars, whenever its call is typed again.
+      return if node.call.try(&.before_vars).same?(before_vars)
+
+      before_vars.each do |name, before_var|
+        splice_out_point_var(before_var, meta_vars[name]?)
+      end
+    end
+
+    # Remembers *var* as one to look at when this visitor finishes.
+    private def track_point_var(var : MetaVar) : MetaVar
+      (@point_vars ||= [] of MetaVar) << var if @program.release_inference_state?
+      var
+    end
+
+    protected def track_point_vars(vars : Array(MetaVar)?) : Nil
+      return unless vars
+      if point_vars = @point_vars
+        point_vars.concat(vars)
+      else
+        @point_vars = vars
+      end
+    end
+
+    # Takes *var* out of the type-inference edges when it only repeats one
+    # other node. *meta_var* is the cumulative var of the same variable.
+    private def splice_out_point_var(var : MetaVar, meta_var : MetaVar?) : Nil
+      return unless var.repeats_one_dependency?
+
+      if var.listed_as_local_var?
+        # If the variable is later captured by a closure and assigned again,
+        # every node listed is bound to the cumulative var. The nodes that
+        # read this var take its place in that list.
+        return unless meta_var && meta_var.local_vars?
+        return unless var.splice_out_of_bindings_leaving_observers_to(meta_var)
+      else
+        var.splice_out_of_bindings
+      end
+    end
+
+    # Called when this visitor has typed its def, block or proc literal and
+    # will visit nothing more. Type inference goes on reading the nodes it
+    # typed and the edges between them; what only the visit itself used is
+    # let go here:
+    #
+    # * the vars that stood for a variable at one point of the code and only
+    #   repeat another node (the nodes that read them read that node);
+    # * the visitor's variable map and its other working state.
+    #
+    # The visitor itself stays: every call it typed points to it
+    # (`Call#parent_visitor`) and asks it for its def, scope and cumulative
+    # vars when the call is typed again. Two things a call may ask later
+    # need the variables as they were: a block that turns into a proc
+    # literal (it gets them from the block, see `accept_captured_block`) and a
+    # lib call's argument conversions (such a visitor keeps its variables).
+    def release_inference_state : Nil
+      return if @vars_released
+
+      if keeps_vars?
+        @vars.each_value { |var| var.kept_by_visitor = true }
+        @point_vars = nil
+        return
+      end
+
+      if point_vars = @point_vars
+        point_vars.each do |var|
+          splice_out_point_var(var, @meta_vars[var.name]?)
+        end
+        @point_vars = nil
+      end
+
+      @vars = MetaVars.new
+      @vars_released = true
+      @type_filters = nil
+      @before_not_type_filters = nil
+      @while_vars = nil
+      @while_stack = nil
+      @all_exception_handler_vars = nil
+      @found_self_in_initialize_call = nil
+      @used_ivars_in_calls_in_initialize = nil
+    end
+
+    # Types the proc literal that the block of a call was turned into.
+    def accept_captured_block(fun_literal : ProcLiteral, block : Block) : Nil
+      unless @vars_released
+        fun_literal.accept self
+        return
+      end
+
+      # This visitor finished and let go of its variables. The block holds
+      # the ones in scope at its call (or, once typed, the cumulative ones).
+      released_vars = @vars
+      @vars = block.vars.try(&.dup) || @meta_vars.dup
+      begin
+        fun_literal.accept self
+      ensure
+        @vars = released_vars
+      end
     end
 
     def handle_unpacked_block_argument(node, arg, meta_vars, before_block_vars, ignored_vars_after_block)
@@ -1184,6 +1318,7 @@ module Crystal
       before_block_var = new_meta_var(target.name, context: node)
       before_block_var.bind_to(target)
       before_block_vars[target.name] = before_block_var
+      before_block_var
     end
 
     def bind_vars(from_vars, to_vars, ignored = nil)
@@ -1196,6 +1331,30 @@ module Crystal
             end
           end
         end
+      end
+    end
+
+    # Binds the vars after a block's call to the variables as the block
+    # leaves them, like `bind_vars`, except for a variable the block never
+    # assigned: the block still holds the "before" var it started with, and
+    # that var is bound to nothing but the variable before the call (no
+    # `next` or nil-read added to it; the block is typed once, so nothing
+    # will). Its "after" var would only repeat the variable before the call,
+    # so it stays unbound and `restore_vars_unchanged_by_block` drops it.
+    def bind_vars_after_block(block_vars, before_vars, after_vars, ignored)
+      return unless after_vars
+
+      block_vars.each do |name, block_var|
+        next if ignored.try &.find { |arg| arg.name == name }
+
+        after_var = after_vars[name]?
+        next unless after_var && !after_var.same?(block_var)
+
+        if before_vars && block_var.same?(before_vars[name]?) && block_var.dependencies.size == 1
+          next
+        end
+
+        after_var.bind_to(block_var)
       end
     end
 
@@ -1256,6 +1415,7 @@ module Crystal
       block_visitor.is_initialize = @is_initialize
 
       node.def.body.accept block_visitor
+      block_visitor.release_inference_state if @program.release_inference_state?
 
       false
     end
@@ -1458,7 +1618,9 @@ module Crystal
 
       recalculate_call(node)
 
-      restore_vars_unchanged_by_block(node, after_vars) if after_vars
+      if after_vars && @program.release_inference_state?
+        restore_vars_unchanged_by_block(node, after_vars)
+      end
 
       check_call_in_initialize node
 
@@ -1487,6 +1649,7 @@ module Crystal
         next unless @vars[name]?.same?(after_var)
         next unless after_var.unchanged_wrapper?
         wrapped = after_var.dependencies.first.as(MetaVar)
+        next if wrapped.notifying_observers?
         after_var.unbind_from(wrapped)
         @vars[name] = wrapped
         (unchanged ||= [] of String) << name
@@ -2238,7 +2401,7 @@ module Crystal
         before_var = MetaVar.new(name)
         before_var.bind_to(var)
         before_var.nil_if_read = var.nil_if_read?
-        @vars[name] = before_var
+        @vars[name] = track_point_var(before_var)
       end
 
       before_cond_vars = @vars.dup
@@ -2278,6 +2441,10 @@ module Crystal
       endless_while = cond.true_literal?
       merge_while_vars endless_while, before_cond_vars_copy, before_cond_vars, after_cond_vars, after_cond_vars_nil_if_read, node.break_vars
 
+      # The variables at each `break` have been merged; only whether there
+      # was a `break` matters from here on.
+      node.break_vars.try(&.clear) if @program.release_inference_state?
+
       @while_stack.try &.pop
       @block = old_block
       @while_vars = old_while_vars
@@ -2310,7 +2477,7 @@ module Crystal
           next
         end
 
-        after_while_vars[name] = after_while_var = MetaVar.new(name)
+        after_while_vars[name] = after_while_var = track_point_var(MetaVar.new(name))
 
         # After while's body, bind variables *before* the condition to the
         # ones after the body, because the loop will repeat.
@@ -2442,7 +2609,7 @@ module Crystal
         existing_var = @vars[name]
         filtered_var = MetaVar.new(name)
         filtered_var.bind_to(existing_var.filtered_by(yield filter))
-        @vars[name] = filtered_var
+        @vars[name] = track_point_var(filtered_var)
       end
     end
 
@@ -3606,7 +3773,7 @@ module Crystal
 
     def lookup_similar_var_name(name)
       Levenshtein.find(name) do |finder|
-        @vars.each_key do |var_name|
+        (vars_released? ? @meta_vars : @vars).each_key do |var_name|
           finder.test(var_name)
         end
       end
@@ -3740,6 +3907,7 @@ module Crystal
         var.bind_to(meta_var)
       else
         meta_var.add_local_var(var)
+        var.listed_as_local_var = true if var.is_a?(MetaVar)
       end
     end
 
