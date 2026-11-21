@@ -21,9 +21,13 @@ module Crystal
     WORKER_BASE_MEMORY_BYTES      = 16_i64 * 1024 * 1024
 
     # The memory each allowed thread adds to the default budget, and the
-    # share of the machine's memory the default budget stops at.
+    # share of the machine's memory the default budget stops at. On a
+    # 32 GiB machine with 8 threads that is 6,553 MB: the workers of a
+    # 300-model Grant build then stay below the memory its IR generation
+    # needed (5.5 GB against 6.4 GB), for 45 s more in the object stage than
+    # with 10,240 MB, where they reach 7.7 GB.
     DEFAULT_MEMORY_BYTES_PER_THREAD = 1280_i64 * 1024 * 1024
-    DEFAULT_PHYSICAL_MEMORY_DIVISOR = 3
+    DEFAULT_PHYSICAL_MEMORY_DIVISOR = 5
 
     # How many worker processes were started.
     getter worker_count = 0
@@ -36,7 +40,7 @@ module Crystal
 
     getter memory_budget_bytes : Int64
 
-    # The default budget: 1.25 GiB per allowed thread, at most a third of the
+    # The default budget: 1.25 GiB per allowed thread, at most a fifth of the
     # machine's memory.
     def self.default_memory_budget_bytes(thread_count : Int32) : Int64
       budget = thread_count.to_i64 * DEFAULT_MEMORY_BYTES_PER_THREAD
