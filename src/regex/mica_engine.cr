@@ -7,7 +7,7 @@ require "./mica/regex"
 # which links no C regex library. See `doc/regex_mica.md`.
 module Regex::MicaEngine
   # The PCRE2 release whose syntax Mica's Crystal dialect reads.
-  PCRE2_DIALECT_VERSION = {10, 49}
+  DIALECT_VERSION = {10, 49}
 
   # Compile limits for every pattern: Crystal programs compile patterns they
   # wrote, so the trusted preset applies (64 KiB of pattern, a million
@@ -22,13 +22,13 @@ module Regex::MicaEngine
   @expression : Regex::Mica::Regex::Expression
 
   def self.version : String
-    "Mica #{Regex::Mica::VERSION} (PCRE2 #{PCRE2_DIALECT_VERSION.join('.')} dialect)"
+    "Mica #{Regex::Mica::VERSION} (PCRE2 #{DIALECT_VERSION.join('.')} dialect)"
   end
 
   # Mica reads patterns as PCRE2 10.49 does, so feature checks written
   # against PCRE2 versions see that version.
   def self.version_number : {Int32, Int32}
-    PCRE2_DIALECT_VERSION
+    DIALECT_VERSION
   end
 
   # :nodoc:
