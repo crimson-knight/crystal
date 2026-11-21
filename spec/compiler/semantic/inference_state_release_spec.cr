@@ -464,3 +464,42 @@ describe "MainVisitor#release_inference_state" do
     last_type(released).should eq("Tuple(Int32 | String, Int32 | String, Int32 | String)")
   end
 end
+
+describe "Call#recalculate" do
+  # Every new instance of `Gen` makes the call on `Base+` look its matches up
+  # again: first with the same result, then with one more target def.
+  it "depends on exactly its target defs after recalculations that find the same and then more defs" do
+    result = semantic(%(
+      class Base
+        def foo
+          1
+        end
+      end
+
+      class Gen(T) < Base
+        def foo
+          'a'
+        end
+      end
+
+      class Other(T) < Base
+      end
+
+      x = Gen(Int32).new || Base.new
+      r = x.foo
+      Other(Int32).new
+      Gen(String).new
+      Other(String).new
+      r
+      ), inject_primitives: true)
+
+    result.node.as(Expressions).last.type.to_s.should eq("(Char | Int32)")
+
+    assign = result.node.as(Expressions).expressions.find! { |node| node.is_a?(Assign) && node.target.as?(Var).try(&.name) == "r" }
+    call = assign.as(Assign).value.as(Call)
+    target_defs = call.target_defs.not_nil!
+    target_defs.map(&.owner.to_s).sort!.should eq(["Base+", "Gen(Int32)", "Gen(String)"])
+    call.dependencies.to_a.should eq(target_defs.map(&.as(ASTNode)))
+    call.keeps_target_defs_bound?.should be_false
+  end
+end
