@@ -41,16 +41,19 @@ class Crystal::CodeGenVisitor
     end
 
     # The function is in the part of its module that is in memory, or it
-    # is generated into that part now. Declaring it here reads it from that
-    # part, which must stay in memory until then.
-    self_type_module_info = type_module(self_type)
+    # is generated into that part now. Reading a function to declare it
+    # does not count as a use of its module: a module is kept in memory for
+    # the functions it is about to get, not for the ones it has.
+    self_type_module_info = @single_module ? @main_module_info : type_module_info(self_type)
+    func = self_type_module_info.resident? ? typed_fun?(self_type_module_info, mangled_name) : nil
+    return check_mod_fun(self_type_module_info, mangled_name, func) if func
+
+    # Declaring the new function here reads it from its module, which must
+    # stay in memory until then.
+    use_module(self_type_module_info)
     pin_module(self_type_module_info)
-    func = typed_fun?(self_type_module_info, mangled_name) ||
-           codegen_fun(mangled_name, target_def, self_type, fun_module_info: self_type_module_info)
+    func = codegen_fun(mangled_name, target_def, self_type, fun_module_info: self_type_module_info)
     declared_fun = check_mod_fun(self_type_module_info, mangled_name, func)
-    unless @module_info.same?(self_type_module_info)
-      record_fun_signature(self_type_module_info, mangled_name, func)
-    end
     unpin_module(self_type_module_info)
     declared_fun
   end

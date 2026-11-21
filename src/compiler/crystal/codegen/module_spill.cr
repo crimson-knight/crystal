@@ -212,10 +212,10 @@ module Crystal
     # The sum of `ModuleInfo#accounted_ir_bytes` of the modules in memory.
     @resident_ir_bytes = 0_i64
 
-    # A module that only holds declarations: one for each function that
-    # another module than its own declared, and one for each function of a
+    # A module that only holds declarations: one for each function of a
     # module part on disk. A module that calls such a function declares it
-    # from here. It is never compiled.
+    # from here. It is never compiled, and only exists once a module was
+    # spilled.
     @fun_signatures : ModuleInfo?
 
     private def fun_signatures : ModuleInfo
@@ -230,17 +230,14 @@ module Crystal
 
     # The declaration recorded for the function named *mangled_name*, if any.
     private def known_fun_signature?(mangled_name : String) : LLVMTypedFunction?
-      return nil unless @module_spill
+      return nil unless signatures = @fun_signatures
 
-      typed_fun?(fun_signatures, mangled_name)
+      typed_fun?(signatures, mangled_name)
     end
 
-    # Records the signature of *func*, a function of *fun_module_info*.
-    private def record_fun_signature(fun_module_info : ModuleInfo, mangled_name : String, func : LLVMTypedFunction) : Nil
-      return unless @module_spill
-      # The main module is always in memory.
-      return if fun_module_info.same?(@main_module_info)
-
+    # Records the signature of *func*, a function of a module part that is
+    # about to be spilled.
+    private def record_fun_signature(mangled_name : String, func : LLVMTypedFunction) : Nil
       signatures = fun_signatures
       declare_fun(mangled_name, func, signatures) unless typed_fun?(signatures, mangled_name)
     end
@@ -312,7 +309,7 @@ module Crystal
     #
     # A handle into another module than *module_info* is only safe to keep
     # across this call if that module is pinned.
-    private def use_module(module_info : ModuleInfo) : Nil
+    def use_module(module_info : ModuleInfo) : Nil
       spill = @module_spill
       return unless spill
       return if module_info.same?(@main_module_info)
@@ -360,7 +357,7 @@ module Crystal
         generated_fun = typed_fun?(module_info, mangled_name)
         raise "BUG: #{mangled_name} was generated into #{module_info.name.inspect} but is not there" unless generated_fun
 
-        record_fun_signature(module_info, mangled_name, generated_fun)
+        record_fun_signature(mangled_name, generated_fun)
       end
 
       finish_module_debug_info(module_info) if finishes_debug_info && !@debug.none?

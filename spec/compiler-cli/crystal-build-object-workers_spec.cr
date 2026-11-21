@@ -51,17 +51,20 @@ describe "`crystal build` with object file workers" do
         first_build = build_multi_type(output_path, cache_dir, "--resident-modules", "2").should(be_success)
         first_build.output.should contain("object files were built by 4 worker processes")
         first_build.output.should contain("no previous .o files were reused")
-        first_build.output.should match(/modules spilled to disk: [1-9]\d\d/)
+        first_build.output.should match(/module parts written to disk: [1-9]\d\d/)
+        first_build.output.should match(/modules made of several parts: [1-9]\d/)
 
         Process.capture_result(output_path)
           .should(be_success)
           .output.should(eq(MULTI_TYPE_OUTPUT))
 
-        # Every spill file became its unit's .bc file, with an object next to it.
+        # Every spill file became a bitcode file of its unit. The worker
+        # linked a unit's parts into the one object next to its .bc file.
         Dir.glob(File.join(cache_dir, "**", "*.new.bc")).should be_empty
         list_of_bitcode_files = Dir.glob(File.join(cache_dir, "**", "*.bc"))
-        list_of_bitcode_files.size.should be > 4
-        list_of_bitcode_files.each do |bitcode_file|
+        list_of_part_files = list_of_bitcode_files.select(&.matches?(/\.part\d+\.bc\z/))
+        list_of_part_files.size.should be > 10
+        (list_of_bitcode_files - list_of_part_files).each do |bitcode_file|
           File.exists?(bitcode_file.rchop(".bc") + ".o").should be_true
         end
 
