@@ -112,6 +112,17 @@ module Crystal
       8
     {% end %}
 
+    # The compiler executable to start as object-file workers (see
+    # `CodegenWorker`). When set, and more than one thread is allowed, a
+    # multi-module build writes every module to its bitcode file, frees the
+    # modules, and lets `n_threads` worker processes build the object files.
+    # The `crystal` command sets it to its own executable; a program that
+    # embeds the compiler leaves it unset and compiles objects in-process.
+    property codegen_worker_executable : String?
+
+    # How many worker processes built the object files of the last compilation.
+    @last_codegen_worker_count = 0
+
     # Default prelude file to use. This ends up adding a
     # `require "prelude"` (or whatever name is set here) to
     # the source file to compile.
@@ -1050,6 +1061,8 @@ module Crystal
 
         if n_threads == 1
           sequential_codegen(units)
+        elsif (worker_executable = @codegen_worker_executable) && units.size > 1
+          worker_process_codegen(units, n_threads, worker_executable)
         else
           parallel_codegen(units, n_threads)
         end
@@ -1134,6 +1147,105 @@ module Crystal
         3.times { GC.collect }
         LibGC.set_force_unmap_on_gcollect(0)
       {% end %}
+    end
+
+    # Builds the object files in worker processes (see `CodegenWorker`).
+    #
+    # First every unit writes its module to its bitcode file and frees it, so
+    # the generated IR leaves this process before any worker starts. Then up
+    # to *n_threads* workers each compile one bitcode file at a time. Memory
+    # during the stage is this process without its IR plus one module per
+    # worker, and the units are optimized in parallel.
+    private def worker_process_codegen(units, n_threads, worker_executable)
+      units_to_compile = units.select do |unit|
+        must_compile = unit.write_bitcode_and_release_module
+        @progress_tracker.stage_progress += 1 unless must_compile
+        must_compile
+      end
+      return if units_to_compile.empty?
+
+      # IR generation leaves garbage behind in the heap. Hand it back before
+      # the workers start, so their memory does not stack on top of it.
+      return_free_memory_to_os
+
+      # The largest modules take the longest: starting with them keeps the
+      # workers evenly loaded until the end.
+      units_to_compile.sort_by! { |unit| -unit.bitcode_bytesize }
+
+      settings_line = CodegenWorker::Settings.from_compiler(self).to_json
+      lock = Sync::Mutex.new
+      next_unit_index = 0
+      first_failure_message = nil.as(String?)
+
+      # Hands out the next unit, or `nil` once all are taken or a worker failed.
+      take_next_unit = -> : CompilationUnit? do
+        lock.synchronize do
+          next nil if first_failure_message
+
+          unit = units_to_compile[next_unit_index]?
+          next_unit_index += 1
+          unit
+        end
+      end
+      count_finished_unit = -> : Nil do
+        lock.synchronize { @progress_tracker.stage_progress += 1 }
+      end
+
+      worker_count = n_threads.clamp(1..units_to_compile.size)
+      @last_codegen_worker_count = worker_count
+      workers_done = Channel(Nil).new(worker_count)
+      worker_count.times do
+        spawn do
+          failure_message = begin
+            run_codegen_worker(worker_executable, settings_line, take_next_unit, count_finished_unit)
+          rescue ex
+            "#{ex.message} (#{ex.class})"
+          end
+          if failure_message
+            lock.synchronize { first_failure_message ||= failure_message }
+          end
+          workers_done.send(nil)
+        end
+      end
+      worker_count.times { workers_done.receive }
+
+      if failure_message = lock.synchronize { first_failure_message }
+        raise CompilerError.new("object file worker failed: #{failure_message}")
+      end
+    end
+
+    # Runs one worker process, giving it one unit at a time until
+    # *take_next_unit* returns `nil`. Returns a description of what went
+    # wrong, or `nil` when every unit it was given has its object file.
+    private def run_codegen_worker(worker_executable : String, settings_line : String,
+                                   take_next_unit : -> CompilationUnit?,
+                                   count_finished_unit : -> Nil) : String?
+      process = Process.new(worker_executable, [CodegenWorker::COMMAND],
+        input: :pipe, output: :pipe, error: :inherit)
+      failure_message = nil
+      begin
+        process.input.puts settings_line
+        while unit = take_next_unit.call
+          process.input.puts unit.codegen_worker_job.to_json
+          process.input.flush
+          outcome_line = process.output.gets
+          unless outcome_line
+            failure_message = "the worker stopped while compiling #{unit.original_name}"
+            break
+          end
+          if error_message = CodegenWorker::Outcome.from_json(outcome_line).error_message
+            failure_message = error_message
+            break
+          end
+          count_finished_unit.call
+        end
+        process.input.close
+      rescue ex : IO::Error
+        failure_message ||= "lost the connection to the worker (#{ex.message})"
+      end
+      status = process.wait
+      failure_message ||= "the worker exited abnormally (#{status})" unless status.success?
+      failure_message
     end
 
     private def parallel_codegen(units, n_threads)
@@ -1334,6 +1446,10 @@ module Crystal
           next if unit.reused_previous_compilation?
           puts " - #{unit.original_name} (#{unit.name}.bc)"
         end
+      end
+
+      if @last_codegen_worker_count > 0
+        puts " - object files were built by #{@last_codegen_worker_count} worker processes"
       end
 
       # Phase 4: Report modules skipped via source-file-level caching
@@ -1646,6 +1762,36 @@ module Crystal
       end
     {% end %}
 
+    # Loads the module in *bitcode_filename* into a context of its own,
+    # optimizes it and writes *object_filename*, exactly as a compilation
+    # unit is compiled in-process. The module is freed before returning.
+    def compile_bitcode_file_to_object(bitcode_filename : String, object_filename : String,
+                                       llvm_ir_filename : String? = nil) : Nil
+      context = LLVM::Context.new
+      begin
+        bitcode = LLVM::MemoryBuffer.from_file(bitcode_filename)
+        llvm_mod = begin
+          LLVM::Module.parse(bitcode, context)
+        ensure
+          bitcode.dispose
+        end
+
+        temporary_object_filename = "#{object_filename}.tmp"
+        target_machine = create_target_machine
+        begin
+          optimize llvm_mod, target_machine unless optimization_mode.o0?
+          target_machine.emit_obj_to_file llvm_mod, temporary_object_filename
+        ensure
+          target_machine.dispose
+        end
+        File.rename(temporary_object_filename, object_filename)
+
+        llvm_mod.print_to_file llvm_ir_filename if llvm_ir_filename
+      ensure
+        context.dispose
+      end
+    end
+
     protected def optimize(llvm_mod, target_machine)
       {% if LibLLVM::IS_LT_130 %}
         optimize_with_pass_manager(llvm_mod)
@@ -1899,6 +2045,44 @@ module Crystal
         # compilation, including the codegen of a macro run program that
         # happens in the middle of the main program's semantic phase.
         llvm_mod.context.dispose if isolate_context
+      end
+
+      # The size of this unit's bitcode, known once it was generated.
+      getter bitcode_bytesize : Int64 = 0_i64
+
+      # Prepares this unit for a `CodegenWorker`: writes the module to its
+      # bitcode file unless the previous object file can be reused, and frees
+      # the module. Returns whether a worker must build the object file.
+      def write_bitcode_and_release_module : Bool
+        if @skipped_via_module_cache
+          @reused_previous_compilation = true
+          llvm_mod.context.dispose
+          return false
+        end
+
+        # Generated even with --no-cache: the worker reads the module from
+        # its bitcode file, and the object it writes comes from that file.
+        if memory_buffer = generate_bitcode
+          @bitcode_bytesize = memory_buffer.to_slice.size.to_i64
+        end
+
+        must_compile = must_compile?
+        if must_compile
+          update_bitcode_cache
+        else
+          @reused_previous_compilation = true
+          dump_llvm_ir
+        end
+        llvm_mod.context.dispose
+        must_compile
+      end
+
+      def codegen_worker_job : CodegenWorker::Job
+        CodegenWorker::Job.new(
+          bitcode_filename: bc_name,
+          object_filename: object_name,
+          llvm_ir_filename: compiler.dump_ll? ? ll_name : nil,
+        )
       end
 
       private def must_compile?

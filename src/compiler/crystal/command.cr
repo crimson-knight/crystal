@@ -138,6 +138,9 @@ class Crystal::Command
     when command == "clear_cache"
       options.shift
       clear_cache
+    when command == CodegenWorker::COMMAND
+      # Internal: started by the compiler itself to build object files.
+      CodegenWorker.new.perform
     when command == "watch"
       options.shift
       watch
@@ -915,6 +918,8 @@ class Crystal::Command
   end
 
   private def new_compiler
-    @compiler = Compiler.new
+    compiler = Compiler.new
+    compiler.codegen_worker_executable = Process.executable_path
+    @compiler = compiler
   end
 end
