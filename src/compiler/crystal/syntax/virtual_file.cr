@@ -27,6 +27,13 @@ class Crystal::VirtualFile
     @file_index = Location.register(self)
   end
 
+  # Drops the expanded source code. Only error messages read it, to show
+  # the expansion an error is in; after this they show the macro's name and
+  # the place it was expanded.
+  def release_source : Nil
+    @source = ""
+  end
+
   def to_s(io : IO) : Nil
     io << "expanded macro: " << @macro.name
   end

@@ -385,6 +385,7 @@ class LLVM::Builder
     @disposed = true
 
     LibLLVM.dispose_builder(@unwrap)
+    LLVM.forget_finalizer(self)
   end
 
   def finalize

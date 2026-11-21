@@ -40,6 +40,11 @@ module Crystal
     # The target triple written into every spilled module.
     getter target_triple : String
 
+    # How many bytes of estimated IR are spilled between two requests to the
+    # C allocator to return its free pages to the OS (0: never asked).
+    # `CRYSTAL_MALLOC_RELIEF_MB` sets it for measuring.
+    property malloc_relief_bytes : Int64 = (ENV["CRYSTAL_MALLOC_RELIEF_MB"]?.try(&.to_i64?) || 0_i64) * 1024 * 1024
+
     # The largest number of modules that were in memory at once, and the
     # largest estimate of their IR.
     getter peak_resident_count = 0
@@ -289,6 +294,10 @@ module Crystal
     # The sum of `ModuleInfo#accounted_ir_bytes` of the modules in memory.
     @resident_ir_bytes = 0_i64
 
+    # The estimated IR spilled since the C allocator was last asked to
+    # return its free pages (see `return_freed_ir_memory_to_os`).
+    @ir_bytes_freed_since_relief = 0_i64
+
     # A module that only holds declarations: one for each function of a
     # module part on disk. A module that calls such a function declares it
     # from here. It is never compiled, and only exists once a module was
@@ -455,7 +464,8 @@ module Crystal
       spill.record_spill(File.size(path), write_time, part_index)
       spill.record_built_instructions(module_info.built_instruction_count)
 
-      @resident_ir_bytes -= module_info.accounted_ir_bytes
+      freed_ir_bytes = module_info.accounted_ir_bytes
+      @resident_ir_bytes -= freed_ir_bytes
       module_info.accounted_ir_bytes = 0_i64
 
       context = mod.context
@@ -464,6 +474,24 @@ module Crystal
 
       @resident_modules.delete(module_info)
       @idle_resident_module_count -= 1
+      return_freed_ir_memory_to_os(freed_ir_bytes)
+      trace_peak("spill") if spill.spill_count % 500 == 0
+    end
+
+    # The C allocator keeps the memory of a disposed context for later
+    # allocations. Every `ModuleSpill#malloc_relief_bytes` of estimated IR
+    # freed, it is asked to hand its free pages back to the OS.
+    private def return_freed_ir_memory_to_os(freed_ir_bytes : Int64) : Nil
+      {% if flag?(:darwin) %}
+        relief_bytes = @module_spill.try(&.malloc_relief_bytes) || 0_i64
+        return unless relief_bytes > 0
+
+        @ir_bytes_freed_since_relief += freed_ir_bytes
+        if @ir_bytes_freed_since_relief >= relief_bytes
+          @ir_bytes_freed_since_relief = 0_i64
+          LibDarwinMalloc.malloc_zone_pressure_relief(nil, 0)
+        end
+      {% end %}
     end
 
     # Gives *module_info*, whose parts are all on disk, a new part in memory.

@@ -98,11 +98,16 @@ module Crystal
       end
     end
 
-    def llvm_name
-      String.build do |io|
+    # The name of this type in LLVM IR. Kept once built: every module that
+    # uses the type asks for it, and IR generation creates thousands of
+    # modules.
+    def llvm_name : String
+      @llvm_name ||= String.build do |io|
         llvm_name io
       end
     end
+
+    @llvm_name : String?
 
     def llvm_name(io)
       to_s_with_options io, codegen: true

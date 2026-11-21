@@ -24,8 +24,31 @@ module Crystal
   #   stage ends.
   # * `CRYSTAL_GC_TRACE=1` prints the collector's numbers to standard error
   #   when a stage ends.
+  # * `CRYSTAL_GC_IR_FREE_SPACE_DIVISOR=N` sets the divisor for IR generation
+  #   alone (see `with_ir_generation_divisor`).
   module GCTuning
     FREE_SPACE_DIVISOR = 10_u64
+
+    # Runs the block, IR generation, with the divisor
+    # `CRYSTAL_GC_IR_FREE_SPACE_DIVISOR` names, when it names one.
+    def self.with_ir_generation_divisor(&)
+      {% if flag?(:gc_none) || flag?(:wasm32) %}
+        yield
+      {% else %}
+        divisor = ENV["CRYSTAL_GC_IR_FREE_SPACE_DIVISOR"]?.try(&.to_u64?)
+        if divisor && divisor > 0
+          previous_divisor = LibGC.get_free_space_divisor
+          LibGC.set_free_space_divisor(LibGC::Word.new(divisor))
+          begin
+            yield
+          ensure
+            LibGC.set_free_space_divisor(previous_divisor)
+          end
+        else
+          yield
+        end
+      {% end %}
+    end
 
     class_property? collects_at_stages : Bool = false
     class_property? traces_stages : Bool = false

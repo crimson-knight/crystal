@@ -207,11 +207,11 @@ module Crystal
     property release_units : Int32 = 8
 
     # The default of `#resident_ir_megabytes`. A program of 300 Grant models
-    # (about 10 GB of IR) generates its IR as fast with 1 GB in memory as
-    # with 4 GB, and its peak is lower by the difference. One gigabyte
-    # leaves a program of up to a few thousand modules and about three
-    # million instructions entirely in memory.
-    DEFAULT_RESIDENT_IR_MEGABYTES = 1024
+    # (about 10 GB of IR) generates its IR in the same time with 256 MB in
+    # memory as with 1 GB, and its peak is lower by about 1.3 GB. This
+    # leaves a program of up to about a thousand modules and under a million
+    # instructions entirely in memory.
+    DEFAULT_RESIDENT_IR_MEGABYTES = 256
 
     # How many megabytes of LLVM IR (an estimate, see `ModuleSpill`) stay in
     # memory while LLVM IR is generated in multi-module mode. A program has
@@ -452,7 +452,7 @@ module Crystal
         end
 
         unless @no_codegen
-          release_semantic_only_data(program) unless @incremental
+          release_semantic_only_data(program, node) unless @incremental
           units = codegen program, node, source, output_filename
         end
 
@@ -777,9 +777,11 @@ module Crystal
       module_spill = @last_module_spill = module_spill_for(output_dir, is_single_module)
 
       llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
-        program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: is_single_module, release_typed_bodies: !@incremental,
-          module_spill: module_spill, module_segment_instructions: @module_segment_instructions.to_i64
+        GCTuning.with_ir_generation_divisor do
+          program.codegen node, debug: debug, frame_pointers: frame_pointers,
+            single_module: is_single_module, release_typed_bodies: !@incremental,
+            module_spill: module_spill, module_segment_instructions: @module_segment_instructions.to_i64
+        end
       end
       list_of_segment_counts = llvm_modules.each_value.map { |info| info.list_of_later_segments.size + 1 }.select { |count| count > 1 }.to_a
       @last_segmented_type_count = list_of_segment_counts.size
@@ -1277,9 +1279,9 @@ module Crystal
     #
     # Skipped in incremental mode, whose signature pass reads the program
     # after codegen.
-    private def release_semantic_only_data(program)
+    private def release_semantic_only_data(program, node : ASTNode)
       @progress_tracker.stage("Semantic (release)") do
-        program.release_semantic_only_data
+        program.release_semantic_only_data(node)
         return_free_memory_to_os
       end
     end

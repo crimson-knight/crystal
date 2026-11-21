@@ -55,8 +55,9 @@ module Crystal
       !ENV["CRYSTAL_MEMORY_CENSUS"]?.presence.nil?
     end
 
-    def self.report(program : Program, main_node : ASTNode, stage : String) : Nil
-      path = ENV["CRYSTAL_MEMORY_CENSUS"]?.presence || return
+    def self.report(program : Program, main_node : ASTNode, stage : String,
+                    path : String? = ENV["CRYSTAL_MEMORY_CENSUS"]?.presence) : Nil
+      return unless path
       GC.collect
       stats = GC.stats
       live_bytes = (stats.heap_size - stats.free_bytes).to_i64

@@ -259,7 +259,9 @@ module Crystal
 
       return unless lines
 
-      line = lines[line_number - 1]
+      # A macro expansion whose text was released has no lines (see
+      # `VirtualFile#release_source`).
+      line = lines[line_number - 1]? || return
 
       name_location = node.name_location
       name_size = node.name_size
