@@ -251,14 +251,12 @@ module Crystal
     # `DefInstanceContainer.@def_instances` (in types.cr) is a Hash that caches
     # method instantiations (defs with concrete type arguments). Currently:
     #
-    # ```
+    # ```crystal
     # module DefInstanceContainer
     #   getter(def_instances) { {} of DefInstanceKey => Def }
-    #
     #   def add_def_instance(key, typed_def)
     #     def_instances[key] = typed_def
     #   end
-    #
     #   def lookup_def_instance(key)
     #     def_instances[key]?
     #   end
@@ -273,7 +271,7 @@ module Crystal
     # 3. Atomicity: lookup + insert must be atomic to prevent races
     #
     # Conceptual design:
-    # ```
+    # ```crystal
     # class ThreadSafeDefInstanceContainer
     #   @lock = ReadWriteLock.new
     #   @instances = {} of DefInstanceKey => Def
