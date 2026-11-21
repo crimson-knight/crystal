@@ -125,7 +125,23 @@ class Crystal::Call
     block = @block
 
     detach_block_instance_watchers(block) if block && @target_defs
-    unbind_from @target_defs if @target_defs
+
+    # This is a recalculation fired by the lookup of an outer recalculation
+    # of this call, which left the call bound (see below).
+    unbind_kept_target_defs
+
+    old_target_defs = @target_defs
+    if old_target_defs && !block && !self.block_arg && bound_to_target_defs_only?(old_target_defs)
+      # Most recalculations find the target defs the call already has (a new
+      # generic instance makes every call on a virtual type above it look
+      # again). Unbinding from each def now and binding to the same defs
+      # afterwards walks all their observer lists twice, so the call stays
+      # bound and deaf to its defs during the lookup, and is only unbound if
+      # the lookup finds something else.
+      self.keeps_target_defs_bound = true
+    elsif old_target_defs
+      unbind_from old_target_defs
+    end
     unbind_from block.break if block
 
     @target_defs = nil
@@ -134,7 +150,12 @@ class Crystal::Call
       replace_block_arg_with_block(block_arg)
     end
 
-    matches = lookup_matches
+    begin
+      matches = lookup_matches
+    rescue ex
+      unbind_kept_target_defs
+      ::raise ex
+    end
 
     # If @target_defs is set here it means there was a recalculation
     # fired as a result of a recalculation. We keep the last one.
@@ -143,7 +164,19 @@ class Crystal::Call
 
     self.target_defs = matches
 
-    bind_to matches if matches
+    if keeps_target_defs_bound?
+      self.keeps_target_defs_bound = false
+      if bound_to?(matches)
+        # The same defs: take in what they have to say now, as binding to
+        # them again would.
+        bind { }
+      else
+        unbind_from_all_dependencies
+        bind_to matches if matches
+      end
+    elsif matches
+      bind_to matches
+    end
     bind_to block.break if block
 
     if (parent_visitor = @parent_visitor) && matches
@@ -154,6 +187,44 @@ class Crystal::Call
         end
       end
     end
+  end
+
+  # Set while `recalculate` looks matches up without having unbound this call
+  # from its target defs first.
+  flag_property? keeps_target_defs_bound, 1
+
+  # Target defs tell a call their type through `update`. A call that kept
+  # its defs bound during a lookup does not listen, as if it were unbound.
+  def update(from = nil)
+    return if keeps_target_defs_bound?
+    super
+  end
+
+  private def unbind_kept_target_defs : Nil
+    return unless keeps_target_defs_bound?
+    self.keeps_target_defs_bound = false
+    unbind_from_all_dependencies
+  end
+
+  private def unbind_from_all_dependencies : Nil
+    @dependencies.each &.remove_observer(self)
+    @dependencies = SmallNodeList.new
+  end
+
+  # Are *target_defs* everything this call depends on?
+  private def bound_to_target_defs_only?(target_defs : Def | Array(Def)) : Bool
+    @dependencies.size == (target_defs.is_a?(Def) ? 1 : target_defs.size)
+  end
+
+  # Is this call bound to exactly *defs*, in this order?
+  private def bound_to?(defs : Array(Def)?) : Bool
+    return false unless defs && defs.size == @dependencies.size
+    index = 0
+    @dependencies.each do |dependency|
+      return false unless dependency.same?(defs.unsafe_fetch(index))
+      index += 1
+    end
+    true
   end
 
   def lookup_matches
