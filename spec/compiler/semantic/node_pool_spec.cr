@@ -3,14 +3,18 @@ require "../../spec_helper"
 # Runs the block with the typed node pools on, and puts the setting back.
 # Every pool starts a new chunk first, so the nodes an example makes one
 # after the other never fall on two sides of a chunk boundary.
-private def with_node_pools(&)
+private def with_node_pools(shared = false, &)
   was_enabled = Crystal::NodePool.enabled?
+  was_shared = Crystal::NodePool.shared?
   Crystal::NodePool.enabled = true
+  Crystal::NodePool.shared = shared
+  Crystal::NodePool.shared_pool.start_stage(0) if shared
   Crystal::NodePool.list_of_pools.each &.start_stage(0)
   begin
     yield
   ensure
     Crystal::NodePool.enabled = was_enabled
+    Crystal::NodePool.shared = was_shared
   end
 end
 
@@ -114,6 +118,22 @@ describe "Crystal::NodePool" do
 
       (address_of(second) - address_of(first)).should eq(MetaVar::INFERENCE_NODE_POOL.slot_bytes)
       kept.name.should eq("kept")
+    end
+  end
+
+  it "puts nodes of every pooled class in one pool, in the order they are made, when the pool is shared" do
+    with_node_pools(shared: true) do
+      var = Var.new("first")
+      call = Call.new("call")
+      path = Crystal::Path.new("Name")
+      meta_var = MetaVar.new("variable")
+
+      (address_of(call) - address_of(var)).should eq(Var::NODE_POOL.slot_bytes)
+      (address_of(path) - address_of(call)).should eq(Call::NODE_POOL.slot_bytes)
+      (address_of(meta_var) - address_of(path)).should eq(Crystal::Path::NODE_POOL.slot_bytes)
+      call.name.should eq("call")
+      path.names.should eq(["Name"])
+      meta_var.name.should eq("variable")
     end
   end
 

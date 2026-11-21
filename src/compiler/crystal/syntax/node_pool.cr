@@ -43,7 +43,7 @@ module Crystal
 
     class_property? enabled : Bool = ENV["CRYSTAL_NODE_POOLS"]? == "1"
     class_getter? traced : Bool = ENV["CRYSTAL_NODE_POOL_TRACE"]? == "1"
-    class_getter? shared : Bool = ENV["CRYSTAL_NODE_POOL_SHARED"]? == "1"
+    class_property? shared : Bool = ENV["CRYSTAL_NODE_POOL_SHARED"]? == "1"
     class_getter chunk_bytes : Int32 = begin
       chunk_kb = ENV["CRYSTAL_NODE_POOL_CHUNK_KB"]?.try(&.to_i?) || DEFAULT_CHUNK_KB
       chunk_kb = DEFAULT_CHUNK_KB if chunk_kb < 16
