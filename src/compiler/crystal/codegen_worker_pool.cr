@@ -11,15 +11,18 @@ module Crystal
   # starts fewer processes.
   class CodegenWorkerPool
     # Memory a worker needs per byte of bitcode it compiles, and the memory
-    # an idle worker holds, measured on the Grant300 modules at `-O3`
-    # (notes/worker-handoff.md): the largest ratio among the large modules.
-    MEMORY_BYTES_PER_BITCODE_BYTE = 90_i64
-    WORKER_BASE_MEMORY_BYTES      = 64_i64 * 1024 * 1024
+    # a worker holds before it loads a module. Measured at `-O3` on the 12
+    # largest modules of a 300-model Grant app (4 to 59 MB of bitcode), each
+    # compiled alone: peak footprint was 30 to 110 times the bitcode size
+    # with no trend by size, and 8 to 28 MB for modules under 0.4 MB. The
+    # factor is the largest ratio seen, so an estimate is an upper bound.
+    MEMORY_BYTES_PER_BITCODE_BYTE = 110_i64
+    WORKER_BASE_MEMORY_BYTES      = 16_i64 * 1024 * 1024
 
-    # The share of the machine's memory the workers may use by default, and
-    # the memory each allowed thread adds to the default budget.
-    DEFAULT_PHYSICAL_MEMORY_DIVISOR = 4
-    DEFAULT_MEMORY_BYTES_PER_THREAD = 1024_i64 * 1024 * 1024
+    # The memory each allowed thread adds to the default budget, and the
+    # share of the machine's memory the default budget stops at.
+    DEFAULT_MEMORY_BYTES_PER_THREAD = 1280_i64 * 1024 * 1024
+    DEFAULT_PHYSICAL_MEMORY_DIVISOR = 3
 
     # How many worker processes were started.
     getter worker_count = 0
@@ -32,7 +35,7 @@ module Crystal
 
     getter memory_budget_bytes : Int64
 
-    # The default budget: 1 GiB per allowed thread, at most a quarter of the
+    # The default budget: 1.25 GiB per allowed thread, at most a third of the
     # machine's memory.
     def self.default_memory_budget_bytes(thread_count : Int32) : Int64
       budget = thread_count.to_i64 * DEFAULT_MEMORY_BYTES_PER_THREAD
