@@ -71,20 +71,49 @@ module Crystal
       # spilled to disk in several parts).
       getter list_of_more_bitcode_filenames : Array(String) = [] of String
 
+      # True for the program's main module, whose memory the pool estimates
+      # with a factor of its own.
+      getter? main_module : Bool = false
+
       def initialize(@bitcode_filename, @object_filename, @llvm_ir_filename = nil, @verifies_module = false,
                      @list_of_more_bitcode_filenames = [] of String,
-                     @name = bitcode_filename, @bitcode_bytesize = 0_i64)
+                     @name = bitcode_filename, @bitcode_bytesize = 0_i64, @main_module = false)
       end
     end
 
     # The answer to a job. `error_message` is set when the job failed.
+    # `seconds` is the time the job took in the worker, `cpu_seconds` the
+    # processor time of it (which does not grow when the machine is busy
+    # with other work), and `peak_memory_bytes` the most memory the worker
+    # process has held so far (over all its jobs; 0 when the system does not
+    # tell).
     struct Outcome
       include JSON::Serializable
 
       getter error_message : String?
+      getter seconds : Float64 = 0.0
+      getter cpu_seconds : Float64 = 0.0
+      getter peak_memory_bytes : Int64 = 0_i64
 
-      def initialize(@error_message = nil)
+      def initialize(@error_message = nil, @seconds = 0.0, @cpu_seconds = 0.0, @peak_memory_bytes = 0_i64)
       end
+    end
+
+    # The largest resident size this process has had.
+    def self.peak_memory_bytes : Int64
+      {% if flag?(:unix) && !flag?(:wasm32) %}
+        if LibC.getrusage(LibC::RUSAGE_SELF, out usage) == 0
+          {% if flag?(:darwin) %}
+            usage.ru_maxrss.to_i64
+          {% else %}
+            usage.ru_maxrss.to_i64 * 1024
+          {% end %}
+        else
+          0_i64
+        end
+      {% else %}
+        0_i64
+      {% end %}
     end
 
     def initialize(@input : IO = STDIN, @output : IO = STDOUT)
@@ -107,9 +136,14 @@ module Crystal
     end
 
     private def compile(compiler : Compiler, job : Job) : Outcome
-      compiler.compile_bitcode_file_to_object(job.bitcode_filename, job.object_filename, job.llvm_ir_filename, job.verifies_module,
-        job.list_of_more_bitcode_filenames)
-      Outcome.new
+      times_before = Process.times
+      elapsed = Time.measure do
+        compiler.compile_bitcode_file_to_object(job.bitcode_filename, job.object_filename, job.llvm_ir_filename, job.verifies_module,
+          job.list_of_more_bitcode_filenames)
+      end
+      times_after = Process.times
+      cpu_seconds = (times_after.utime + times_after.stime) - (times_before.utime + times_before.stime)
+      Outcome.new(seconds: elapsed.total_seconds, cpu_seconds: cpu_seconds, peak_memory_bytes: CodegenWorker.peak_memory_bytes)
     rescue ex
       Outcome.new(error_message: "#{job.bitcode_filename}: #{ex.message} (#{ex.class})")
     end

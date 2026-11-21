@@ -96,7 +96,11 @@ describe "`crystal build` with object file workers" do
 
         list_of_outcome_lines = result.output.lines
         list_of_outcome_lines.size.should eq(2)
-        list_of_outcome_lines[0].should eq("{}")
+        # A finished job is answered with its times and the worker's peak memory.
+        list_of_outcome_lines[0].should start_with(%({"seconds":))
+        list_of_outcome_lines[0].should contain(%("cpu_seconds":))
+        list_of_outcome_lines[0].should contain(%("peak_memory_bytes":))
+        list_of_outcome_lines[0].should_not contain("error_message")
         list_of_outcome_lines[1].should contain(%("error_message":))
         list_of_outcome_lines[1].should contain(".missing")
         File.size(object_path).should be > 0
