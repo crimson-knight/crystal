@@ -12,6 +12,15 @@ require "./tools/require_graph_discoverer"
 {% end %}
 
 module Crystal
+  {% if flag?(:darwin) %}
+    # :nodoc:
+    lib LibDarwinMalloc
+      # With a null zone and a goal of 0, every malloc zone returns as much
+      # free memory as it can. Returns the number of bytes released.
+      fun malloc_zone_pressure_relief(zone : Void*, goal : LibC::SizeT) : LibC::SizeT
+    end
+  {% end %}
+
   # This exception describes an error in the compiler.
   # It usually leads to an unsuccessful process exit.
   class CompilerError < Exception
@@ -1149,6 +1158,15 @@ module Crystal
       {% end %}
     end
 
+    # Asks the C allocator to hand its free pages back to the OS. LLVM
+    # allocates with `malloc`, and the allocator otherwise keeps most of what
+    # a disposed context frees for later allocations.
+    private def return_free_malloc_memory_to_os : Nil
+      {% if flag?(:darwin) %}
+        LibDarwinMalloc.malloc_zone_pressure_relief(nil, 0)
+      {% end %}
+    end
+
     # Builds the object files in worker processes (see `CodegenWorker`).
     #
     # First every unit writes its module to its bitcode file and frees it, so
@@ -1165,25 +1183,40 @@ module Crystal
       return if units_to_compile.empty?
 
       # IR generation leaves garbage behind in the heap. Hand it back before
-      # the workers start, so their memory does not stack on top of it.
+      # the workers start, so their memory does not stack on top of it. The
+      # same goes for the memory the disposed LLVM contexts freed.
       return_free_memory_to_os
+      return_free_malloc_memory_to_os
 
-      # The largest modules take the longest: starting with them keeps the
-      # workers evenly loaded until the end.
+      # The largest modules take the longest and need the most memory. A
+      # quarter of the workers start with them, so the longest one is under
+      # way from the beginning; the other workers start with the smallest
+      # modules, so only a few large modules are in memory at a time.
       units_to_compile.sort_by! { |unit| -unit.bitcode_bytesize }
 
       settings_line = CodegenWorker::Settings.from_compiler(self).to_json
       lock = Sync::Mutex.new
-      next_unit_index = 0
+      largest_unit_index = 0
+      smallest_unit_index = units_to_compile.size - 1
       first_failure_message = nil.as(String?)
 
-      # Hands out the next unit, or `nil` once all are taken or a worker failed.
-      take_next_unit = -> : CompilationUnit? do
+      # Each hands out the next unit from its end of the list, or `nil` once
+      # all are taken or a worker failed.
+      take_largest_unit = -> : CompilationUnit? do
         lock.synchronize do
-          next nil if first_failure_message
+          next nil if first_failure_message || largest_unit_index > smallest_unit_index
 
-          unit = units_to_compile[next_unit_index]?
-          next_unit_index += 1
+          unit = units_to_compile[largest_unit_index]
+          largest_unit_index += 1
+          unit
+        end
+      end
+      take_smallest_unit = -> : CompilationUnit? do
+        lock.synchronize do
+          next nil if first_failure_message || largest_unit_index > smallest_unit_index
+
+          unit = units_to_compile[smallest_unit_index]
+          smallest_unit_index -= 1
           unit
         end
       end
@@ -1194,7 +1227,9 @@ module Crystal
       worker_count = n_threads.clamp(1..units_to_compile.size)
       @last_codegen_worker_count = worker_count
       workers_done = Channel(Nil).new(worker_count)
-      worker_count.times do
+      largest_first_worker_count = (worker_count // 4).clamp(1..)
+      worker_count.times do |worker_index|
+        take_next_unit = worker_index < largest_first_worker_count ? take_largest_unit : take_smallest_unit
         spawn do
           failure_message = begin
             run_codegen_worker(worker_executable, settings_line, take_next_unit, count_finished_unit)
