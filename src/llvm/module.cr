@@ -33,6 +33,13 @@ class LLVM::Module
     LibLLVM.set_module_data_layout(self, data)
   end
 
+  # The data layout of this module. It belongs to the module: it is valid
+  # as long as the module is, and the struct layouts it caches are those of
+  # this module's context only.
+  def data_layout : TargetData
+    TargetData.new(LibLLVM.get_module_data_layout(self))
+  end
+
   def append_inline_asm(asm_string : String)
     LibLLVM.append_module_inline_asm(self, asm_string, asm_string.bytesize)
   end
@@ -128,6 +135,13 @@ class LLVM::Module
       bitcode.dispose
       @failure = ex
     end
+  end
+
+  # Moves everything *other* defines or declares into this module, as a
+  # linker does: a declaration here is replaced by the definition there.
+  # Both modules must be in the same context. *other* is destroyed.
+  def link(other : Module) : Nil
+    raise "BUG: failed to link LLVM module #{other.name} into #{name}" unless LibLLVM.link_modules2(self, other) == 0
   end
 
   def write_bitcode_to_fd(fd : Int, should_close = false, buffered = false)

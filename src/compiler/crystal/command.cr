@@ -614,6 +614,12 @@ class Crystal::Command
         opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
           compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
         end
+        opts.on("--resident-ir-mb NUM", "Keep at most about NUM megabytes of LLVM IR in memory during IR generation, spilling idle modules to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_IR_MEGABYTES}, 0 is no limit)") do |resident_ir_megabytes|
+          compiler.resident_ir_megabytes = resident_ir_megabytes.to_i? || raise Error.new("Invalid amount of resident IR: #{resident_ir_megabytes}")
+        end
+        opts.on("--resident-modules NUM", "Keep at most NUM idle LLVM modules in memory during IR generation, spilling the others to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_MODULES}, 0 is no limit)") do |resident_modules|
+          compiler.resident_modules = resident_modules.to_i? || raise Error.new("Invalid resident module count: #{resident_modules}")
+        end
         unless run
           opts.on("--target TRIPLE", "Target triple") do |triple|
             compiler.codegen_target = Codegen::Target.new(triple)
@@ -706,6 +712,8 @@ class Crystal::Command
 
     abort! "maximum number of threads cannot be lower than 1", :USAGE_ERROR if compiler.n_threads < 1
     abort! "number of release units cannot be lower than 1", :USAGE_ERROR if compiler.release_units < 1
+    abort! "number of resident modules cannot be lower than 0", :USAGE_ERROR if compiler.resident_modules < 0
+    abort! "megabytes of resident IR cannot be lower than 0", :USAGE_ERROR if compiler.resident_ir_megabytes < 0
 
     if compiler.no_cache? && compiler.incremental?
       raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
@@ -771,6 +779,12 @@ class Crystal::Command
     end
     opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
       compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
+    end
+    opts.on("--resident-ir-mb NUM", "Keep at most about NUM megabytes of LLVM IR in memory during IR generation, spilling idle modules to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_IR_MEGABYTES}, 0 is no limit)") do |resident_ir_megabytes|
+      compiler.resident_ir_megabytes = resident_ir_megabytes.to_i? || raise Error.new("Invalid amount of resident IR: #{resident_ir_megabytes}")
+    end
+    opts.on("--resident-modules NUM", "Keep at most NUM idle LLVM modules in memory during IR generation, spilling the others to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_MODULES}, 0 is no limit)") do |resident_modules|
+      compiler.resident_modules = resident_modules.to_i? || raise Error.new("Invalid resident module count: #{resident_modules}")
     end
     opts.on("-s", "--stats", "Enable statistics output") do
       compiler.progress_tracker.stats = true
