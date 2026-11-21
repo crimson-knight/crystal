@@ -15,11 +15,9 @@ module Crystal
     @seen = Set(UInt64).new
     @seen_types = Set(UInt64).new
     @seen_strings = Set(UInt64).new
-    @seen_locations = Set(UInt64).new
     @nodes_by_class = Hash(String, {Int64, Int64}).new
     @categories = Hash(String, {Int64, Int64}).new
     @program_fields = Hash(String, Int64).new
-    @virtual_files = Set(UInt64).new
     @category = "main program"
     @pending_target_defs = [] of Def
     @typed_defs_by_source = Hash(String, {Int64, Int64}).new
@@ -31,8 +29,6 @@ module Crystal
     @rare_fields_bytes = 0_i64
     @signature_nodes = 0_i64
     @signature_bytes = 0_i64
-    @location_count = 0_i64
-    @location_bytes = 0_i64
     @string_count = 0_i64
     @string_bytes = 0_i64
     @dependency_sizes = Array(Int64).new(5, 0_i64)
@@ -74,6 +70,9 @@ module Crystal
         while typed_def = @pending_target_defs.pop?
           walk_typed_def(typed_def)
         end
+      end
+      @program.virtual_files.each do |virtual_file|
+        add("macro expansion sources (VirtualFile text)", 1, gc_bytes(virtual_file.source.as(Void*)) + gc_bytes(virtual_file.as(Void*)))
       end
       @program_fields = @program.census_field_bytes(self)
     end
@@ -138,18 +137,6 @@ module Crystal
     def owned_bytes(value : SmallNodeList) : Int64
       rest = value.@rest
       rest.is_a?(Array(ASTNode)) ? owned_bytes(rest) : 0_i64
-    end
-
-    def owned_bytes(value : Location) : Int64
-      return 0_i64 unless @seen_locations.add?(value.object_id)
-      filename = value.filename
-      if filename.is_a?(VirtualFile) && @virtual_files.add?(filename.object_id)
-        add("macro expansion sources (VirtualFile text)", 1, gc_bytes(filename.source.as(Void*)) + gc_bytes(filename.as(Void*)))
-      end
-      bytes = gc_bytes(value.as(Void*))
-      @location_count += 1
-      @location_bytes += bytes
-      bytes
     end
 
     def owned_bytes(value : Call::RareFields | Def::RareFields) : Int64
@@ -238,7 +225,6 @@ module Crystal
       io.printf("shared   %-48s %12d objects %10.1f MB\n", "typed def signatures (args, return type)", @signature_nodes, @signature_bytes / 1e6)
       io.printf("shared   %-48s %12d objects %10.1f MB\n", "rare-fields side objects of calls and defs", @rare_fields_count, @rare_fields_bytes / 1e6)
       io.printf("shared   %-48s %12d objects %10.1f MB\n", "MetaVars maps owned by defs, blocks and calls", @meta_vars_count, @meta_vars_bytes / 1e6)
-      io.printf("shared   %-48s %12d objects %10.1f MB\n", "Location objects (each counted once)", @location_count, @location_bytes / 1e6)
       io.printf("shared   %-48s %12d objects %10.1f MB\n", "String objects owned by nodes and types", @string_count, @string_bytes / 1e6)
       {"dependencies" => @dependency_sizes, "observers" => @observer_sizes}.each do |name, sizes|
         io.printf("bindings %-14s size 0: %d, 1: %d, 2: %d, 3: %d, 4+: %d\n", name, sizes[0], sizes[1], sizes[2], sizes[3], sizes[4])
@@ -444,7 +430,7 @@ module Crystal
   end
 
   class ASTNode
-    # Bytes of the arrays, hashes, strings and locations this node owns (census only).
+    # Bytes of the arrays, hashes and strings this node owns (census only).
     def census_owned_bytes(census : MemoryCensus) : Int64
       stat = census.class_stat({{@type.name.stringify}}) do
         fields = [] of MemoryCensus::FieldStat

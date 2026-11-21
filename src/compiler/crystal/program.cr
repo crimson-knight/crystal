@@ -65,6 +65,11 @@ module Crystal
     # If `true`, doc comments are attached to types and methods.
     property? wants_doc = false
 
+    # The files of this program's macro expansions. Locations refer to a
+    # file by its index in a table that holds it weakly, so the program
+    # keeps the files alive for as long as it lives.
+    getter virtual_files = [] of VirtualFile
+
     # If `true`, error messages can be colorized
     property? color = true
 

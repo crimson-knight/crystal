@@ -64,13 +64,27 @@ module Crystal
       end
     end
 
+    # Defines the `Location?` property *name*, stored as the location's
+    # 64-bit word (zero when the location is not known).
+    macro location_property(name)
+      @{{name.id}}_bits : UInt64 = 0_u64
+
+      def {{name.id}} : Location?
+        Location.from_bits?(@{{name.id}}_bits)
+      end
+
+      def {{name.id}}=(location : Location?)
+        @{{name.id}}_bits = Location.bits(location)
+      end
+    end
+
     # The location where this node starts, or `nil`
     # if the location is not known.
-    property location : Location?
+    location_property location
 
     # The location where this node ends, or `nil`
     # if the location is not known.
-    property end_location : Location?
+    location_property end_location
 
     # Gives this class a `RareFields` side object for the fields that few of
     # its instances set. An instance allocates it the first time one of those
@@ -108,27 +122,29 @@ module Crystal
     end
 
     # Updates this node's location and returns `self`
-    def at(@location : Location?)
+    def at(location : Location?)
+      @location_bits = Location.bits(location)
       self
     end
 
     # Sets this node's location and end location to those
     # of `node`, and returns `self`
     def at(node : ASTNode)
-      @location = node.location
-      @end_location = node.end_location
+      @location_bits = Location.bits(node.location)
+      @end_location_bits = Location.bits(node.end_location)
       self
     end
 
     # Updates this node's end location and returns `self`
-    def at_end(@end_location : Location?)
+    def at_end(end_location : Location?)
+      @end_location_bits = Location.bits(end_location)
       self
     end
 
     # Sets this node's end location to those of `node` and
     # returns self
     def at_end(node : ASTNode)
-      @end_location = node.end_location
+      @end_location_bits = Location.bits(node.end_location)
       self
     end
 
@@ -296,11 +312,11 @@ module Crystal
     end
 
     def location
-      @location || @expressions.first?.try &.location
+      super || @expressions.first?.try &.location
     end
 
     def end_location
-      @end_location || @expressions.last?.try &.end_location
+      super || @expressions.last?.try &.end_location
     end
 
     # It yields first node if this holds only one node, or yields `nil`.
@@ -931,7 +947,7 @@ module Crystal
     property name : String
     property args : Array(ASTNode)
     property block : Block?
-    property name_location : Location?
+    location_property name_location
     has_rare_fields
     @name_size = -1
     property visibility = Visibility::Public
@@ -1000,7 +1016,7 @@ module Crystal
     end
 
     def name_end_location
-      loc = @name_location
+      loc = name_location
       return unless loc
 
       Location.new(loc.filename, loc.line_number, loc.column_number + name_size - 1)
@@ -1051,7 +1067,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || value.end_location
+      super || value.end_location
     end
 
     def_equals_and_hash name, value
@@ -1084,7 +1100,7 @@ module Crystal
     flag_property? ternary, 0
 
     # The location of the `else` keyword if present.
-    property else_location : Location?
+    location_property else_location
 
     def initialize(@cond, a_then = nil, a_else = nil, ternary : Bool = false)
       @then = Expressions.from a_then
@@ -1126,7 +1142,7 @@ module Crystal
     property else : ASTNode
 
     # The location of the `else` keyword if present.
-    property else_location : Location?
+    location_property else_location
 
     def initialize(@cond, a_then = nil, a_else = nil)
       @then = Expressions.from a_then
@@ -1182,7 +1198,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || value.end_location
+      super || value.end_location
     end
 
     def clone_without_location
@@ -1211,7 +1227,7 @@ module Crystal
     property target : ASTNode
     property op : String
     property value : ASTNode
-    property name_location : Location?
+    location_property name_location
 
     def initialize(@target, @op, @value)
     end
@@ -1222,7 +1238,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || value.end_location
+      super || value.end_location
     end
 
     def clone_without_location
@@ -1259,7 +1275,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @values.last.end_location
+      super || @values.last.end_location
     end
 
     def clone_without_location
@@ -1383,7 +1399,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @right.end_location
+      super || @right.end_location
     end
 
     def_equals_and_hash left, right
@@ -1514,7 +1530,7 @@ module Crystal
     # Number of block arguments accepted by this method.
     # `nil` if it does not receive a block.
     property block_arity : Int32?
-    property name_location : Location?
+    location_property name_location
     has_rare_fields
     property visibility = Visibility::Public
 
@@ -1603,7 +1619,7 @@ module Crystal
     property body : ASTNode
     property double_splat : Arg?
     property block_arg : Arg?
-    property name_location : Location?
+    location_property name_location
     property splat_index : Int32?
     property doc : String?
     property visibility = Visibility::Public
@@ -1659,7 +1675,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @exp.end_location
+      super || @exp.end_location
     end
 
     def_equals_and_hash exp
@@ -1759,7 +1775,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @exp.end_location
+      super || @exp.end_location
     end
 
     def_equals_and_hash modifier, exp
@@ -2048,7 +2064,7 @@ module Crystal
     property body : ASTNode
     property superclass : ASTNode?
     property type_vars : Array(String)?
-    property name_location : Location?
+    location_property name_location
     property doc : String?
     property splat_index : Int32?
     property? abstract : Bool
@@ -2095,7 +2111,7 @@ module Crystal
     property body : ASTNode
     property type_vars : Array(String)?
     property splat_index : Int32?
-    property name_location : Location?
+    location_property name_location
     property doc : String?
     property visibility = Visibility::Public
 
@@ -2132,7 +2148,7 @@ module Crystal
   class AnnotationDef < ASTNode
     property name : Path
     property doc : String?
-    property name_location : Location?
+    location_property name_location
 
     def initialize(@name)
     end
@@ -2403,10 +2419,10 @@ module Crystal
     property suffix = false
 
     # The location of the `else` keyword if present.
-    property else_location : Location?
+    location_property else_location
 
     # The location of the `ensure` keyword if present.
-    property ensure_location : Location?
+    location_property ensure_location
 
     def initialize(body = nil, @rescues = nil, @else = nil, @ensure = nil)
       @body = Expressions.from body
@@ -2579,7 +2595,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @exp.try(&.end_location)
+      super || @exp.try(&.end_location)
     end
 
     def_equals_and_hash exp
@@ -2628,7 +2644,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @exps.last?.try(&.end_location)
+      super || @exps.last?.try(&.end_location)
     end
 
     def_equals_and_hash @exps, @scope, @has_parentheses
@@ -2659,7 +2675,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @name.end_location
+      super || @name.end_location
     end
 
     def_equals_and_hash name
@@ -2686,7 +2702,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @name.end_location
+      super || @name.end_location
     end
 
     def_equals_and_hash name
@@ -2702,7 +2718,7 @@ module Crystal
     property name : Path
     property doc : String?
     property body : ASTNode
-    property name_location : Location?
+    location_property name_location
     property visibility = Visibility::Public
 
     def initialize(@name, body = nil)
@@ -2738,7 +2754,7 @@ module Crystal
     property real_name : String
     property doc : String?
     property? varargs : Bool
-    property name_location : Location?
+    location_property name_location
 
     def initialize(@name, @args = [] of Arg, @return_type = nil, @varargs = false, @body = nil, @real_name = name)
     end
@@ -2784,7 +2800,7 @@ module Crystal
     property name : String
     property doc : String?
     property type_spec : ASTNode
-    property name_location : Location?
+    location_property name_location
 
     def initialize(@name, @type_spec)
     end
@@ -2972,7 +2988,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @to.end_location
+      super || @to.end_location
     end
 
     def_equals_and_hash @obj, @to
@@ -3004,7 +3020,7 @@ module Crystal
     end
 
     def end_location
-      @end_location || @to.end_location
+      super || @to.end_location
     end
 
     def_equals_and_hash @obj, @to

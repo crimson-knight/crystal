@@ -3038,7 +3038,7 @@ module Crystal
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
-        interpret_check_args { Path.new(@name).at(@name_location) }
+        interpret_check_args { Path.new(@name).at(name_location) }
       when "type"
         interpret_check_args { @type_spec }
       else

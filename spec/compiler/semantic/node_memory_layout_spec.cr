@@ -224,3 +224,83 @@ describe "ASTNode memory layout" do
     Var.new("x").doc.should be_nil
   end
 end
+
+describe "Location" do
+  it "is one word that keeps the filename, the line and the column" do
+    sizeof(Location).should eq(8)
+
+    location = Location.new("foo.cr", 12, 34)
+    location.filename.should eq("foo.cr")
+    location.line_number.should eq(12)
+    location.column_number.should eq(34)
+    location.to_s.should eq("foo.cr:12:34")
+
+    without_filename = Location.new(nil, 0, 0)
+    without_filename.filename.should be_nil
+    without_filename.bits.should_not eq(0)
+  end
+
+  it "round-trips through a node, with zero standing for no location" do
+    node = Var.new("a")
+    node.location.should be_nil
+    node.end_location.should be_nil
+
+    location = Location.new("foo.cr", 1, 2)
+    node.location = location
+    node.end_location = Location.new("foo.cr", 1, 3)
+    node.location.should eq(location)
+    node.end_location.not_nil!.column_number.should eq(3)
+
+    copy = Var.new("b").at(node)
+    copy.location.should eq(location)
+    copy.end_location.should eq(node.end_location)
+
+    node.location = nil
+    node.location.should be_nil
+    Location.from_bits?(0_u64).should be_nil
+  end
+
+  it "compares and hashes by position" do
+    first = Location.new(String.build { |io| io << "foo.cr" }, 3, 4)
+    second = Location.new("foo.cr", 3, 4)
+    first.should eq(second)
+    first.hash.should eq(second.hash)
+    first.should_not eq(Location.new("bar.cr", 3, 4))
+    (first < Location.new("foo.cr", 3, 5)).should be_true
+    (Location.new("foo.cr", 3, 4) <=> Location.new("bar.cr", 3, 4)).should be_nil
+  end
+
+  it "keeps lines and columns that do not fit the word" do
+    {Location.new("foo.cr", 5_000_000, 7), Location.new("foo.cr", 7, 70_000), Location.new("foo.cr", -1, -1)}.each do |location|
+      location.filename.should eq("foo.cr")
+      Location.from_bits?(location.bits).should eq(location)
+    end
+
+    wide = Location.new("foo.cr", 7, 70_000)
+    wide.line_number.should eq(7)
+    wide.column_number.should eq(70_000)
+    wide.should eq(Location.new("foo.cr", 7, 70_000))
+    wide.hash.should eq(Location.new("foo.cr", 7, 70_000).hash)
+    wide.should_not eq(Location.new("foo.cr", 7, 70_001))
+  end
+
+  it "points at the virtual file of a macro expansion while the program lives" do
+    result = semantic(%(
+      macro define_foo
+        def foo
+          1
+        end
+      end
+
+      define_foo
+      foo
+      ))
+    program = result.program
+    program.virtual_files.size.should be > 0
+
+    filename = program.lookup_first_def("foo", false).not_nil!.location.not_nil!.filename
+    filename.should be_a(VirtualFile)
+    program.virtual_files.should contain(filename.as(VirtualFile))
+    filename.as(VirtualFile).source.should contain("def foo")
+  end
+end

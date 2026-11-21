@@ -12,7 +12,11 @@ class Crystal::VirtualFile
   # The location where the macro was expanded (where the macro was invoked).
   getter expanded_location : Location?
 
+  # The index of this file in the table that locations refer to.
+  getter file_index : UInt32 = 0_u32
+
   def initialize(@macro : Macro, @source : String, @expanded_location : Location?)
+    @file_index = Location.register(self)
   end
 
   def to_s(io : IO) : Nil
