@@ -15,11 +15,9 @@ module Crystal
     @seen = Set(UInt64).new
     @seen_types = Set(UInt64).new
     @seen_strings = Set(UInt64).new
-    @seen_locations = Set(UInt64).new
     @nodes_by_class = Hash(String, {Int64, Int64}).new
     @categories = Hash(String, {Int64, Int64}).new
     @program_fields = Hash(String, Int64).new
-    @virtual_files = Set(UInt64).new
     @category = "main program"
     @pending_target_defs = [] of Def
     @typed_defs_by_source = Hash(String, {Int64, Int64}).new
@@ -34,6 +32,21 @@ module Crystal
     # defs those calls own), the same hash with the def's owner erased, and the
     # bytes of the def's own nodes.
     record TypedDefFingerprint, content : UInt64, content_without_owner : UInt64, bytes : Int64
+    @class_stats = Hash(String, ClassStat).new
+    @in_signature = false
+    @rare_fields_count = 0_i64
+    @meta_vars_count = 0_i64
+    @meta_vars_bytes = 0_i64
+    @rare_fields_bytes = 0_i64
+    @signature_nodes = 0_i64
+    @signature_bytes = 0_i64
+    @string_count = 0_i64
+    @string_bytes = 0_i64
+    @dependency_sizes = Array(Int64).new(5, 0_i64)
+    @observer_sizes = Array(Int64).new(5, 0_i64)
+    @binding_pairs = Array(Int64).new(9, 0_i64)
+    @heap_histogram = Hash(UInt64, Int64).new
+    @@class_names : Hash(Int32, String)?
 
     def initialize(@program : Program)
     end
@@ -48,6 +61,7 @@ module Crystal
       stats = GC.stats
       live_bytes = (stats.heap_size - stats.free_bytes).to_i64
       census = new(program)
+      census.enumerate_heap
       census.run(main_node)
       if path == "-"
         census.print(STDERR, stage, live_bytes, stats.heap_size.to_i64)
@@ -67,6 +81,9 @@ module Crystal
         while typed_def = @pending_target_defs.pop?
           walk_typed_def(typed_def)
         end
+      end
+      @program.virtual_files.each do |virtual_file|
+        add("macro expansion sources (VirtualFile text)", 1, gc_bytes(virtual_file.source.as(Void*)) + gc_bytes(virtual_file.as(Void*)))
       end
       @program_fields = @program.census_field_bytes(self)
       @main_node = main_node
@@ -96,6 +113,8 @@ module Crystal
       stats.unshared_reasons.to_a.sort_by { |entry| -entry[1] }.first(40).each do |reason, count|
         io.printf("unshared %-80s %8d calls\n", reason[0, 80], count)
       end
+      print_field_stats(io)
+      print_heap_histogram(io)
       io.flush
     end
 
@@ -118,26 +137,188 @@ module Crystal
       gc_bytes(value.as(Void*)) + gc_bytes(value.@entries.as(Void*)) + gc_bytes(value.@indices.as(Void*))
     end
 
+    def owned_bytes(value : MetaVars) : Int64
+      @meta_vars_count += 1
+      large = value.@large
+      bytes = gc_bytes(value.as(Void*)) + gc_bytes(value.@entries.as(Void*)) + (large ? owned_bytes(large) : 0_i64)
+      @meta_vars_bytes += bytes
+      bytes
+    end
+
     def owned_bytes(value : String) : Int64
       return 0_i64 unless @seen_strings.add?(value.object_id)
-      gc_bytes(value.as(Void*))
+      bytes = gc_bytes(value.as(Void*))
+      @string_count += 1
+      @string_bytes += bytes
+      bytes
     end
 
     def owned_bytes(value : SmallNodeList) : Int64
-      owned_bytes(value.@tail)
+      rest = value.@rest
+      rest.is_a?(Array(ASTNode)) ? owned_bytes(rest) : 0_i64
     end
 
-    def owned_bytes(value : Location) : Int64
-      return 0_i64 unless @seen_locations.add?(value.object_id)
-      filename = value.filename
-      if filename.is_a?(VirtualFile) && @virtual_files.add?(filename.object_id)
-        add("macro expansion sources (VirtualFile text)", 1, gc_bytes(filename.source.as(Void*)) + gc_bytes(filename.as(Void*)))
-      end
-      gc_bytes(value.as(Void*))
+    def owned_bytes(value : Call::RareFields | Def::RareFields) : Int64
+      @rare_fields_count += 1
+      bytes = gc_bytes(value.as(Void*)) + value.census_owned_bytes(self)
+      @rare_fields_bytes += bytes
+      bytes
     end
 
     def owned_bytes(value) : Int64
       0_i64
+    end
+
+    # One instance variable of a node class: its inline size, how many
+    # instances hold a non-default value, and the bytes those values own.
+    class FieldStat
+      getter name : String
+      getter inline_bytes : Int32
+      getter set_count = 0_i64
+      getter owned_bytes = 0_i64
+
+      def initialize(@name : String, @inline_bytes : Int32)
+      end
+
+      def record(set : Bool, owned : Int64) : Nil
+        @set_count += 1 if set
+        @owned_bytes += owned
+      end
+    end
+
+    # Per-class totals for the field report.
+    class ClassStat
+      getter instance_bytes : Int32
+      getter fields : Array(FieldStat)
+      property count = 0_i64
+
+      def initialize(@instance_bytes : Int32, @fields : Array(FieldStat))
+      end
+    end
+
+    def class_stat(name : String, & : -> ClassStat) : ClassStat
+      @class_stats[name] ||= yield
+    end
+
+    def field_set?(value : Nil) : Bool
+      false
+    end
+
+    def field_set?(value : Bool) : Bool
+      value
+    end
+
+    def field_set?(value : Int) : Bool
+      value != 0
+    end
+
+    def field_set?(value : Enum) : Bool
+      value.value != 0
+    end
+
+    def field_set?(value : SmallNodeList) : Bool
+      value.size > 0
+    end
+
+    def field_set?(value : Array) : Bool
+      !value.empty?
+    end
+
+    def field_set?(value : Hash) : Bool
+      !value.empty?
+    end
+
+    def field_set?(value) : Bool
+      true
+    end
+
+    # Counts how many nodes hold 0, 1, 2 or more dependencies and observers.
+    def record_bindings(dependencies : SmallNodeList, observers : SmallNodeList) : Nil
+      @dependency_sizes[dependencies.size.clamp(0, 4)] += 1
+      @observer_sizes[observers.size.clamp(0, 4)] += 1
+      both = dependencies.size.clamp(0, 2) * 3 + observers.size.clamp(0, 2)
+      @binding_pairs[both] += 1
+    end
+
+    private def print_field_stats(io : IO) : Nil
+      io.printf("shared   %-48s %12d objects %10.1f MB\n", "typed def signatures (args, return type)", @signature_nodes, @signature_bytes / 1e6)
+      io.printf("shared   %-48s %12d objects %10.1f MB\n", "rare-fields side objects of calls and defs", @rare_fields_count, @rare_fields_bytes / 1e6)
+      io.printf("shared   %-48s %12d objects %10.1f MB\n", "MetaVars maps owned by defs, blocks and calls", @meta_vars_count, @meta_vars_bytes / 1e6)
+      io.printf("shared   %-48s %12d objects %10.1f MB\n", "String objects owned by nodes and types", @string_count, @string_bytes / 1e6)
+      {"dependencies" => @dependency_sizes, "observers" => @observer_sizes}.each do |name, sizes|
+        io.printf("bindings %-14s size 0: %d, 1: %d, 2: %d, 3: %d, 4+: %d\n", name, sizes[0], sizes[1], sizes[2], sizes[3], sizes[4])
+      end
+      io.printf("bindings (dependencies, observers) clamped to 2: %s\n",
+        @binding_pairs.map_with_index { |count, index| "(#{index // 3},#{index % 3})=#{count}" }.join(" "))
+      ranked = @class_stats.to_a.sort_by { |entry| -(@nodes_by_class[entry[0]]?.try(&.[1]) || 0_i64) }
+      ranked.first(14).each do |name, stat|
+        io.printf("fields   %s: %d instances, instance_sizeof %d\n", name, stat.count, stat.instance_bytes)
+        stat.fields.each do |field|
+          io.printf("field      %-28s %3d bytes inline  set in %10d (%5.1f%%)  owns %9.1f MB\n", field.name, field.inline_bytes,
+            field.set_count, stat.count == 0 ? 0.0 : field.set_count * 100.0 / stat.count, field.owned_bytes / 1e6)
+        end
+      end
+    end
+
+    # Every object the last collection marked, grouped by the class its first
+    # word names and by its allocated size. Buffers have no class header, so
+    # they land under "(no class header)" or, when their first word happens to
+    # equal a type id, under that class at an implausible size.
+    def enumerate_heap : Nil
+      names = MemoryCensus.class_names
+      max_id = names.keys.max
+      state = {@heap_histogram, max_id}
+      box = Box.box(state)
+      GC.disable
+      LibGC.enumerate_reachable_objects_inner(->(object : Void*, bytes : LibC::SizeT, data : Void*) {
+        histogram, limit = Box({Hash(UInt64, Int64), Int32}).unbox(data)
+        id = object.as(Int32*).value
+        id = -1 if id <= 0 || id > limit
+        key = (id.to_u32!.to_u64 << 32) | bytes.to_u32!
+        histogram[key] = (histogram[key]? || 0_i64) + 1
+        nil
+      }, box)
+      GC.enable
+    end
+
+    private def print_heap_histogram(io : IO) : Nil
+      names = MemoryCensus.class_names
+      rows = @heap_histogram.map do |key, count|
+        id = (key >> 32).to_u32!.to_i32!
+        bytes = (key & 0xffff_ffff_u64).to_i64
+        name = id == -1 ? "(no class header)" : (names[id]? || "(type id #{id})")
+        {name, bytes, count, bytes * count}
+      end
+      total = rows.sum(&.[3])
+      io.printf("heapobj  %-58s %12d objects %10.1f MB\n", "all marked objects", rows.sum(&.[2]), total / 1e6)
+      by_class = Hash(String, {Int64, Int64}).new
+      rows.each do |name, _, count, total_bytes|
+        current = by_class[name]? || {0_i64, 0_i64}
+        by_class[name] = {current[0] + count, current[1] + total_bytes}
+      end
+      by_class.to_a.sort_by { |entry| -entry[1][1] }.first(60).each do |name, (count, class_bytes)|
+        io.printf("heapcls  %-58s %12d objects %10.1f MB\n", name[0, 58], count, class_bytes / 1e6)
+      end
+      rows.sort_by { |row| -row[3] }.first(80).each do |name, bytes, count, total_bytes|
+        io.printf("heapobj  %-48s %9d B %12d objects %10.1f MB\n", name[0, 48], bytes, count, total_bytes / 1e6)
+      end
+    end
+
+    # Names of the concrete reference classes by type id, for the heap histogram.
+    def self.class_names : Hash(Int32, String)
+      @@class_names ||= begin
+        names = Hash(Int32, String).new
+        {% for type in Reference.all_subclasses %}
+          {% name = type.stringify %}
+          {% container = name.starts_with?("Array(") || name.starts_with?("Hash(") || name.starts_with?("Set(") || name.starts_with?("Deque(") %}
+          {% known = name.starts_with?("Crystal::") || name == "String" || name == "Array(String)" || name == "Set(String)" || (container && name.includes?("Crystal::")) %}
+          {% excluded = ["PrettyPrint", "Crystal::CodeGenVisitor::DIBuilder"] %}
+          {% if known && !excluded.any? { |part| name.includes?(part) } && !type.abstract? && !type.private? && !(name =~ /(^|[^A-Za-z0-9_:])\*?[A-Z][0-9]*($|[^A-Za-z0-9_:])/) %}
+            names[{{type}}.crystal_instance_type_id] = {{name}}
+          {% end %}
+        {% end %}
+        names
+      end
     end
 
     private def add(category : String, count : Int, bytes : Int) : Nil
@@ -283,7 +464,7 @@ module Crystal
           current.vars.try &.each_value { |meta_var| stack << meta_var }
         end
         if current.is_a?(Call)
-          current.target_defs.try &.each do |target_def|
+          current.each_target_def do |target_def|
             if @cached_typed_def_ids.includes?(target_def.object_id)
               content = mix(content, target_def.object_id)
               # A cached callee is named by its source and argument types, so
@@ -320,6 +501,15 @@ module Crystal
     private def walk_typed_def(typed_def : Def) : Nil
       return if @seen.includes?(typed_def.object_id)
       before = @categories[@category]?.try(&.[1]) || 0_i64
+      # The signature (argument restrictions and defaults, return type) is
+      # walked first so the report shows what a typed copy spends outside
+      # its body.
+      @in_signature = true
+      typed_def.args.each { |arg| walk_node(arg) }
+      walk_node(typed_def.double_splat)
+      walk_node(typed_def.block_arg)
+      walk_node(typed_def.return_type)
+      @in_signature = false
       walk_node(typed_def)
       after = @categories[@category]?.try(&.[1]) || 0_i64
       location = typed_def.location
@@ -397,7 +587,8 @@ module Crystal
           current.after_vars.try &.each_value { |meta_var| stack << meta_var }
         end
         if current.is_a?(Call)
-          current.target_defs.try { |target_defs| @pending_target_defs.concat(target_defs) }
+          current.expanded.try { |expanded| stack << expanded }
+          current.each_target_def { |target_def| @pending_target_defs << target_def }
         end
       end
     end
@@ -406,6 +597,10 @@ module Crystal
       own = gc_bytes(node.as(Void*))
       owned = node.census_owned_bytes(self)
       add(@category, 1, own + owned)
+      if @in_signature
+        @signature_nodes += 1
+        @signature_bytes += own + owned
+      end
       name = node.class.name
       current = @nodes_by_class[name]? || {0_i64, 0_i64}
       @nodes_by_class[name] = {current[0] + 1, current[1] + own + owned}
@@ -413,15 +608,41 @@ module Crystal
   end
 
   class ASTNode
-    # Bytes of the arrays, hashes, strings and locations this node owns (census only).
+    # Bytes of the arrays, hashes and strings this node owns (census only).
     def census_owned_bytes(census : MemoryCensus) : Int64
+      stat = census.class_stat({{@type.name.stringify}}) do
+        fields = [] of MemoryCensus::FieldStat
+        {% for ivar in @type.instance_vars %}
+          fields << MemoryCensus::FieldStat.new({{ivar.name.stringify}}, sizeof(typeof(@{{ivar.id}})))
+        {% end %}
+        MemoryCensus::ClassStat.new(instance_sizeof(self), fields)
+      end
+      stat.count += 1
+      census.record_bindings(@dependencies, @observers)
       total = 0_i64
-      {% for ivar in @type.instance_vars %}
-        total += census.owned_bytes(@{{ivar.id}})
+      {% for ivar, index in @type.instance_vars %}
+        owned = census.owned_bytes(@{{ivar.id}})
+        stat.fields[{{index}}].record(census.field_set?(@{{ivar.id}}), owned)
+        total += owned
       {% end %}
       total
     end
   end
+
+  {% for node_class in %w(Call Def) %}
+    class {{node_class.id}}::RareFields
+      # Bytes of the arrays, hashes and strings these fields own (census only).
+      def census_owned_bytes(census : MemoryCensus) : Int64
+        total = 0_i64
+        {% verbatim do %}
+          {% for ivar in @type.instance_vars %}
+            total += census.owned_bytes(@{{ivar.id}})
+          {% end %}
+        {% end %}
+        total
+      end
+    end
+  {% end %}
 
   class Type
     # Bytes of the arrays, hashes and strings this type owns (census only).
@@ -454,4 +675,8 @@ module Crystal
       false
     end
   end
+end
+
+lib LibGC
+  fun enumerate_reachable_objects_inner = GC_enumerate_reachable_objects_inner(callback : (Void*, LibC::SizeT, Void*) ->, client_data : Void*)
 end

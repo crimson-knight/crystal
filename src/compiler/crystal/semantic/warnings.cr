@@ -38,7 +38,7 @@ module Crystal
       return if compiler_expanded_call(node)
 
       # check if method if deprecated, otherwise check if any arg is deprecated
-      node.target_defs.try &.each do |target_def|
+      node.each_target_def do |target_def|
         next if check_deprecation(target_def, node, @deprecated_methods_detected)
 
         # can't annotate fun arguments

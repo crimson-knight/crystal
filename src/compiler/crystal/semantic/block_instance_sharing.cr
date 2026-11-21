@@ -290,7 +290,7 @@ module Crystal
   class Def
     # Present on a typed def that was instantiated for a call with a block
     # it yields to, when such defs are shared (see `BlockInstance`).
-    property block_instance : BlockInstance?
+    rare_property block_instance : BlockInstance?
   end
 
   class ASTNode

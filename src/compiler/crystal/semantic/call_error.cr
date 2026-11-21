@@ -42,7 +42,7 @@ class Crystal::Call
 
   def raise_matches_not_found(owner, def_name, arg_types, named_args_types, matches = nil, with_autocast = false, number_autocast = true)
     obj = @obj
-    with_scope = @with_scope
+    with_scope = self.with_scope
 
     # Special case: Foo+.class#new
     if owner.is_a?(VirtualMetaclassType) && def_name == "new"
@@ -1044,7 +1044,7 @@ class Crystal::Call
       first = false
     end
 
-    if named_args = @named_args
+    if named_args = self.named_args
       io << ", " unless first
       named_args.join(io, ", ") do |named_arg|
         Symbol.quote_for_named_argument(io, named_arg.name)
