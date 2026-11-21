@@ -116,8 +116,8 @@ module Crystal
     # `CodegenWorker`). When set, and more than one thread is allowed, a
     # multi-module build writes every module to its bitcode file, frees the
     # modules, and lets `n_threads` worker processes build the object files.
-    # The `crystal` command sets it to its own executable; a program that
-    # embeds the compiler leaves it unset and compiles objects in-process.
+    # The compiler's main program sets it to its own executable; a program
+    # that embeds the compiler leaves it unset and compiles objects in-process.
     property codegen_worker_executable : String?
 
     # How many worker processes built the object files of the last compilation.

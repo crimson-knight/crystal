@@ -70,14 +70,20 @@ class Crystal::Command
         --help, -h               show this help
     USAGE
 
-  def self.run(options = ARGV)
-    new(options).run
+  # Runs the command line in *options*.
+  #
+  # *codegen_worker_executable* is the compiler executable to start as
+  # object-file workers (see `Compiler#codegen_worker_executable`). Only the
+  # compiler's own main program passes it: a program that embeds the command
+  # is not a compiler executable and compiles objects in-process.
+  def self.run(options = ARGV, *, codegen_worker_executable : String? = nil)
+    new(options, codegen_worker_executable).run
   end
 
   private getter options
   @compiler : Compiler?
 
-  def initialize(@options : Array(String))
+  def initialize(@options : Array(String), @codegen_worker_executable : String? = nil)
     @color = Colorize.default_enabled?(STDOUT, STDERR)
     @error_trace = false
     @progress_tracker = ProgressTracker.new
@@ -919,7 +925,7 @@ class Crystal::Command
 
   private def new_compiler
     compiler = Compiler.new
-    compiler.codegen_worker_executable = Process.executable_path
+    compiler.codegen_worker_executable = @codegen_worker_executable
     @compiler = compiler
   end
 end
