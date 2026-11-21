@@ -131,6 +131,7 @@ module Crystal
 
     # How many worker processes built the object files of the last compilation.
     @last_codegen_worker_count = 0
+    @last_longest_codegen_job : {CompilationUnit, Time::Span}?
 
     # Default prelude file to use. This ends up adding a
     # `require "prelude"` (or whatever name is set here) to
@@ -1232,6 +1233,7 @@ module Crystal
         end
       end
       worker_count.times { workers_done.receive }
+      @last_longest_codegen_job = work_queue.longest_job
 
       if failure_message = lock.synchronize { first_failure_message }
         raise CompilerError.new("object file worker failed: #{failure_message}")
@@ -1252,8 +1254,10 @@ module Crystal
         while unit = work_queue.take
           process.input.puts unit.codegen_worker_job.to_json
           process.input.flush
+          started_at = Time.instant
           outcome_line = process.output.gets
-          work_queue.finished(unit)
+          elapsed = Time.instant - started_at
+          work_queue.finished(unit, elapsed)
           unless outcome_line
             failure_message = "the worker stopped while compiling #{unit.original_name}"
             break
@@ -1295,6 +1299,7 @@ module Crystal
         largest_unit = @units.first?
         @in_flight_bytesize_limit = largest_unit ? largest_unit.bitcode_bytesize * 2 : 0_i64
         @stopped = false
+        @longest_job = nil.as({CompilationUnit, Time::Span}?)
         @lock = Sync::Mutex.new
       end
 
@@ -1321,8 +1326,18 @@ module Crystal
       end
 
       # Tells the queue that *unit*, handed out by `#take`, is done.
-      def finished(unit : CompilationUnit) : Nil
-        @lock.synchronize { @in_flight_bytesize -= unit.bitcode_bytesize }
+      def finished(unit : CompilationUnit, elapsed : Time::Span) : Nil
+        @lock.synchronize do
+          @in_flight_bytesize -= unit.bitcode_bytesize
+          longest_job = @longest_job
+          @longest_job = {unit, elapsed} if longest_job.nil? || elapsed > longest_job[1]
+        end
+      end
+
+      # The unit whose object file took the longest to build so far, and
+      # how long a worker spent on it.
+      def longest_job : {CompilationUnit, Time::Span}?
+        @lock.synchronize { @longest_job }
       end
 
       # Makes `#take` hand out no more units.
@@ -1547,6 +1562,10 @@ module Crystal
 
       if @last_codegen_worker_count > 0
         puts " - object files were built by #{@last_codegen_worker_count} worker processes"
+        if longest_job = @last_longest_codegen_job
+          unit, elapsed = longest_job
+          puts " - the longest object file took #{elapsed.total_seconds.round(1)} s: #{unit.original_name} (#{unit.bitcode_bytesize.humanize_bytes} of bitcode)"
+        end
       end
 
       # Phase 4: Report modules skipped via source-file-level caching
