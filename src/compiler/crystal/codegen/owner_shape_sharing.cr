@@ -680,7 +680,9 @@ module Crystal
         nil_var = @program.nil_var
         vars.each_value do |meta_var|
           mix_local_name(meta_var.name)
-          mix(meta_var.@flags)
+          # Bits 0 to 3 say how the var is stored; the higher bits are
+          # type-inference bookkeeping.
+          mix(meta_var.@flags & 0x0f_u8)
           # `self` is not a local: a class method never stores its metaclass,
           # unless a closure captures it.
           self_name = meta_var.name == "self" && holder.is_a?(Def) && !holder.self_closured?
