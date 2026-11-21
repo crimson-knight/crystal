@@ -12,13 +12,22 @@ module Crystal
   # starts fewer processes.
   class CodegenWorkerPool
     # Memory a worker needs per byte of bitcode it compiles, and the memory
-    # a worker holds before it loads a module. Measured at `-O3` on the 12
-    # largest modules of a 300-model Grant app (4 to 59 MB of bitcode), each
-    # compiled alone: peak footprint was 30 to 110 times the bitcode size
-    # with no trend by size, and 8 to 28 MB for modules under 0.4 MB. The
-    # factor is the largest ratio seen, so an estimate is an upper bound.
-    MEMORY_BYTES_PER_BITCODE_BYTE = 110_i64
-    WORKER_BASE_MEMORY_BYTES      = 16_i64 * 1024 * 1024
+    # a worker holds before it loads a module. Measured at `-O3` on the 60
+    # largest object jobs of a 300-model Grant app whose large types were
+    # cut into segments (0.8 to 5.6 MB of bitcode each, and the main module
+    # with 27 MB), each compiled alone: peak footprint was 35 to 120 times
+    # the bitcode size with no trend by size, and 10 to 16 MB for modules
+    # under 0.3 MB. With the base amount taken off, the largest ratio was
+    # 117, so an estimate with this factor is an upper bound.
+    #
+    # The main module is the one job no segment limit makes smaller. It
+    # holds the top-level code, the constants' initializers and the proc
+    # literals: many small functions that call into other modules, so
+    # little is inlined. It needed 30 and 35 times its bitcode size (33 and
+    # 27 MB) on two versions of that app, and has a factor of its own.
+    MEMORY_BYTES_PER_BITCODE_BYTE             = 125_i64
+    MAIN_MODULE_MEMORY_BYTES_PER_BITCODE_BYTE =  45_i64
+    WORKER_BASE_MEMORY_BYTES                  = 16_i64 * 1024 * 1024
 
     # The memory each allowed thread adds to the default budget, and the
     # share of the machine's memory the default budget stops at. On a
@@ -57,10 +66,9 @@ module Crystal
     # The jobs that took the longest, longest first.
     getter list_of_longest_jobs = [] of JobReport
 
-    # The job during which a worker reached the largest peak memory of all
-    # workers. A worker's peak only rises during a job that needs more than
-    # every job the worker had before, so this is that job's own memory.
-    getter largest_job : JobReport?
+    # The largest peak memory a worker process reached. A worker keeps the
+    # memory its earlier jobs freed, so this is not the memory of one job.
+    getter largest_worker_peak_memory_bytes = 0_i64
 
     # The default budget: 1.25 GiB per allowed thread, at most a fifth of the
     # machine's memory.
@@ -102,7 +110,8 @@ module Crystal
 
     # The memory a worker is expected to need while it compiles *job*.
     def self.estimated_memory_bytes(job : CodegenWorker::Job) : Int64
-      WORKER_BASE_MEMORY_BYTES + job.bitcode_bytesize * MEMORY_BYTES_PER_BITCODE_BYTE
+      memory_bytes_per_bitcode_byte = job.main_module? ? MAIN_MODULE_MEMORY_BYTES_PER_BITCODE_BYTE : MEMORY_BYTES_PER_BITCODE_BYTE
+      WORKER_BASE_MEMORY_BYTES + job.bitcode_bytesize * memory_bytes_per_bitcode_byte
     end
 
     @list_of_jobs : Array(CodegenWorker::Job)
@@ -191,12 +200,7 @@ module Crystal
       @list_of_longest_jobs << report
       @list_of_longest_jobs.sort_by! { |job_report| -job_report.seconds }
       @list_of_longest_jobs.pop if @list_of_longest_jobs.size > LONGEST_JOB_COUNT
-
-      largest_job = @largest_job
-      rose_during_this_job = report.peak_memory_bytes > seat.peak_memory_bytes_before_last_job
-      if rose_during_this_job && (largest_job.nil? || report.peak_memory_bytes > largest_job.peak_memory_bytes)
-        @largest_job = report
-      end
+      @largest_worker_peak_memory_bytes = Math.max(@largest_worker_peak_memory_bytes, report.peak_memory_bytes)
     end
 
     private def hand_out(job_index : Int32) : Nil
@@ -249,7 +253,6 @@ module Crystal
       getter seconds_of_last_job = 0.0
       getter cpu_seconds_of_last_job = 0.0
       getter peak_memory_bytes = 0_i64
-      getter peak_memory_bytes_before_last_job = 0_i64
 
       # Has the worker compile *job*. Returns what went wrong, or `nil` when
       # the object file was written.
@@ -263,7 +266,6 @@ module Crystal
         outcome = CodegenWorker::Outcome.from_json(outcome_line)
         @seconds_of_last_job = outcome.seconds
         @cpu_seconds_of_last_job = outcome.cpu_seconds
-        @peak_memory_bytes_before_last_job = @peak_memory_bytes
         @peak_memory_bytes = outcome.peak_memory_bytes
         outcome.error_message
       rescue ex : IO::Error

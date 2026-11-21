@@ -230,7 +230,7 @@ module Crystal
     property resident_modules : Int32 = DEFAULT_RESIDENT_MODULES
 
     # The default of `#module_segment_instructions`.
-    DEFAULT_MODULE_SEGMENT_INSTRUCTIONS = 0
+    DEFAULT_MODULE_SEGMENT_INSTRUCTIONS = 100_000
 
     # The most LLVM instructions one type's functions hold in one object
     # file, in multi-module mode. A type that grows beyond that is compiled
@@ -1659,9 +1659,8 @@ module Crystal
           puts "   then: #{job_report.seconds.round(1)} s (#{job_report.cpu_seconds.round(1)} s of processor time), " \
                "#{job_report.name} (#{(job_report.bitcode_bytesize / megabyte).round(1)} MB of bitcode)"
         end
-        if largest_job = pool.largest_job
-          puts " - largest worker memory: #{largest_job.peak_memory_bytes // megabyte} MB, reached building #{largest_job.name} " \
-               "(#{(largest_job.bitcode_bytesize / megabyte).round(1)} MB of bitcode, #{largest_job.seconds.round(1)} s)"
+        if pool.largest_worker_peak_memory_bytes > 0
+          puts " - largest peak memory of one worker process: #{pool.largest_worker_peak_memory_bytes // megabyte} MB"
         end
       end
 
@@ -2428,6 +2427,7 @@ module Crystal
           list_of_more_bitcode_filenames: list_of_more_part_bc_names,
           name: original_name,
           bitcode_bytesize: bitcode_bytesize,
+          main_module: original_name == "_main",
         )
       end
 

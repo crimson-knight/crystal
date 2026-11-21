@@ -71,9 +71,13 @@ module Crystal
       # spilled to disk in several parts).
       getter list_of_more_bitcode_filenames : Array(String) = [] of String
 
+      # True for the program's main module, whose memory the pool estimates
+      # with a factor of its own.
+      getter? main_module : Bool = false
+
       def initialize(@bitcode_filename, @object_filename, @llvm_ir_filename = nil, @verifies_module = false,
                      @list_of_more_bitcode_filenames = [] of String,
-                     @name = bitcode_filename, @bitcode_bytesize = 0_i64)
+                     @name = bitcode_filename, @bitcode_bytesize = 0_i64, @main_module = false)
       end
     end
 
