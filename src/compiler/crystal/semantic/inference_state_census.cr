@@ -165,10 +165,15 @@ module Crystal
       GC.collect
       objects, bytes = MemoryCensus.marked_bytes
       io.printf("whatif   %-64s %12d objects %10.1f MB\n", label, objects, bytes / 1e6)
-      names = MemoryCensus.class_names
-      {MetaVar, MainVisitor, MetaVars, Var, Call, TypeFilteredNode}.each do |klass|
-        count = MemoryCensus.objects_of(klass.crystal_instance_type_id, 16).size
-        io.printf("whatif     %-62s %12d objects\n", names[klass.crystal_instance_type_id]? || klass.name, count)
+      {
+        {"Crystal::MetaVar", MetaVar.crystal_instance_type_id},
+        {"Crystal::MainVisitor", MainVisitor.crystal_instance_type_id},
+        {"Crystal::MetaVars", MetaVars.crystal_instance_type_id},
+        {"Crystal::Var", Var.crystal_instance_type_id},
+        {"Crystal::Call", Call.crystal_instance_type_id},
+        {"Crystal::TypeFilteredNode", TypeFilteredNode.crystal_instance_type_id},
+      }.each do |(name, type_id)|
+        io.printf("whatif     %-62s %12d objects\n", name, MemoryCensus.objects_of(type_id, 16).size)
       end
     end
   end
