@@ -1650,7 +1650,7 @@ module Crystal
         puts " - modules in flight at most: #{(pool.maximum_in_flight_bitcode_bytes / megabyte).round(1)} MB of bitcode, " \
              "estimated #{pool.maximum_in_flight_memory_bytes // megabyte} MB of worker memory " \
              "(budget #{pool.memory_budget_bytes // megabyte} MB)"
-        if longest_job = pool.longest_job
+        if longest_job = pool.list_of_longest_jobs.first?
           puts " - processor time of all object file jobs: #{pool.total_cpu_seconds.round(1)} s"
           puts " - longest object file job: #{longest_job.seconds.round(1)} s (#{longest_job.cpu_seconds.round(1)} s of processor time), " \
                "#{longest_job.name} (#{(longest_job.bitcode_bytesize / megabyte).round(1)} MB of bitcode)"

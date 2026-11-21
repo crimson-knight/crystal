@@ -32,11 +32,11 @@ module Crystal
     # The memory each allowed thread adds to the default budget, and the
     # share of the machine's memory the default budget stops at. With the
     # default segment limit (`Compiler#module_segment_instructions`) a
-    # worker's job other than the main module is estimated at 270 MB at
-    # most, so 512 MB per thread leaves every worker a full segment and
-    # room for the main module. The jobs of a 300-model Grant build with 8
-    # threads were never estimated above 3,534 MB together, and its workers
-    # held 2.9 GB at most.
+    # full segment is estimated at about 270 MB, so 512 MB per thread
+    # leaves every worker a full segment and room for the main module or a
+    # function too large for one segment. The jobs of a 300-model Grant
+    # build with 8 threads were never estimated above 3,534 MB together,
+    # and its workers held 2.9 GB at most.
     DEFAULT_MEMORY_BYTES_PER_THREAD = 512_i64 * 1024 * 1024
     DEFAULT_PHYSICAL_MEMORY_DIVISOR = 5
 
@@ -58,9 +58,6 @@ module Crystal
 
     # The processor time of all jobs together.
     getter total_cpu_seconds = 0.0
-
-    # The job that took the longest.
-    getter longest_job : JobReport?
 
     # How many of the longest jobs `#list_of_longest_jobs` keeps.
     LONGEST_JOB_COUNT = 5
@@ -197,8 +194,6 @@ module Crystal
     private def record_job_report(job : CodegenWorker::Job, seat : Seat) : Nil
       report = JobReport.new(job.name, job.bitcode_bytesize, seat.seconds_of_last_job, seat.cpu_seconds_of_last_job, seat.peak_memory_bytes)
       @total_cpu_seconds += report.cpu_seconds
-      longest_job = @longest_job
-      @longest_job = report if longest_job.nil? || report.seconds > longest_job.seconds
       @list_of_longest_jobs << report
       @list_of_longest_jobs.sort_by! { |job_report| -job_report.seconds }
       @list_of_longest_jobs.pop if @list_of_longest_jobs.size > LONGEST_JOB_COUNT

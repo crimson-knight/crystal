@@ -450,7 +450,7 @@ module Crystal
 
     # A builder for the module of *module_info*, in that module's context.
     def new_builder(module_info : ModuleInfo)
-      CrystalLLVMBuilder.new module_info.mod.context.new_builder, module_info.typer, -> { c_printf_fun }
+      CrystalLLVMBuilder.new module_info.mod.context.new_builder, module_info.typer, ->{ c_printf_fun }
     end
 
     # Here we only initialize simple constants, those
