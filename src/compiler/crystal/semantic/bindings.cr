@@ -2,62 +2,95 @@ module Crystal
   # Specialized container for ASTNodes to use for bindings tracking.
   #
   # The average number of elements in both dependencies and observers is below 2
-  # for ASTNodes. This struct inlines the first two elements saving up 4
-  # allocations per node (two arrays, with a header and buffer for each) but we
-  # need to pay a slight extra cost in memory upfront: a total of 6 pointers (48
-  # bytes) vs 2 pointers (16 bytes). The other downside is that since this is a
-  # struct, we need to be careful with mutation.
+  # for ASTNodes. This struct holds the first two elements inline, so a node
+  # with up to two dependencies or observers allocates nothing for them, and it
+  # costs two pointers (16 bytes) per list. The second slot holds either the
+  # second element or, from the third element on, an array with every element
+  # after the first. Since this is a struct, we need to be careful with mutation.
   struct SmallNodeList
     include Enumerable(ASTNode)
 
     @first : ASTNode?
-    @second : ASTNode?
-    @tail : Array(ASTNode)?
+    @rest : ASTNode | Array(ASTNode) | Nil
 
     def each(& : ASTNode ->)
       yield @first || return
-      yield @second || return
-      @tail.try(&.each { |node| yield node })
+      rest = @rest
+      if rest.is_a?(ASTNode)
+        yield rest
+        # The block may have pushed more elements: they now live in an array
+        # whose first element is the one just yielded.
+        rest = @rest
+        if rest.is_a?(Array(ASTNode))
+          index = 1
+          while index < rest.size
+            yield rest.unsafe_fetch(index)
+            index += 1
+          end
+        end
+      elsif rest.is_a?(Array(ASTNode))
+        rest.each { |node| yield node }
+      end
     end
 
     def size
       if @first.nil?
         0
-      elsif @second.nil?
-        1
-      elsif (tail = @tail).nil?
-        2
       else
-        2 + tail.size
+        rest = @rest
+        if rest.is_a?(Array(ASTNode))
+          1 + rest.size
+        elsif rest
+          2
+        else
+          1
+        end
       end
+    end
+
+    def empty? : Bool
+      @first.nil?
+    end
+
+    def first : ASTNode
+      @first || raise Enumerable::EmptyError.new
     end
 
     def push(node : ASTNode) : self
       if @first.nil?
         @first = node
-      elsif @second.nil?
-        @second = node
-      elsif (tail = @tail).nil?
-        @tail = [node] of ASTNode
       else
-        tail.push(node)
+        rest = @rest
+        if rest.is_a?(Array(ASTNode))
+          rest.push(node)
+        elsif rest
+          @rest = [rest, node] of ASTNode
+        else
+          @rest = node
+        end
       end
       self
     end
 
     def reject!(& : ASTNode ->) : self
-      if first = @first
-        if second = @second
-          if tail = @tail
-            tail.reject! { |node| yield node }
-          end
-          if yield second
-            @second = tail.try &.shift?
-          end
+      first = @first || return self
+      rest = @rest
+      if rest.is_a?(Array(ASTNode))
+        rest.reject! { |node| yield node }
+        if yield first
+          @first = rest.shift?
+        end
+        case rest.size
+        when 0 then @rest = nil
+        when 1 then @rest = rest.unsafe_fetch(0)
+        end
+      else
+        if rest && yield rest
+          @rest = rest = nil
         end
         if yield first
-          @first = @second
-          @second = tail.try &.shift?
+          @first = rest
+          @rest = nil
         end
       end
       self
@@ -73,8 +106,6 @@ module Crystal
     getter dependencies : SmallNodeList = SmallNodeList.new
     @observers : SmallNodeList = SmallNodeList.new
     property enclosing_call : Call?
-
-    @dirty = false
 
     @type : Type?
 

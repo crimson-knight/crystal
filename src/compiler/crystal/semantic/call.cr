@@ -5,12 +5,51 @@ require "./type_lookup"
 
 class Crystal::Call
   property! scope : Type
-  property with_scope : Type?
+  rare_property with_scope : Type?
   property! parent_visitor : MainVisitor
-  property target_defs : Array(Def)?
-  property expanded : ASTNode?
-  property expanded_macro : Macro?
-  property? uses_with_scope = false
+  # The defs this call resolved to. Nearly every call resolves to a single
+  # def, which is stored directly; only a dispatch over several defs (or an
+  # empty match list) keeps an array.
+  @target_defs : Def | Array(Def) | Nil
+
+  def target_defs : Array(Def)?
+    defs = @target_defs
+    defs.is_a?(Def) ? [defs] of Def : defs
+  end
+
+  def target_defs=(defs : Array(Def)?)
+    @target_defs = defs && defs.size == 1 ? defs.unsafe_fetch(0) : defs
+  end
+
+  # Yields each def this call resolved to, without building an array.
+  def each_target_def(& : Def ->) : Nil
+    defs = @target_defs
+    if defs.is_a?(Def)
+      yield defs
+    elsif defs
+      defs.each { |a_def| yield a_def }
+    end
+  end
+
+  rare_property expanded : ASTNode?
+  rare_property expanded_macro : Macro?
+  rare_property subclass_notifier : Type?
+
+  class RareFields
+    property? uses_with_scope = false
+  end
+
+  def uses_with_scope? : Bool
+    rare_fields = @rare_fields
+    rare_fields ? rare_fields.uses_with_scope? : false
+  end
+
+  def uses_with_scope=(value : Bool)
+    if value || @rare_fields
+      rare_fields.uses_with_scope = value
+    end
+    value
+  end
 
   class RetryLookupWithLiterals < ::Exception
     def initialize
@@ -23,13 +62,9 @@ class Crystal::Call
   end
 
   def target_def
-    if defs = @target_defs
-      if defs.size == 1
-        return defs.first
-      else
-        ::raise "#{defs.size} target defs for #{self}"
-      end
-    end
+    defs = @target_defs
+    return defs if defs.is_a?(Def)
+    ::raise "#{defs.size} target defs for #{self}" if defs
 
     ::raise "Zero target defs for #{self}"
   end
@@ -86,7 +121,7 @@ class Crystal::Call
 
     @target_defs = nil
 
-    if block_arg = @block_arg
+    if block_arg = self.block_arg
       replace_block_arg_with_block(block_arg)
     end
 
@@ -97,7 +132,7 @@ class Crystal::Call
 
     return if @target_defs
 
-    @target_defs = matches
+    self.target_defs = matches
 
     bind_to matches if matches
     bind_to block.break if block
@@ -195,7 +230,7 @@ class Crystal::Call
       lookup_super_matches(arg_types, named_args_types, with_autocast: with_autocast)
     elsif name == "previous_def"
       lookup_previous_def_matches(arg_types, named_args_types, with_autocast: with_autocast)
-    elsif with_scope = @with_scope
+    elsif with_scope = self.with_scope
       lookup_matches_with_scope_in with_scope, arg_types, named_args_types, with_autocast: with_autocast
     else
       lookup_matches_in scope, arg_types, named_args_types, with_autocast: with_autocast
@@ -247,11 +282,11 @@ class Crystal::Call
     end
 
     if matches.empty?
-      @uses_with_scope = false
+      self.uses_with_scope = false
       return lookup_matches_in scope, arg_types, named_args_types, with_autocast: with_autocast
     end
 
-    @uses_with_scope = true
+    self.uses_with_scope = true
     instantiate signature, matches, owner, self_type: nil, with_autocast: with_autocast
   end
 
@@ -276,11 +311,11 @@ class Crystal::Call
       defined_method_missing = owner.check_method_missing(signature, self)
       if defined_method_missing
         matches = owner.lookup_matches(signature, analyze_all: with_autocast)
-      elsif with_scope = @with_scope
+      elsif with_scope = self.with_scope
         defined_method_missing = with_scope.check_method_missing(signature, self)
         if defined_method_missing
           matches = with_scope.lookup_matches(signature, analyze_all: with_autocast)
-          @uses_with_scope = true
+          self.uses_with_scope = true
         end
       end
     end
@@ -775,7 +810,7 @@ class Crystal::Call
   end
 
   def in_macro_target(&)
-    if with_scope = @with_scope
+    if with_scope = self.with_scope
       macros = yield with_scope
       return macros if macros
     end
@@ -1150,8 +1185,8 @@ class Crystal::Call
 
   def obj_and_args_types_set?
     obj = @obj
-    block_arg = @block_arg
-    named_args = @named_args
+    block_arg = self.block_arg
+    named_args = self.named_args
 
     return false unless args.all? &.type?
     return false if obj && !obj.type?
@@ -1185,6 +1220,7 @@ class Crystal::Call
     end
 
     typed_def = untyped_def.clone
+    typed_def.share_signature_nodes_with(untyped_def)
     typed_def.owner = owner
     typed_def.original_owner = untyped_def.owner
 
@@ -1270,7 +1306,7 @@ class Crystal::Call
   end
 
   def attach_subclass_observer(type : Type)
-    if subclass_notifier = @subclass_notifier
+    if subclass_notifier = self.subclass_notifier
       # If the new notifier is a subtype of (or equal to) the current one,
       # keep observing the wider type. Migrating to the narrower type would
       # stop us from being woken when sibling subtypes are later added to
@@ -1280,7 +1316,7 @@ class Crystal::Call
     end
 
     type.as(SubclassObservable).add_subclass_observer(self)
-    @subclass_notifier = type
+    self.subclass_notifier = type
   end
 
   def super?

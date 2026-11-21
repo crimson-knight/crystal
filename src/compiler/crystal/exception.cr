@@ -11,6 +11,10 @@ module Crystal
 
     @filename : String | VirtualFile | Nil
 
+    # Keeps the virtual files of the program this error comes from alive for
+    # as long as the error lives (see `VirtualFile.current_program_files`).
+    @virtual_files : Array(VirtualFile)? = VirtualFile.current_program_files
+
     def to_s(io) : Nil
       to_s_with_source(io, nil)
     end
