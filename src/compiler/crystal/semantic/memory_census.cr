@@ -65,9 +65,16 @@ module Crystal
       census.run(main_node)
       if path == "-"
         census.print(STDERR, stage, live_bytes, stats.heap_size.to_i64)
+        census.print_inference_state(STDERR) if inference_report?
+        census.print_what_if(STDERR) if what_if?
       else
-        File.open(path, "a") { |file| census.print(file, stage, live_bytes, stats.heap_size.to_i64) }
+        File.open(path, "a") do |file|
+          census.print(file, stage, live_bytes, stats.heap_size.to_i64)
+          census.print_inference_state(file) if inference_report?
+          census.print_what_if(file) if what_if?
+        end
       end
+      exit 0 if what_if?
     end
 
     # Reports what `OwnerShapeSharing` shares. Runs after the cleanup stage,
