@@ -327,3 +327,18 @@ describe "CodeError" do
     message.should contain("def bad")
   end
 end
+
+describe "MetaVars in type inference" do
+  it "finds the variables of the first break of an endless while" do
+    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+      while true
+        a = 1
+        if 1 == 1
+          break
+        end
+        a = 'x'
+      end
+      a
+      CRYSTAL
+  end
+end

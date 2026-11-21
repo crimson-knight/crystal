@@ -2305,7 +2305,8 @@ module Crystal
           # the first break is different from the last x, we don't use the
           # latter's type upon exit (but exp2 itself may depend on exp4 if it
           # refers to x).
-          break_var = all_break_vars.try &.dig?(0, name)
+          first_break_vars = all_break_vars.try &.first?
+          break_var = first_break_vars.try &.[name]?
           unless break_var && !break_var.same?(while_var)
             after_while_var.bind_to(while_var)
             if before_cond_var
