@@ -841,11 +841,13 @@ module Crystal
       end
 
       private def mix_identity(type : Type?, reason : String) : Nil
+        @place = "#{@place.partition(" :: ")[0]} :: identity of #{type}" if @trace
         mix(type.try(&.object_id) || 0_u64)
         pin_if_mentions(type, reason)
       end
 
       private def mix_location(location : Location?) : Nil
+        @place = "#{@place.partition(" :: ")[0]} :: location #{location.try(&.expanded_location)}" if @trace
         if location
           mix(location.line_number)
           mix(location.expanded_location.to_s)
