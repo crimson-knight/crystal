@@ -77,6 +77,7 @@ class Crystal::Command
   # compiler's own main program passes it: a program that embeds the command
   # is not a compiler executable and compiles objects in-process.
   def self.run(options = ARGV, *, codegen_worker_executable : String? = nil)
+    GCTuning.configure_from_env
     new(options, codegen_worker_executable).run
   end
 

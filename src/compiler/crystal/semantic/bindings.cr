@@ -100,6 +100,28 @@ module Crystal
       nodes.each { |node| self.push(node) }
       self
     end
+
+    # Puts *new* in the place of the first element that is *old*, keeping
+    # every other element where it is, and says whether it found one. An
+    # iteration that is under way stays valid.
+    def replace_first(old : ASTNode, new : ASTNode) : Bool
+      if @first.same?(old)
+        @first = new
+        return true
+      end
+      rest = @rest
+      if rest.is_a?(Array(ASTNode))
+        index = rest.index { |node| node.same?(old) }
+        return false unless index
+        rest[index] = new
+        true
+      elsif rest.same?(old)
+        @rest = new
+        true
+      else
+        false
+      end
+    end
   end
 
   class ASTNode
@@ -307,10 +329,75 @@ module Crystal
     end
 
     def notify_observers
+      was_notifying_observers = notifying_observers?
+      self.notifying_observers = true
       @observers.try &.each &.update self
       @enclosing_call.try &.recalculate
       @observers.try &.each &.propagate
       @enclosing_call.try &.propagate
+      self.notifying_observers = was_notifying_observers
+    end
+
+    # Is `notify_observers` walking this node's observers right now? Taking
+    # an observer out of the list would make that walk skip one, so whoever
+    # wants to take one out leaves it alone while this is true. (When an
+    # error unwinds the walk this stays true, which only keeps a node alive.)
+    def notifying_observers? : Bool
+      @flags & NOTIFYING_OBSERVERS_FLAG != 0
+    end
+
+    private def notifying_observers=(value : Bool)
+      if value
+        @flags |= NOTIFYING_OBSERVERS_FLAG
+      else
+        @flags &= ~NOTIFYING_OBSERVERS_FLAG
+      end
+    end
+
+    # Bit 7 of `@flags`; `flag_property?` users take the low bits.
+    private NOTIFYING_OBSERVERS_FLAG = 0x80_u8
+
+    # Makes this node depend on *new* where it depended on *old*. The two
+    # have the same type, so this node's type stays as it is.
+    def replace_dependency(old : ASTNode, new : ASTNode) : Nil
+      @dependencies.replace_first(old, new)
+    end
+
+    # Takes this node out of a chain `observers -> self -> dependency`: every
+    # observer now depends on the dependency directly, and nothing reaches
+    # this node through type-inference edges any more. The caller makes sure
+    # this node has exactly one dependency and the same type as it, so no
+    # type changes.
+    #
+    # Returns false, changing nothing, when the node has no observers and the
+    # dependency is notifying its observers (see `notifying_observers?`).
+    def splice_out_of_bindings : Bool
+      dependency = @dependencies.first
+      observers = @observers
+      if observers.empty?
+        return false if dependency.notifying_observers?
+        dependency.remove_observer(self)
+      else
+        # The first observer takes this node's place in the dependency's
+        # list, the others go to its end: nothing in the list moves.
+        first = true
+        observers.each do |observer|
+          observer.replace_dependency(self, dependency)
+          if first
+            first = false
+            dependency.replace_observer(self, observer)
+          else
+            dependency.add_observer(observer)
+          end
+        end
+      end
+      @observers = SmallNodeList.new
+      @dependencies = SmallNodeList.new
+      true
+    end
+
+    protected def replace_observer(old : ASTNode, new : ASTNode) : Nil
+      @observers.replace_first(old, new) || @observers.push(new)
     end
 
     def update(from = nil)

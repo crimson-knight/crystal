@@ -1,5 +1,15 @@
 class Crystal::Call
   def recalculate_lib_call(obj_type)
+    # Typing a lib call looks variables up in the visitor that typed its
+    # surroundings (`out` arguments, and argument conversions that visit a
+    # copy of the argument), each time the call is typed again.
+    if parent_visitor = @parent_visitor
+      if parent_visitor.vars_released?
+        ::raise "BUG: lib call typed after its visitor released its variables"
+      end
+      parent_visitor.keeps_vars = true
+    end
+
     replace_splats
 
     old_target_defs = @target_defs

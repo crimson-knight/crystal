@@ -428,6 +428,12 @@ module Crystal
       matches = base_type_matches.matches
       changes = nil
 
+      # The matches of each subtype, in the order the subtypes are visited.
+      # They go before the matches found so far (see below); putting them
+      # together once, at the end, copies each match once instead of once
+      # per later subtype.
+      matches_by_subtype = nil
+
       # Traverse all subtypes
       instance_type.subtypes(base_type).each do |subtype|
         next if is_new && subtype.is_a?(GenericClassInstanceType) && subtype.abstract?
@@ -517,11 +523,20 @@ module Crystal
           else
             # We need to insert the matches before the previous ones
             # because subtypes are more specific matches
-            if matches
-              subtype_matches_matches.concat matches
-            end
-            matches = subtype_matches_matches
+            (matches_by_subtype ||= [] of Array(Match)) << subtype_matches_matches
           end
+        end
+      end
+
+      if matches_by_subtype
+        if matches.nil? && matches_by_subtype.size == 1
+          matches = matches_by_subtype.first
+        else
+          size = matches_by_subtype.sum(&.size) + (matches.try(&.size) || 0)
+          all_matches = Array(Match).new(size)
+          matches_by_subtype.reverse_each { |subtype_matches| all_matches.concat(subtype_matches) }
+          all_matches.concat(matches) if matches
+          matches = all_matches
         end
       end
 
