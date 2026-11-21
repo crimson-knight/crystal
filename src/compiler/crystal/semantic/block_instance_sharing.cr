@@ -326,6 +326,12 @@ module Crystal
     def lookup_block_def_instances(key : DefInstanceKey) : Array(Def)?
       @block_def_instances.try &.[key]?
     end
+
+    # Forgets the defs typed for calls with a block, once no call will be
+    # typed again (see `Program#release_semantic_only_data`).
+    def release_block_def_instances : Nil
+      @block_def_instances = nil
+    end
   end
 
   # What `MainVisitor#release_inference_state` did, for the memory census.

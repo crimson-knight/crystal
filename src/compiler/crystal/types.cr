@@ -229,6 +229,12 @@ module Crystal
       self
     end
 
+    # The virtual type of this type, if it can have one and one was ever
+    # asked for.
+    def existing_virtual_type : VirtualType?
+      nil
+    end
+
     def instance_type
       self
     end
@@ -1305,6 +1311,11 @@ module Crystal
       @virtual_type ||= VirtualType.new(program, self)
     end
 
+    # The virtual type of this type, if one was ever asked for.
+    def existing_virtual_type : VirtualType?
+      @virtual_type
+    end
+
     def class?
       true
     end
@@ -2188,6 +2199,11 @@ module Crystal
 
     def virtual_type!
       @virtual_type ||= VirtualType.new(program, self)
+    end
+
+    # The virtual type of this type, if one was ever asked for.
+    def existing_virtual_type : VirtualType?
+      @virtual_type
     end
 
     delegate depth, defs, superclass, macros, abstract?, struct?,

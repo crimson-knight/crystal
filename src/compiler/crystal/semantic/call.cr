@@ -21,6 +21,14 @@ class Crystal::Call
     @target_defs = defs && defs.size == 1 ? defs.unsafe_fetch(0) : defs
   end
 
+  # Drops what only type inference reads: the visitor that typed this call
+  # and the variables in scope before its block (see
+  # `InferenceEdgeReleaser`).
+  def release_inference_state : Nil
+    @parent_visitor = nil
+    self.before_vars = nil
+  end
+
   # Yields each def this call resolved to, without building an array.
   def each_target_def(& : Def ->) : Nil
     defs = @target_defs
