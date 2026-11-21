@@ -119,6 +119,12 @@ module Crystal
       @original_name || @name
     end
 
+    # See `Def#share_signature_nodes_with`.
+    def share_signature_nodes_with(source : Arg) : Nil
+      @restriction = source.restriction
+      @default_value = source.default_value
+    end
+
     def clone_without_location
       arg = previous_def
 
@@ -253,6 +259,26 @@ module Crystal
       Splat.match(self, objects) do |arg, arg_index, object, object_index|
         yield arg, arg_index, object, object_index
       end
+    end
+
+    # Makes this copy of *source* use *source*'s own argument restrictions,
+    # argument default values and return type.
+    #
+    # Type inference types a def instance's body in place, so each instance
+    # needs its own copy of the body. It only reads the restrictions, the
+    # default values and the return type, so every instance can share the
+    # ones of the def it was copied from.
+    def share_signature_nodes_with(source : Def) : Nil
+      args.each_with_index do |arg, index|
+        arg.share_signature_nodes_with(source.args[index])
+      end
+      if (double_splat = self.double_splat) && (source_double_splat = source.double_splat)
+        double_splat.share_signature_nodes_with(source_double_splat)
+      end
+      if (block_arg = self.block_arg) && (source_block_arg = source.block_arg)
+        block_arg.share_signature_nodes_with(source_block_arg)
+      end
+      self.return_type = source.return_type
     end
 
     def free_var?(node : Path)
@@ -703,11 +729,11 @@ module Crystal
     # collector's 32, 64, 128 and 256 byte cells.
     private def small_capacity(size : Int32) : Int32
       case size
-      when 0     then 0
-      when 1     then 1
-      when 2..3  then 3
-      when 4..7  then 7
-      else            SMALL_LIMIT
+      when 0    then 0
+      when 1    then 1
+      when 2..3 then 3
+      when 4..7 then 7
+      else           SMALL_LIMIT
       end
     end
 

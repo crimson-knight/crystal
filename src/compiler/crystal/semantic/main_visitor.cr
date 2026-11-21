@@ -152,7 +152,8 @@ module Crystal
     @inside_is_a = false
     @in_type_args = 0
 
-    @while_stack = [] of While
+    # Created by the first `while`: most defs have none.
+    @while_stack : Array(While)?
     @type_filters : TypeFilters?
     @needs_type_filters = 0
     @typeof_nest = 0
@@ -2226,7 +2227,7 @@ module Crystal
       @type_filters = nil
       @block, old_block = nil, @block
 
-      @while_stack.push node
+      (@while_stack ||= [] of While).push node
 
       with_block_kind :while do
         node.body.accept self
@@ -2236,7 +2237,7 @@ module Crystal
       endless_while = cond.true_literal?
       merge_while_vars endless_while, before_cond_vars_copy, before_cond_vars, after_cond_vars, after_cond_vars_nil_if_read, node.break_vars
 
-      @while_stack.pop
+      @while_stack.try &.pop
       @block = old_block
       @while_vars = old_while_vars
 
@@ -2414,7 +2415,7 @@ module Crystal
         block.break.bind_to(node_exp_or_nil_literal(node))
 
         bind_vars @vars, block.after_vars, block.args
-      elsif target_while = @while_stack.last?
+      elsif target_while = @while_stack.try &.last?
         node.target = target_while
 
         break_vars = (target_while.break_vars ||= [] of MetaVars)
@@ -2445,7 +2446,7 @@ module Crystal
 
         bind_vars @vars, block.vars
         bind_vars @vars, block.after_vars, block.args
-      elsif target_while = @while_stack.last?
+      elsif target_while = @while_stack.try &.last?
         node.target = target_while
 
         bind_vars @vars, @while_vars
@@ -3628,7 +3629,8 @@ module Crystal
     end
 
     def inside_while?
-      !@while_stack.empty?
+      while_stack = @while_stack
+      !while_stack.nil? && !while_stack.empty?
     end
 
     def lookup_class_var(node)

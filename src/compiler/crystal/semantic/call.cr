@@ -1220,6 +1220,7 @@ class Crystal::Call
     end
 
     typed_def = untyped_def.clone
+    typed_def.share_signature_nodes_with(untyped_def)
     typed_def.owner = owner
     typed_def.original_owner = untyped_def.owner
 
