@@ -47,6 +47,33 @@ class Crystal::CodeGenVisitor
     end
   end
 
+  # Converts a call's receiver or argument to the type the target def was
+  # typed with. A `@[TypeOnce]` def can declare a wider type than the
+  # call passes, which is an upcast; every other def gets the usual downcast.
+  private def type_once_cast(target_def : Def, value : LLVM::Value, to_type : Type, from_type : Type) : LLVM::Value
+    if target_def.type_once?
+      from = from_type.remove_indirection
+      to = to_type.remove_indirection
+      if from != to && !from.is_a?(VoidType) && type_once_upcast?(from, to)
+        return upcast(value, to_type, from_type)
+      end
+    end
+    downcast(value, to_type, from_type, true)
+  end
+
+  private def type_once_upcast?(from : Type, to : Type) : Bool
+    if from.is_a?(UnionType)
+      to.is_a?(UnionType) && from.union_types.all? { |member| to.union_types.includes?(member) || to.union_types.any? { |wide| type_once_upcast?(member, wide) } }
+    elsif to.is_a?(UnionType)
+      to.union_types.includes?(from) || to.union_types.any? { |wide| wide.is_a?(VirtualType) && type_once_upcast?(from, wide) }
+    elsif to.is_a?(VirtualType)
+      from = from.base_type if from.is_a?(VirtualType)
+      from.implements?(to.base_type)
+    else
+      false
+    end
+  end
+
   def prepare_call_args_non_external(node, target_def, owner)
     is_primitive = target_def.body.is_a?(Primitive)
 
@@ -76,7 +103,7 @@ class Crystal::CodeGenVisitor
         call_args << llvm_nil
       else
         if obj && obj.type.passed_as_self?
-          call_args << downcast(@last, target_def.owner, obj.type, true)
+          call_args << type_once_cast(target_def, @last, target_def.owner, obj.type)
         else
           if node.uses_with_scope? && (yield_scope = context.vars["%scope"]?)
             call_args << downcast(yield_scope.pointer, target_def.owner, node.with_scope.not_nil!, true)
@@ -98,13 +125,17 @@ class Crystal::CodeGenVisitor
       else
         call_arg = @last
         call_arg = llvm_nil if arg.type.nil_type?
-        call_arg = downcast(call_arg, def_arg.type, arg.type, true)
+        call_arg = type_once_cast(target_def, call_arg, def_arg.type, arg.type)
       end
+
+      # A `@[TypeOnce]` parameter can be wider than the argument: the value is
+      # then passed in the parameter's representation.
+      passed_type = target_def.type_once? ? def_arg.type : arg.type
 
       # - C calling convention passing needs a separate handling of pass-by-value
       # - Primitives might need a separate handling (for example invoking a Proc)
-      if arg.type.passed_by_value? && !c_calling_convention && !is_primitive
-        call_arg = load(llvm_type(arg.type), call_arg)
+      if passed_type.passed_by_value? && !c_calling_convention && !is_primitive
+        call_arg = load(llvm_type(passed_type), call_arg)
       end
 
       call_args << call_arg

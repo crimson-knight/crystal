@@ -162,6 +162,12 @@ module Crystal
     # `true` if this def has the `@[AlwaysInline]` annotation
     property? always_inline = false
 
+    # `true` if this def has the `@[TypeOnce]` annotation. A typed copy of
+    # such a def can be typed against the declared types (see
+    # `Call#type_once_match`), so its receiver and parameters can be wider
+    # than a call's.
+    property? type_once = false
+
     # `true` if this def has the `@[ReturnsTwice]` annotation
     property? returns_twice = false
 
@@ -242,6 +248,7 @@ module Crystal
       a_def.raises = raises?
       a_def.no_inline = no_inline?
       a_def.always_inline = always_inline?
+      a_def.type_once = type_once?
       a_def.returns_twice = returns_twice?
       a_def.target_features = target_features
       a_def.target_cpu = target_cpu

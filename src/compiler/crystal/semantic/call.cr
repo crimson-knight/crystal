@@ -492,8 +492,15 @@ class Crystal::Call
 
     typed_defs = Array(Def).new(matches.size)
 
+    single_match = matches.size == 1
+
     matches.each do |match|
       check_visibility match
+
+      # A `@[TypeOnce]` def is typed for the types it declares.
+      called_match = match
+      match = type_once_match(match, self_type, single_match)
+      typed_once = !match.same?(called_match)
 
       yield_vars, block_arg_type = match_block_arg(match)
       use_cache = !block || match.def.block_arg
@@ -538,9 +545,17 @@ class Crystal::Call
         end
       end
 
+      newly_typed_def = nil
       unless typed_def
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
+        newly_typed_def = typed_def
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
+        # Later calls can reach this copy with narrower types than it declares.
+        typed_def.type_once = match.def.type_once?
+        program.type_once_typed += 1 if typed_once
+        if records = program.instantiation_records
+          records[typed_def.object_id] = InstantiationRecord.new(match.def, self_type || match_owner, match.arg_types, named_args_types, block_type, !use_cache)
+        end
         if block && shares_block_instance
           restriction = match.def.block_arg.try(&.restriction)
           block_return_type_declared = restriction.is_a?(ProcNotation) ? !restriction.output.nil? : !restriction.nil?
@@ -591,6 +606,7 @@ class Crystal::Call
         block_instance.ready = true if block_instance
       end
 
+      program.type_once_reused += 1 if typed_once && !typed_def.same?(newly_typed_def)
       typed_defs << typed_def
     end
 

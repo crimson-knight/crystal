@@ -67,11 +67,13 @@ module Crystal
       if path == "-"
         census.print(STDERR, stage, live_bytes, stats.heap_size.to_i64)
         census.print_inference_state(STDERR) if inference_report?
+        census.print_copy_causes(STDERR)
         census.print_what_if(STDERR) if what_if?
       else
         File.open(path, "a") do |file|
           census.print(file, stage, live_bytes, stats.heap_size.to_i64)
           census.print_inference_state(file) if inference_report?
+          census.print_copy_causes(file)
           census.print_what_if(file) if what_if?
         end
       end

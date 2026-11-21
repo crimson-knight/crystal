@@ -43,6 +43,8 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     filename = node.string
     relative_to = location.try &.original_filename
 
+    @program.record_strict_require(filename, relative_to)
+
     # Remember that the program depends on this require
     @program.record_require(filename, relative_to)
 
