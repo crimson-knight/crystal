@@ -26,6 +26,8 @@ module Crystal
     @class_stats = Hash(String, ClassStat).new
     @in_signature = false
     @rare_fields_count = 0_i64
+    @meta_vars_count = 0_i64
+    @meta_vars_bytes = 0_i64
     @rare_fields_bytes = 0_i64
     @signature_nodes = 0_i64
     @signature_bytes = 0_i64
@@ -115,6 +117,14 @@ module Crystal
 
     def owned_bytes(value : Hash(K, V)) : Int64 forall K, V
       gc_bytes(value.as(Void*)) + gc_bytes(value.@entries.as(Void*)) + gc_bytes(value.@indices.as(Void*))
+    end
+
+    def owned_bytes(value : MetaVars) : Int64
+      @meta_vars_count += 1
+      large = value.@large
+      bytes = gc_bytes(value.as(Void*)) + gc_bytes(value.@entries.as(Void*)) + (large ? owned_bytes(large) : 0_i64)
+      @meta_vars_bytes += bytes
+      bytes
     end
 
     def owned_bytes(value : String) : Int64
@@ -227,6 +237,7 @@ module Crystal
     private def print_field_stats(io : IO) : Nil
       io.printf("shared   %-48s %12d objects %10.1f MB\n", "typed def signatures (args, return type)", @signature_nodes, @signature_bytes / 1e6)
       io.printf("shared   %-48s %12d objects %10.1f MB\n", "rare-fields side objects of calls and defs", @rare_fields_count, @rare_fields_bytes / 1e6)
+      io.printf("shared   %-48s %12d objects %10.1f MB\n", "MetaVars maps owned by defs, blocks and calls", @meta_vars_count, @meta_vars_bytes / 1e6)
       io.printf("shared   %-48s %12d objects %10.1f MB\n", "Location objects (each counted once)", @location_count, @location_bytes / 1e6)
       io.printf("shared   %-48s %12d objects %10.1f MB\n", "String objects owned by nodes and types", @string_count, @string_bytes / 1e6)
       {"dependencies" => @dependency_sizes, "observers" => @observer_sizes}.each do |name, sizes|

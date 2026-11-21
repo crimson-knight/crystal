@@ -432,16 +432,16 @@ module Crystal
 
   class If
     # This is set to `true` for an `If` that was created from an `&&` expression.
-    property? and = false
+    flag_property? and, 1
 
     # This is set to `true` for an `If` that was created from an `||` expression.
-    property? or = false
+    flag_property? or, 2
 
     # This is set to `true` when the compiler is sure that the condition is truthy
-    property? truthy = false
+    flag_property? truthy, 3
 
     # This is set to `true` when the compiler is sure that the condition is falsey
-    property? falsey = false
+    flag_property? falsey, 4
 
     def clone_without_location
       a_if = previous_def
@@ -558,7 +558,189 @@ module Crystal
     end
   end
 
-  alias MetaVars = Hash(String, MetaVar)
+  # The variables of a def, a block or a visitor by name, in insertion order.
+  #
+  # Every typed def instance and every call with a block holds several of
+  # these, and most hold a handful of variables. This is a compact stand-in
+  # for `Hash(String, MetaVar)`: up to `SMALL_LIMIT` entries live in one flat
+  # buffer that is searched linearly, and a hash takes over beyond that.
+  class MetaVars
+    include Enumerable({String, MetaVar})
+
+    private SMALL_LIMIT = 15
+
+    @size : Int32 = 0
+    @entries : Pointer({String, MetaVar}) = Pointer({String, MetaVar}).null
+    @large : Hash(String, MetaVar)?
+
+    def size : Int32
+      large = @large
+      large ? large.size : @size
+    end
+
+    def empty? : Bool
+      size == 0
+    end
+
+    def []?(name : String) : MetaVar?
+      if large = @large
+        return large[name]?
+      end
+      index = small_index(name)
+      index ? @entries[index][1] : nil
+    end
+
+    def [](name : String) : MetaVar
+      self[name]? || raise KeyError.new("Missing variable: #{name}")
+    end
+
+    def has_key?(name : String) : Bool
+      !self[name]?.nil?
+    end
+
+    def []=(name : String, var : MetaVar) : MetaVar
+      if large = @large
+        return large[name] = var
+      end
+
+      if index = small_index(name)
+        @entries[index] = {name, var}
+      elsif @size == SMALL_LIMIT
+        large = Hash(String, MetaVar).new(initial_capacity: SMALL_LIMIT * 2)
+        @size.times do |i|
+          key, value = @entries[i]
+          large[key] = value
+        end
+        large[name] = var
+        release_entries
+        @large = large
+      else
+        grow if @size == small_capacity(@size)
+        @entries[@size] = {name, var}
+        @size += 1
+      end
+      var
+    end
+
+    def delete(name : String) : MetaVar?
+      if large = @large
+        return large.delete(name)
+      end
+
+      index = small_index(name)
+      return unless index
+
+      var = @entries[index][1]
+      (@entries + index).move_from(@entries + index + 1, @size - index - 1)
+      @size -= 1
+      (@entries + @size).clear
+      var
+    end
+
+    def each(& : {String, MetaVar} ->) : Nil
+      if large = @large
+        large.each { |entry| yield entry }
+      else
+        # The block may add variables, which can replace the buffer.
+        i = 0
+        while i < @size
+          yield @entries[i]
+          i += 1
+        end
+      end
+    end
+
+    def each_key(& : String ->) : Nil
+      each { |(name, _)| yield name }
+    end
+
+    def each_value(& : MetaVar ->) : Nil
+      each { |(_, var)| yield var }
+    end
+
+    def keys : Array(String)
+      map { |(name, _)| name }
+    end
+
+    # The name of the variable added last.
+    def last_key : String
+      if large = @large
+        large.last_key
+      elsif @size > 0
+        @entries[@size - 1][0]
+      else
+        raise Enumerable::EmptyError.new
+      end
+    end
+
+    def values : Array(MetaVar)
+      map { |(_, var)| var }
+    end
+
+    def dup : MetaVars
+      copy = MetaVars.new
+      copy.initialize_copy(self)
+      copy
+    end
+
+    def clone : MetaVars
+      copy = MetaVars.new
+      each { |(name, var)| copy[name] = var.clone }
+      copy
+    end
+
+    protected def initialize_copy(other : MetaVars) : Nil
+      if large = other.@large
+        @large = large.dup
+      elsif other.@size > 0
+        @size = other.@size
+        @entries = Pointer({String, MetaVar}).malloc(small_capacity(@size))
+        @entries.copy_from(other.@entries, @size)
+      end
+    end
+
+    # The buffer holds 1, 3, 7 or 15 entries: the sizes that fill the
+    # collector's 32, 64, 128 and 256 byte cells.
+    private def small_capacity(size : Int32) : Int32
+      case size
+      when 0     then 0
+      when 1     then 1
+      when 2..3  then 3
+      when 4..7  then 7
+      else            SMALL_LIMIT
+      end
+    end
+
+    private def grow : Nil
+      entries = Pointer({String, MetaVar}).malloc(small_capacity(@size + 1))
+      entries.copy_from(@entries, @size)
+      release_entries
+      @entries = entries
+    end
+
+    private def release_entries : Nil
+      GC.free(@entries.as(Void*)) unless @entries.null?
+      @entries = Pointer({String, MetaVar}).null
+    end
+
+    # Variable names come from the parser's string pool, so the same name is
+    # nearly always the same object: look for that first.
+    private def small_index(name : String) : Int32?
+      entries = @entries
+      size = @size
+      i = 0
+      while i < size
+        return i if entries[i][0].same?(name)
+        i += 1
+      end
+      i = 0
+      while i < size
+        return i if entries[i][0] == name
+        i += 1
+      end
+      nil
+    end
+  end
 
   # A variable belonging to a type: a global,
   # class or instance variable (globals belong to the program).

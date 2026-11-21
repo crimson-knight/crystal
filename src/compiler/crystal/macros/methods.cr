@@ -1687,7 +1687,7 @@ module Crystal
           visibility_to_symbol(@visibility)
         end
       when "abstract?"
-        interpret_check_args { BoolLiteral.new(@abstract) }
+        interpret_check_args { BoolLiteral.new(abstract?) }
       when "annotation"
         fetch_annotation(self, method, args, named_args, block) do |type|
           self.annotation(type)
@@ -2489,7 +2489,7 @@ module Crystal
       when "block_arg"
         interpret_check_args { self.block_arg || Nop.new }
       when "global?"
-        interpret_check_args { BoolLiteral.new(@global) }
+        interpret_check_args { BoolLiteral.new(global?) }
       else
         super
       end
