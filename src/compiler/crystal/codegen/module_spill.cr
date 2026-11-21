@@ -21,11 +21,15 @@ module Crystal
   # optimizer sees the module it would have seen without spilling.
   class ModuleSpill
     # An estimate of the memory LLVM holds for a module, from what is cheap
-    # to count: a fixed amount for the context, and an amount for each
-    # instruction the code generator built (instructions carry their
-    # operands, debug locations and a share of the types and declarations).
-    BYTES_PER_MODULE            = 65_536_i64
-    BYTES_PER_BUILT_INSTRUCTION =    300_i64
+    # to count: a fixed amount for the context with its types and
+    # declarations, and an amount for each instruction the code generator
+    # built (instructions carry their operands and debug locations).
+    #
+    # Measured on a program of 300 Grant models (7,962 modules, 35.6 million
+    # instructions, about 10 GB of IR): about 280 bytes per instruction, and
+    # about 230 KB per module in memory on top of that.
+    BYTES_PER_MODULE            = 262_144_i64
+    BYTES_PER_BUILT_INSTRUCTION =     300_i64
 
     # How many idle modules stay in memory (0: as many as fit in the bytes).
     getter resident_limit : Int32
@@ -52,6 +56,13 @@ module Crystal
 
     # How many types have a module of more than one part.
     getter multi_part_module_count = 0
+
+    # How many functions of spilled parts have a recorded signature.
+    getter recorded_signature_count = 0
+
+    def record_signature : Nil
+      @recorded_signature_count += 1
+    end
 
     def initialize(@resident_limit : Int32, @resident_ir_bytes : Int64, @target_triple : String, &@bitcode_path : String, Int32 -> String)
     end
@@ -239,7 +250,10 @@ module Crystal
     # about to be spilled.
     private def record_fun_signature(mangled_name : String, func : LLVMTypedFunction) : Nil
       signatures = fun_signatures
-      declare_fun(mangled_name, func, signatures) unless typed_fun?(signatures, mangled_name)
+      return if typed_fun?(signatures, mangled_name)
+
+      declare_fun(mangled_name, func, signatures)
+      @module_spill.try &.record_signature
     end
 
     # The module that `@llvm_mod` or `@main_mod` is.

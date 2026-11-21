@@ -216,7 +216,7 @@ describe "Compiler#resident_modules and Compiler#resident_ir_megabytes" do
       module_spill = compiler.last_module_spill.should_not be_nil
       module_spill.spill_count.should be > 100
       module_spill.multi_part_module_count.should be > 10
-      module_spill.peak_resident_ir_bytes.should be < 16 * 1024 * 1024
+      module_spill.peak_resident_ir_bytes.should be < 32 * 1024 * 1024
       Process.capture(executable).should eq(MODULE_SPILL_PROGRAM_OUTPUT)
     end
   end

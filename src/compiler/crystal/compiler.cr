@@ -193,8 +193,11 @@ module Crystal
     # optimized program is the same whatever the number of parts.
     property release_units : Int32 = 8
 
-    # The default of `#resident_ir_megabytes`.
-    DEFAULT_RESIDENT_IR_MEGABYTES = 0
+    # The default of `#resident_ir_megabytes`. A program of 300 Grant models
+    # (about 10 GB of IR) generates its IR in the same time with 256 MB as
+    # with 4 GB in memory, and peaks that much lower. One gigabyte leaves
+    # programs of up to about three million instructions entirely in memory.
+    DEFAULT_RESIDENT_IR_MEGABYTES = 1024
 
     # How many megabytes of LLVM IR (an estimate, see `ModuleSpill`) stay in
     # memory while LLVM IR is generated in multi-module mode. A program has
@@ -1571,6 +1574,7 @@ module Crystal
       puts " - instructions built: #{module_spill.built_instruction_count}"
       puts " - module parts written to disk: #{module_spill.spill_count} (#{module_spill.written_bitcode_bytes // megabyte} MB, #{module_spill.write_time.total_seconds.round(1)} s)"
       puts " - modules made of several parts: #{module_spill.multi_part_module_count}"
+      puts " - function signatures recorded: #{module_spill.recorded_signature_count}"
       STDOUT.flush
     end
 
