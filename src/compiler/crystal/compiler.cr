@@ -207,11 +207,11 @@ module Crystal
     property release_units : Int32 = 8
 
     # The default of `#resident_ir_megabytes`. A program of 300 Grant models
-    # (about 10 GB of IR) generates its IR as fast with 1 GB in memory as
-    # with 4 GB, and its peak is lower by the difference. One gigabyte
-    # leaves a program of up to a few thousand modules and about three
-    # million instructions entirely in memory.
-    DEFAULT_RESIDENT_IR_MEGABYTES = 1024
+    # (about 10 GB of IR) generates its IR in the same time with 256 MB in
+    # memory as with 1 GB, and its peak is lower by about 1.3 GB. This
+    # leaves a program of up to about a thousand modules and under a million
+    # instructions entirely in memory.
+    DEFAULT_RESIDENT_IR_MEGABYTES = 256
 
     # How many megabytes of LLVM IR (an estimate, see `ModuleSpill`) stay in
     # memory while LLVM IR is generated in multi-module mode. A program has
