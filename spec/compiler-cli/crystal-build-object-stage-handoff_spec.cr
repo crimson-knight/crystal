@@ -163,4 +163,39 @@ describe "`crystal build` with the object stage handoff" do
       end
     end
   end
+
+  it "hands over an incremental build, whose cache takes effect once the executable is linked" do
+    with_tempfile("handoff-incremental-cache", "handoff-incremental-program") do |cache_dir, program_dir|
+      with_temp_executable "handoff-incremental" do |output_path|
+        Dir.mkdir_p(program_dir)
+        program_path = File.join(program_dir, "program.cr")
+        build_program = ->(list_of_extra_args : Array(String)) do
+          list_of_arguments = [crystal, "build", "--incremental", "--threads", "4", "--stats"] + list_of_extra_args + ["-o", output_path, program_path]
+          Process.capture_result(list_of_arguments, env: {"CRYSTAL_CACHE_DIR" => cache_dir})
+        end
+
+        File.write(program_path, "class Greeter\n  def greeting(count)\n    count > 0 ? \"hello again\" : \"hello\"\n  end\nend\nputs Greeter.new.greeting(ARGV.size)\n")
+        first_build = build_program.call([] of String).should(be_success)
+        first_build.output.should contain(HANDOFF_STATS_LINE)
+        first_build.output.should contain("Parse cache:")
+        list_of_cache_files(cache_dir, "incremental_cache.json").size.should eq(1)
+        list_of_cache_files(cache_dir, "incremental_cache.pending.json").should be_empty
+        Process.capture_result(output_path).should(be_success).output.should eq("hello\n")
+
+        unchanged_build = build_program.call([] of String).should(be_success)
+        unchanged_build.output.should contain("No source changes detected")
+
+        # The edited program fails to link: the cache of the first build
+        # stays, so the next build compiles the edit instead of keeping the
+        # executable of the first build.
+        File.write(program_path, "class Greeter\n  def greeting(count)\n    count > 0 ? \"goodbye again\" : \"goodbye\"\n  end\nend\nputs Greeter.new.greeting(ARGV.size)\n")
+        File.touch(program_path, Time.utc + 5.seconds)
+        build_program.call(["--link-flags=-lobject_stage_handoff_spec_missing_library"]).should(be_failure)
+
+        edited_build = build_program.call([] of String).should(be_success)
+        edited_build.output.should_not contain("No source changes detected")
+        Process.capture_result(output_path).should(be_success).output.should eq("goodbye\n")
+      end
+    end
+  end
 end

@@ -170,7 +170,7 @@ module Crystal
       visitor.run_peak_probe(node) if PeakProbe.enabled?
       visitor.report_owner_shape_sharing
 
-      {visitor.modules, visitor.module_source_files}
+      visitor.modules
     end
 
     def llvm_id
@@ -300,19 +300,13 @@ module Crystal
     @c_malloc_fun : LLVMTypedFunction?
     @c_realloc_fun : LLVMTypedFunction?
 
-    # Tracks which source files contribute methods/defs to each LLVM module.
-    # Module name => set of source filenames. Used for incremental compilation:
-    # if all contributing files are unchanged, the module's cached .o can be reused
-    # without regenerating LLVM IR.
-    getter module_source_files = Hash(String, Set(String)).new
-
     def initialize(@program : Program, @node : ASTNode,
                    @single_module : Bool = false,
                    @debug = Debug::Default,
                    @frame_pointers : FramePointers = :auto,
                    @llvm_context : LLVM::Context = LLVM::Context.new)
       @abi = ABI.from(@program.target_machine)
-      if @program.share_owner_shapes? && !@program.compiler.try(&.incremental?)
+      if @program.share_owner_shapes?
         @owner_shape_sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
       end
       # LLVM::Context.register(@llvm_context, "main")
