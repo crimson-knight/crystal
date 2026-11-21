@@ -1,4 +1,5 @@
 require "./memory_census"
+require "./main_visitor"
 
 module Crystal
   # The part of the memory census that looks at type-inference state: the
@@ -172,7 +173,7 @@ module Crystal
     end
   end
 
-  class MainVisitor
+  class MainVisitor < SemanticVisitor
     def census_drop_vars : Nil
       @vars = MetaVars.new
     end
