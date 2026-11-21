@@ -22,6 +22,9 @@ module Crystal
   #
   # * `CRYSTAL_NODE_POOLS=1` turns the pools on (off by default).
   # * `CRYSTAL_NODE_POOL_CHUNK_KB=N` sets the chunk size (default 256).
+  # * `CRYSTAL_NODE_POOL_SHARED=1` makes all pooled classes share one pool, so
+  #   nodes sit in the order they were made whatever their class (a def's
+  #   cloned body is then contiguous, in the order a visitor walks it).
   # * `CRYSTAL_NODE_POOL_TRACE=1` counts, per pool and stage, the chunks
   #   started and the chunks the collector freed, and prints them to standard
   #   error when a stage ends.
@@ -40,6 +43,7 @@ module Crystal
 
     class_property? enabled : Bool = ENV["CRYSTAL_NODE_POOLS"]? == "1"
     class_getter? traced : Bool = ENV["CRYSTAL_NODE_POOL_TRACE"]? == "1"
+    class_getter? shared : Bool = ENV["CRYSTAL_NODE_POOL_SHARED"]? == "1"
     class_getter chunk_bytes : Int32 = begin
       chunk_kb = ENV["CRYSTAL_NODE_POOL_CHUNK_KB"]?.try(&.to_i?) || DEFAULT_CHUNK_KB
       chunk_kb = DEFAULT_CHUNK_KB if chunk_kb < 16
@@ -51,6 +55,9 @@ module Crystal
     class_property? allocating_for_codegen : Bool = false
 
     class_getter list_of_pools = [] of Pool
+
+    # The one pool every pooled class uses when `shared?`.
+    class_getter shared_pool : Pool { Pool.new("shared", 8) }
     class_getter list_of_stage_names = ["start"]
 
     # Makes every pool start a new chunk: nodes made from here on belong to
@@ -115,14 +122,15 @@ module Crystal
         NodePool.list_of_pools << self
       end
 
-      # The memory for the next instance: zeroed, `slot_bytes` long.
+      # The memory for the next instance: zeroed, *bytes* long (a multiple
+      # of 8).
       @[AlwaysInline]
-      def next_slot : Pointer(UInt8)
+      def next_slot(bytes : Int32 = @slot_bytes) : Pointer(UInt8)
         slot = @cursor
-        following = slot + @slot_bytes
+        following = slot + bytes
         if following > @chunk_end
           slot = start_chunk
-          following = slot + @slot_bytes
+          following = slot + bytes
         end
         @cursor = following
         slot
@@ -167,7 +175,8 @@ module Crystal
 
       def self.allocate : self
         if ::Crystal::NodePool.enabled?
-          pre_initialize(NODE_POOL.next_slot)
+          pool = ::Crystal::NodePool.shared? ? ::Crystal::NodePool.shared_pool : NODE_POOL
+          pre_initialize(pool.next_slot(NODE_POOL.slot_bytes))
         else
           pre_initialize(::GC.malloc(instance_sizeof({{ @type }}).to_u64))
         end
@@ -184,7 +193,8 @@ module Crystal
       def self.allocate : self
         if ::Crystal::NodePool.enabled?
           pool = ::Crystal::NodePool.allocating_for_codegen? ? NODE_POOL : INFERENCE_NODE_POOL
-          pre_initialize(pool.next_slot)
+          pool = ::Crystal::NodePool.shared_pool if ::Crystal::NodePool.shared?
+          pre_initialize(pool.next_slot(NODE_POOL.slot_bytes))
         else
           pre_initialize(::GC.malloc(instance_sizeof({{ @type }}).to_u64))
         end
