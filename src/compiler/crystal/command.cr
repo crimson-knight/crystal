@@ -607,7 +607,7 @@ class Crystal::Command
         opts.on("--single-module", "Generate a single LLVM module") do
           compiler.single_module = true
         end
-        opts.on("--module-groups NUM", "Group the per-type LLVM modules into NUM modules (0 keeps one module per type)") do |module_groups|
+        opts.on("--module-groups NUM", "Group the per-type LLVM modules into NUM modules (default 256, 0 keeps one module per type)") do |module_groups|
           compiler.module_groups = module_groups.to_i? || raise Error.new("Invalid module group count: #{module_groups}")
         end
         opts.on("--threads NUM", "Maximum number of threads to use") do |n_threads|
@@ -769,7 +769,7 @@ class Crystal::Command
     opts.on("--single-module", "Generate a single LLVM module") do
       compiler.single_module = true
     end
-    opts.on("--module-groups NUM", "Group the per-type LLVM modules into NUM modules (0 keeps one module per type)") do |module_groups|
+    opts.on("--module-groups NUM", "Group the per-type LLVM modules into NUM modules (default 256, 0 keeps one module per type)") do |module_groups|
       compiler.module_groups = module_groups.to_i? || raise Error.new("Invalid module group count: #{module_groups}")
     end
     opts.on("--threads NUM", "Maximum number of threads to use") do |n_threads|
