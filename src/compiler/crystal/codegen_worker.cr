@@ -62,7 +62,17 @@ module Crystal
       getter name : String = ""
       getter bitcode_bytesize : Int64 = 0_i64
 
-      def initialize(@bitcode_filename, @object_filename, @llvm_ir_filename = nil,
+      # True for a module that nothing verified before it was written (one
+      # that IR generation spilled to disk): the worker verifies it.
+      getter verifies_module : Bool = false
+
+      # The bitcode files of the module's other parts, linked into the
+      # module of `bitcode_filename` (for a module that IR generation
+      # spilled to disk in several parts).
+      getter list_of_more_bitcode_filenames : Array(String) = [] of String
+
+      def initialize(@bitcode_filename, @object_filename, @llvm_ir_filename = nil, @verifies_module = false,
+                     @list_of_more_bitcode_filenames = [] of String,
                      @name = bitcode_filename, @bitcode_bytesize = 0_i64)
       end
     end
@@ -97,7 +107,8 @@ module Crystal
     end
 
     private def compile(compiler : Compiler, job : Job) : Outcome
-      compiler.compile_bitcode_file_to_object(job.bitcode_filename, job.object_filename, job.llvm_ir_filename)
+      compiler.compile_bitcode_file_to_object(job.bitcode_filename, job.object_filename, job.llvm_ir_filename, job.verifies_module,
+        job.list_of_more_bitcode_filenames)
       Outcome.new
     rescue ex
       Outcome.new(error_message: "#{job.bitcode_filename}: #{ex.message} (#{ex.class})")

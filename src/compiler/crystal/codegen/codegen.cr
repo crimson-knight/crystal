@@ -153,10 +153,15 @@ module Crystal
     end
 
     def codegen(node, single_module = false, debug = Debug::Default,
-                frame_pointers = FramePointers::Auto, release_typed_bodies = false)
+                frame_pointers = FramePointers::Auto, release_typed_bodies = false,
+                module_spill : ModuleSpill? = nil)
+      LLVMTyper.reset_closure_counter
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
       visitor.release_typed_bodies = release_typed_bodies
+      # `DUMP` prints every module when code generation finishes, so they
+      # all stay in memory.
+      visitor.module_spill = module_spill unless single_module || ENV["DUMP"]?
       visitor.accept node
       visitor.process_finished_hooks
       visitor.finish
@@ -256,8 +261,6 @@ module Crystal
     alias LLVMVars = Hash(String, LLVMVar)
 
     record Handler, node : ExceptionHandler, context : Context
-    record StringKey, mod : LLVM::Module, string : String
-    record ModuleInfo, mod : LLVM::Module, typer : LLVMTyper, builder : CrystalLLVMBuilder
 
     @abi : ABI
     @main_ret_type : Type
@@ -265,12 +268,13 @@ module Crystal
     @argv : LLVM::Value
     @rescue_block : LLVM::BasicBlock?
     @catch_pad : LLVM::Value?
-    @fun_types : Hash({LLVM::Module, String}, LLVM::Type)
     @sret_value : LLVM::Value?
     @cant_pass_closure_to_c_exception_call : Call?
     @main_llvm_context : LLVM::Context
     @main_llvm_typer : LLVMTyper
     @main_module_info : ModuleInfo
+    # The module code is being generated into (the one `@llvm_mod` belongs to).
+    @module_info : ModuleInfo
     @main_builder : CrystalLLVMBuilder
     @call_location : Location?
 
@@ -298,14 +302,18 @@ module Crystal
       @llvm_mod = configure_module(@llvm_context.new_module("main_module"))
       @main_mod = @llvm_mod
       @main_llvm_context = @main_mod.context
-      @llvm_typer = LLVMTyper.new(@program, @llvm_context)
+      @llvm_typer = LLVMTyper.new(@program, @llvm_context, data_layout: @main_mod.data_layout)
       @main_llvm_typer = @llvm_typer
+      @main_module_info = ModuleInfo.new("", @main_mod, @main_llvm_typer)
+      # The main module is in use for the whole code generation.
+      @main_module_info.pin_count = 1
+      @module_info = @main_module_info
       @main_ret_type = node.type? || @program.nil_type
       ret_type = @llvm_typer.llvm_return_type(@main_ret_type)
       main_type = LLVM::Type.function([llvm_context.int32, llvm_context.void_pointer.pointer], ret_type)
       @main = @llvm_mod.functions.add(MAIN_NAME, main_type)
       @main.linkage = LLVM::Linkage::Internal if @single_module
-      @fun_types = { {@llvm_mod, MAIN_NAME} => main_type }
+      @main_module_info.fun_types[MAIN_NAME] = main_type
 
       if @program.has_flag?("msvc")
         @personality_name = "__CxxFrameHandler3"
@@ -331,10 +339,10 @@ module Crystal
       @argv = @main.params[1]
       @argv.name = "argv"
 
-      @builder = new_builder(@main_llvm_context)
+      @builder = new_builder(@main_module_info)
       @main_builder = @builder
+      @main_module_info.builder = @builder
 
-      @main_module_info = ModuleInfo.new(@main_mod, @main_llvm_typer, @builder)
       @modules = {"" => @main_module_info} of String => ModuleInfo
       @types_to_modules = {} of Type => ModuleInfo
 
@@ -343,7 +351,6 @@ module Crystal
       @alloca_block, @entry_block = new_entry_block_chain "alloca", "entry"
 
       @in_lib = false
-      @strings = {} of StringKey => LLVM::Value
       @symbols = {} of String => Int32
       @symbols_by_index = [] of String
       @symbol_table_values = [] of LLVM::Value
@@ -399,6 +406,13 @@ module Crystal
 
     getter llvm_context
 
+    # The C ABI, computing sizes with the data layout of the module code is
+    # being generated into.
+    private def abi : ABI
+      @abi.target_data = @llvm_typer.data_layout
+      @abi
+    end
+
     def configure_module(llvm_mod)
       llvm_mod.data_layout = @program.target_machine.data_layout
 
@@ -423,8 +437,9 @@ module Crystal
       llvm_mod
     end
 
-    def new_builder(llvm_context)
-      wrap_builder(llvm_context.new_builder)
+    # A builder for the module of *module_info*, in that module's context.
+    def new_builder(module_info : ModuleInfo)
+      CrystalLLVMBuilder.new module_info.mod.context.new_builder, module_info.typer, ->{ c_printf_fun }
     end
 
     # Here we only initialize simple constants, those
@@ -469,10 +484,6 @@ module Crystal
         ptr.null,
         int32.const_int(0),
       ])
-    end
-
-    def wrap_builder(builder)
-      CrystalLLVMBuilder.new builder, llvm_typer, c_printf_fun
     end
 
     def define_symbol_table(llvm_mod, llvm_typer)
@@ -607,8 +618,12 @@ module Crystal
       end
 
       @modules.each do |name, info|
+        # A module part on disk was finished when it was written, and is
+        # verified when its compilation unit is built.
+        next unless info.resident?
+
         mod = info.mod
-        push_debug_info_metadata(mod) unless @debug.none?
+        finish_module_debug_info(info) unless @debug.none?
 
         mod.dump if dump_all_llvm || name =~ dump_llvm_regex
 
@@ -619,6 +634,7 @@ module Crystal
       end
 
       dispose_di_builders
+      spill_last_parts_of_spilled_modules
 
       if type_info_path = ENV["CRYSTAL_DUMP_TYPE_INFO"]?.presence
         dump_type_info(type_info_path)
@@ -1703,7 +1719,7 @@ module Crystal
       ids = @program.llvm_id.@ids
       id_map = Array(LLVM::Value).new(size: ids.size, value: LLVM::Value.null)
       ids.each do |type, (_, type_id)|
-        id_map[type_id] = build_string_constant(type.to_s, llvm_mod: @main_mod, llvm_typer: @main_llvm_typer)
+        id_map[type_id] = build_string_constant(type.to_s, module_info: @main_module_info)
       end
 
       @main_llvm_typer.llvm_type(@program.string).const_array(id_map)
@@ -1970,6 +1986,7 @@ module Crystal
       old_builder = self.builder
       old_position = old_builder.insert_block
       old_llvm_mod = @llvm_mod
+      old_module_info = @module_info
       old_llvm_context = @llvm_context
       old_llvm_typer = @llvm_typer
       old_fun = context.fun
@@ -1983,6 +2000,7 @@ module Crystal
       old_debug_location = @current_debug_location
 
       @llvm_mod = @main_mod
+      @module_info = @main_module_info
       @llvm_context = @main_llvm_context
       @llvm_typer = @main_llvm_typer
       @builder = @main_builder
@@ -1999,6 +2017,7 @@ module Crystal
       position_at_end old_position
 
       @llvm_mod = old_llvm_mod
+      @module_info = old_module_info
       @llvm_context = old_llvm_context
       @llvm_typer = old_llvm_typer
       @ensure_exception_handlers = old_ensure_exception_handlers
@@ -2622,12 +2641,13 @@ module Crystal
       @last = last
     end
 
-    def build_string_constant(str, name = "str", *, llvm_mod = @llvm_mod, llvm_typer = @llvm_typer)
+    def build_string_constant(str, name = "str", *, module_info = @module_info)
+      llvm_mod = module_info.mod
+      llvm_typer = module_info.typer
       name = "#{name[0..18]}..." if name.bytesize > 18
       name = name.gsub '@', '.'
       name = "'#{name}'"
-      key = StringKey.new(llvm_mod, str)
-      @strings.put_if_absent(key) do
+      module_info.strings.put_if_absent(str) do
         llvm_context = llvm_mod.context
         global = llvm_mod.globals.add(llvm_typer.llvm_string_type(str.bytesize), name.gsub('\\', "\\\\"))
         global.linkage = LLVM::Linkage::Private
