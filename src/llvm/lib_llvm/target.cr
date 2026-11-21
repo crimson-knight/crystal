@@ -13,6 +13,7 @@ lib LibLLVM
   {% end %}
 
   fun set_module_data_layout = LLVMSetModuleDataLayout(m : ModuleRef, dl : TargetDataRef)
+  fun get_module_data_layout = LLVMGetModuleDataLayout(m : ModuleRef) : TargetDataRef
 
   fun dispose_target_data = LLVMDisposeTargetData(td : TargetDataRef)
   fun size_of_type_in_bits = LLVMSizeOfTypeInBits(td : TargetDataRef, ty : TypeRef) : ULongLong

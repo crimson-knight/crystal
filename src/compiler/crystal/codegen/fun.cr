@@ -2,14 +2,22 @@ require "./codegen"
 
 class Crystal::CodeGenVisitor
   def typed_fun?(mod : LLVM::Module, name : String) : LLVMTypedFunction?
-    if func = mod.functions[name]?
-      LLVMTypedFunction.new(@fun_types[{mod, name}], func)
+    typed_fun?(module_info_of(mod), name)
+  end
+
+  def typed_fun?(module_info : ModuleInfo, name : String) : LLVMTypedFunction?
+    if func = module_info.mod.functions[name]?
+      LLVMTypedFunction.new(module_info.fun_types[name], func)
     end
   end
 
   def add_typed_fun(mod : LLVM::Module, name : String, type : LLVM::Type) : LLVMTypedFunction
-    func = mod.functions.add(name, type)
-    @fun_types[{mod, name}] = type
+    add_typed_fun(module_info_of(mod), name, type)
+  end
+
+  def add_typed_fun(module_info : ModuleInfo, name : String, type : LLVM::Type) : LLVMTypedFunction
+    func = module_info.mod.functions.add(name, type)
+    module_info.fun_types[name] = type
     LLVMTypedFunction.new(type, func)
   end
 
@@ -18,11 +26,44 @@ class Crystal::CodeGenVisitor
   end
 
   def target_def_fun(target_def, self_type) : LLVMTypedFunction
-    mangled_name = target_def.mangled_name(@program, self_type)
-    self_type_mod = type_module(self_type).mod
+    if (sharing = @owner_shape_sharing) && (representative = sharing.representative?(target_def))
+      unless self_type.same?(target_def.owner)
+        raise "BUG: #{target_def.name} shares the function of another def but is called with self type #{self_type} instead of its owner #{target_def.owner}"
+      end
+      target_def = representative
+      self_type = representative.owner
+    end
 
-    func = typed_fun?(self_type_mod, mangled_name) || codegen_fun(mangled_name, target_def, self_type)
-    check_mod_fun self_type_mod, mangled_name, func
+    mangled_name = target_def.mangled_name(@program, self_type)
+
+    # Already defined or declared in the module code is being generated
+    # into: the module of `self_type` is not needed (it may be on disk).
+    if existing_fun = typed_fun?(@module_info, mangled_name)
+      return existing_fun
+    end
+
+    # Declared in another module before, or generated into a module part
+    # that is on disk by now: its recorded signature is enough.
+    if known_signature = known_fun_signature?(mangled_name)
+      return declare_fun(mangled_name, known_signature)
+    end
+
+    # The function is in the part of its module that is in memory, or it
+    # is generated into that part now. Reading a function to declare it
+    # does not count as a use of its module: a module is kept in memory for
+    # the functions it is about to get, not for the ones it has.
+    self_type_module_info = @single_module ? @main_module_info : type_module_info(self_type)
+    func = self_type_module_info.resident? ? typed_fun?(self_type_module_info, mangled_name) : nil
+    return check_mod_fun(self_type_module_info, mangled_name, func) if func
+
+    # Declaring the new function here reads it from its module, which must
+    # stay in memory until then.
+    use_module(self_type_module_info)
+    pin_module(self_type_module_info)
+    func = codegen_fun(mangled_name, target_def, self_type, fun_module_info: self_type_module_info)
+    declared_fun = check_mod_fun(self_type_module_info, mangled_name, func)
+    unpin_module(self_type_module_info)
+    declared_fun
   end
 
   def main_fun(name)
@@ -31,22 +72,23 @@ class Crystal::CodeGenVisitor
   end
 
   def check_main_fun(name, func : LLVMTypedFunction) : LLVMTypedFunction
-    check_mod_fun @main_mod, name, func
+    check_mod_fun @main_module_info, name, func
   end
 
-  def check_mod_fun(mod, name, func : LLVMTypedFunction) : LLVMTypedFunction
-    if @llvm_mod == mod
+  def check_mod_fun(module_info : ModuleInfo, name, func : LLVMTypedFunction) : LLVMTypedFunction
+    if @module_info.same?(module_info)
       func
-    elsif existing_func = @llvm_mod.functions[name]?
-      LLVMTypedFunction.new(@fun_types[{@llvm_mod, name}], existing_func)
+    elsif existing_fun = typed_fun?(@module_info, name)
+      existing_fun
     else
       declare_fun(name, func)
     end
   end
 
-  def declare_fun(mangled_name, func : LLVMTypedFunction) : LLVMTypedFunction
-    type = @llvm_typer.copy_type(func.type)
-    typed_fun = add_typed_fun(@llvm_mod, mangled_name, type)
+  # Declares *func*, a function of another module, in *module_info*.
+  def declare_fun(mangled_name, func : LLVMTypedFunction, module_info : ModuleInfo = @module_info) : LLVMTypedFunction
+    type = module_info.typer.copy_type(func.type)
+    typed_fun = add_typed_fun(module_info, mangled_name, type)
 
     source_fun = func.func
     new_fun = typed_fun.func
@@ -84,6 +126,7 @@ class Crystal::CodeGenVisitor
     old_rescue_block = @rescue_block
     old_catch_pad = @catch_pad
     old_llvm_mod = @llvm_mod
+    old_module_info = @module_info
     old_llvm_context = @llvm_context
     old_llvm_typer = @llvm_typer
     old_builder = self.builder
@@ -92,12 +135,22 @@ class Crystal::CodeGenVisitor
 
     old_needs_value = @needs_value
 
-    with_cloned_context do |old_context|
+    if target_def.body.is_a?(ReleasedBody)
+      raise "BUG: the body of #{target_def.name} was released after its function was generated, but codegen needs it again for #{mangled_name}"
+    end
+
+    # The module gets a new function, and stays in memory while this frame
+    # holds values of it.
+    fun_module_info.list_of_generated_fun_names << mangled_name
+    pin_module(fun_module_info)
+
+    typed_function = with_cloned_context do |old_context|
       context.type = self_type
       context.vars = LLVMVars.new
       context.block_context = nil
 
       @llvm_mod = fun_module_info.mod
+      @module_info = fun_module_info
       @llvm_context = @llvm_mod.context
       @llvm_typer = fun_module_info.typer
       @builder = fun_module_info.builder
@@ -110,6 +163,7 @@ class Crystal::CodeGenVisitor
       args = codegen_fun_signature(mangled_name, target_def, self_type, is_fun_literal, is_closure)
 
       needs_body = !target_def.is_a?(External) || is_exported_fun
+      @generated_fun_count += 1 if needs_body
       if needs_body
         emit_def_debug_metadata target_def unless @debug.none?
         set_current_debug_location target_def if @debug.line_numbers?
@@ -206,12 +260,15 @@ class Crystal::CodeGenVisitor
         br_from_alloca_to_entry
       end
 
-      @last = llvm_nil
-
       @llvm_mod = old_llvm_mod
+      @module_info = old_module_info
       @llvm_context = old_llvm_context
       @llvm_typer = old_llvm_typer
       @builder = old_builder
+
+      # A value of the caller's context: the context of the function that
+      # was just generated may be disposed while the caller still holds this.
+      @last = llvm_nil
       position_at_end old_position
 
       @ensure_exception_handlers = old_ensure_exception_handlers
@@ -248,6 +305,56 @@ class Crystal::CodeGenVisitor
       end
 
       LLVMTypedFunction.new(context.fun_type, context.fun)
+    end
+
+    unpin_module(fun_module_info)
+
+    # Proc literals can be generated more than once (a block inlined at
+    # several `yield`s), so only plain method defs are released.
+    release_typed_body(target_def) unless is_fun_literal || is_closure || is_exported_fun
+    typed_function
+  end
+
+  # Released bodies between two collections that return free heap pages to
+  # the OS (see `release_typed_body`).
+  RELEASED_BODIES_PER_UNMAP = 50_000
+
+  private def release_typed_body(target_def) : Nil
+    return unless release_typed_bodies?
+    return if target_def.is_a?(External)
+    return if target_def.body.is_a?(Primitive)
+
+    target_def.body = ReleasedBody.new
+    # Cut the edges that would keep the old body reachable: the def's own
+    # (it depends on its body) and those of its args and local vars.
+    target_def.release_bindings
+    target_def.args.each &.release_bindings
+    target_def.vars.try &.each_value &.release_bindings(@program.nil_var)
+    @released_body_count += 1
+    # Hand the freed heap back to the OS now and then, so LLVM (which
+    # allocates outside the GC heap) can use it instead of it sitting free.
+    if @released_body_count % RELEASED_BODIES_PER_UNMAP == 0
+      LibGC.set_force_unmap_on_gcollect(1)
+      GC.collect
+      LibGC.set_force_unmap_on_gcollect(0)
+    end
+  end
+
+  # Releases the bodies of the defs that share another def's function: codegen
+  # never generates them. Bodies that codegen inlines at the call (a literal,
+  # `self`, an instance variable, a def that takes a block) are kept.
+  def release_shared_bodies : Nil
+    sharing = @owner_shape_sharing
+    return unless sharing && release_typed_bodies?
+    sharing.each_shared_def do |typed_def, _representative|
+      next if typed_def.block_arg || typed_def.block_arity
+      case typed_def.body
+      when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral, Var, InstanceVar,
+           Primitive, ReleasedBody
+        next
+      end
+      release_typed_body(typed_def)
+      sharing.stats.released_bodies += 1
     end
   end
 
@@ -459,7 +566,7 @@ class Crystal::CodeGenVisitor
 
     llvm_args_types = external.args.map { |arg| llvm_c_type(arg.type) }
     llvm_return_type = llvm_c_return_type(external.type)
-    @abi.abi_info(llvm_args_types, llvm_return_type, !llvm_return_type.void?, llvm_context)
+    abi.abi_info(llvm_args_types, llvm_return_type, !llvm_return_type.void?, llvm_context)
   end
 
   def abi_info(external : Def, node : Call)
@@ -467,7 +574,7 @@ class Crystal::CodeGenVisitor
       llvm_c_type((external.args[i]? || arg).type)
     end
     llvm_return_type = llvm_c_return_type(external.type)
-    @abi.abi_info(llvm_args_types, llvm_return_type, !llvm_return_type.void?, llvm_context)
+    abi.abi_info(llvm_args_types, llvm_return_type, !llvm_return_type.void?, llvm_context)
   end
 
   def setup_context_fun(mangled_name, target_def, llvm_args_types, llvm_return_type) : Nil
@@ -672,9 +779,17 @@ class Crystal::CodeGenVisitor
     assign pointer, var_type, arg.type, value
   end
 
-  def type_module(type)
+  # The module of *type*, in memory. See `use_module` for how long handles
+  # into other modules stay valid.
+  def type_module(type) : ModuleInfo
     return @main_module_info if @single_module
 
+    module_info = type_module_info(type)
+    use_module(module_info)
+    module_info
+  end
+
+  private def type_module_info(type) : ModuleInfo
     @types_to_modules[type] ||= begin
       type = type.remove_typedef
       case type
@@ -684,16 +799,7 @@ class Crystal::CodeGenVisitor
         type_name = type.instance_type.to_s
       end
 
-      @modules[type_name] ||= begin
-        llvm_context = LLVM::Context.new
-        # LLVM::Context.register(llvm_context, type_name)
-
-        llvm_typer = LLVMTyper.new(@program, llvm_context)
-        llvm_mod = configure_module(llvm_context.new_module(type_name))
-        llvm_builder = new_builder(llvm_context)
-
-        ModuleInfo.new(llvm_mod, llvm_typer, llvm_builder)
-      end
+      @modules[type_name] ||= new_module_info(type_name)
     end
   end
 end

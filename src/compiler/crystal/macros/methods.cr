@@ -1660,10 +1660,10 @@ module Crystal
         interpret_check_args { ArrayLiteral.map @args, &.itself }
       when "splat_index"
         interpret_check_args do
-          @splat_index ? NumberLiteral.new(@splat_index.not_nil!) : NilLiteral.new
+          (index = splat_index) ? NumberLiteral.new(index) : NilLiteral.new
         end
       when "double_splat"
-        interpret_check_args { @double_splat || Nop.new }
+        interpret_check_args { double_splat || Nop.new }
       when "block_arg"
         interpret_check_args { @block_arg || Nop.new }
       when "accepts_block?"
@@ -1672,7 +1672,7 @@ module Crystal
         interpret_check_args { @return_type || Nop.new }
       when "free_vars"
         interpret_check_args do
-          if (free_vars = @free_vars) && !free_vars.empty?
+          if (free_vars = self.free_vars) && !free_vars.empty?
             ArrayLiteral.map(free_vars) { |free_var| MacroId.new(free_var) }
           else
             empty_no_return_array
@@ -1681,13 +1681,13 @@ module Crystal
       when "body"
         interpret_check_args { @body }
       when "receiver"
-        interpret_check_args { @receiver || Nop.new }
+        interpret_check_args { receiver || Nop.new }
       when "visibility"
         interpret_check_args do
           visibility_to_symbol(@visibility)
         end
       when "abstract?"
-        interpret_check_args { BoolLiteral.new(@abstract) }
+        interpret_check_args { BoolLiteral.new(abstract?) }
       when "annotation"
         fetch_annotation(self, method, args, named_args, block) do |type|
           self.annotation(type)
@@ -2489,7 +2489,7 @@ module Crystal
       when "block_arg"
         interpret_check_args { self.block_arg || Nop.new }
       when "global?"
-        interpret_check_args { BoolLiteral.new(@global) }
+        interpret_check_args { BoolLiteral.new(global?) }
       else
         super
       end
@@ -2726,9 +2726,9 @@ module Crystal
         end
       when "global"
         interpreter.warnings.add_warning_at(name_loc, "Deprecated Path#global. Use `#global?` instead")
-        interpret_check_args { BoolLiteral.new(@global) }
+        interpret_check_args { BoolLiteral.new(global?) }
       when "global?"
-        interpret_check_args { BoolLiteral.new(@global) }
+        interpret_check_args { BoolLiteral.new(global?) }
       when "resolve"
         interpret_check_args { interpreter.resolve(self) }
       when "resolve?"
@@ -3038,7 +3038,7 @@ module Crystal
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
-        interpret_check_args { Path.new(@name).at(@name_location) }
+        interpret_check_args { Path.new(@name).at(name_location) }
       when "type"
         interpret_check_args { @type_spec }
       else

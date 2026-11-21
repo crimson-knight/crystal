@@ -12,6 +12,15 @@ require "./tools/require_graph_discoverer"
 {% end %}
 
 module Crystal
+  {% if flag?(:darwin) %}
+    # :nodoc:
+    lib LibDarwinMalloc
+      # With a null zone and a goal of 0, every malloc zone returns as much
+      # free memory as it can. Returns the number of bytes released.
+      fun malloc_zone_pressure_relief(zone : Void*, goal : LibC::SizeT) : LibC::SizeT
+    end
+  {% end %}
+
   # This exception describes an error in the compiler.
   # It usually leads to an unsuccessful process exit.
   class CompilerError < Exception
@@ -112,6 +121,30 @@ module Crystal
       8
     {% end %}
 
+    # The compiler executable to start as object-file workers (see
+    # `CodegenWorker`). When set, and more than one thread is allowed, a
+    # multi-module build writes every module to its bitcode file, frees the
+    # modules, and lets `n_threads` worker processes build the object files.
+    # The compiler's main program sets it to its own executable; a program
+    # that embeds the compiler leaves it unset and compiles objects in-process.
+    property codegen_worker_executable : String?
+
+    # Whether the compiler may end a build by replacing its own process image
+    # with `crystal internal-object-stage` (see `ObjectStage`), which builds
+    # the object files in workers, links, and exits with the build's status.
+    # `Compiler#compile` then never returns for a build that reaches the
+    # object files. The `crystal build` command turns it on; it takes effect
+    # together with `#codegen_worker_executable`.
+    property? object_stage_handoff = false
+
+    # The memory the object-file workers may use together, in bytes (see
+    # `CodegenWorkerPool`). `nil` takes the default for `n_threads` and this
+    # machine's memory. Set by `--object-memory-budget`.
+    property codegen_worker_memory_budget_bytes : Int64?
+
+    # The worker processes that built the object files of the last compilation.
+    @last_codegen_worker_pool : CodegenWorkerPool?
+
     # Default prelude file to use. This ends up adding a
     # `require "prelude"` (or whatever name is set here) to
     # the source file to compile.
@@ -172,6 +205,32 @@ module Crystal
     # object file. The module is optimized as a whole before the split, so the
     # optimized program is the same whatever the number of parts.
     property release_units : Int32 = 8
+
+    # The default of `#resident_ir_megabytes`. A program of 300 Grant models
+    # (about 10 GB of IR) generates its IR as fast with 1 GB in memory as
+    # with 4 GB, and its peak is lower by the difference. One gigabyte
+    # leaves a program of up to a few thousand modules and about three
+    # million instructions entirely in memory.
+    DEFAULT_RESIDENT_IR_MEGABYTES = 1024
+
+    # How many megabytes of LLVM IR (an estimate, see `ModuleSpill`) stay in
+    # memory while LLVM IR is generated in multi-module mode. A program has
+    # one module per type; the least recently used idle ones are written to
+    # their bitcode file in the cache directory and read back when they are
+    # needed again, so the memory used by IR generation does not grow with
+    # the size of the program. With 0 there is no limit in bytes.
+    property resident_ir_megabytes : Int32 = DEFAULT_RESIDENT_IR_MEGABYTES
+
+    # The default of `#resident_modules`.
+    DEFAULT_RESIDENT_MODULES = 0
+
+    # How many idle LLVM modules stay in memory while LLVM IR is generated
+    # in multi-module mode, whatever their size (see
+    # `#resident_ir_megabytes`). With 0 there is no limit on their number.
+    property resident_modules : Int32 = DEFAULT_RESIDENT_MODULES
+
+    # The spill counters of the last multi-module IR generation.
+    getter last_module_spill : ModuleSpill?
 
     # A `ProgressTracker` object which tracks compilation progress.
     property progress_tracker = ProgressTracker.new
@@ -374,7 +433,10 @@ module Crystal
           program.macro_expansion_error_hook.try &.call(ex.cause)
         end
 
-        units = codegen program, node, source, output_filename unless @no_codegen
+        unless @no_codegen
+          release_semantic_only_data(program) unless @incremental
+          units = codegen program, node, source, output_filename
+        end
 
         if @incremental
           @progress_tracker.stage("Signatures") do
@@ -393,7 +455,7 @@ module Crystal
 
       @progress_tracker.clear
       print_macro_run_stats(program)
-      print_codegen_stats(units)
+      print_codegen_stats(units.map(&.summary)) if units
       print_parse_cache_stats
       print_signature_stats
       print_compilation_skip_stats if compilation_skipped
@@ -592,6 +654,81 @@ module Crystal
       result
     end
 
+    # The settings for spilling idle LLVM modules during IR generation, or
+    # `nil` when every module stays in memory. A spilled module part is
+    # written next to its unit's cached bitcode files and replaces them
+    # when the unit is compiled. IR generation runs outside the cache
+    # directory's lock, so the spill files carry the process id: two
+    # compilations of one program never write the same file.
+    private def module_spill_for(output_dir, is_single_module) : ModuleSpill?
+      return nil if is_single_module || (@resident_modules <= 0 && @resident_ir_megabytes <= 0)
+
+      remove_spill_files_of_ended_compilations(output_dir)
+
+      ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
+        File.join(output_dir, "#{CompilationUnit.file_basename(type_name, optimization_mode)}.#{Process.pid}.part#{part_index}.new.bc")
+      end
+    end
+
+    # Loads the modules in the bitcode files of *list_of_filenames* into
+    # *context* and links them into one module: the first one, with the
+    # others moved into it.
+    def self.parse_linked_bitcode_files(list_of_filenames : Array(String), context : LLVM::Context) : LLVM::Module
+      linked_module = nil
+      list_of_filenames.each do |filename|
+        bitcode = LLVM::MemoryBuffer.from_file(filename)
+        part = begin
+          LLVM::Module.parse(bitcode, context)
+        ensure
+          bitcode.dispose
+        end
+        if first_part = linked_module
+          first_part.link(part)
+        else
+          linked_module = part
+        end
+      end
+      linked_module || raise "BUG: a module needs at least one bitcode file"
+    end
+
+    # The cached bitcode part files (`<unit>.part<N>.bc`) that earlier
+    # builds left in an output directory, by unit. The directory is read
+    # once, the first time a unit asks: reading it for each of several
+    # thousand units took over a minute of a 300-model build.
+    @cached_part_bitcode_filenames : Hash(String, Array(String))?
+    @cached_part_bitcode_directory : String?
+    @cached_part_bitcode_lock = Mutex.new
+
+    # Hands over the part files an earlier build left for the unit whose
+    # files are named *unit_basename*, so the unit can delete them. A unit
+    # asks before it writes part files of its own.
+    protected def take_cached_part_bitcode_filenames(output_dir : String, unit_basename : String) : Array(String)
+      @cached_part_bitcode_lock.synchronize do
+        filenames_by_unit = @cached_part_bitcode_filenames
+        if filenames_by_unit.nil? || @cached_part_bitcode_directory != output_dir
+          filenames_by_unit = Hash(String, Array(String)).new
+          Dir.each_child(output_dir) do |child|
+            next unless match = child.match(/\A(.+)\.part\d+\.bc\z/)
+
+            (filenames_by_unit[match[1]] ||= [] of String) << child
+          end
+          @cached_part_bitcode_filenames = filenames_by_unit
+          @cached_part_bitcode_directory = output_dir
+        end
+        filenames_by_unit.delete(unit_basename) || [] of String
+      end
+    end
+
+    # An interrupted compilation leaves its spill files behind.
+    private def remove_spill_files_of_ended_compilations(output_dir) : Nil
+      Dir.each_child(output_dir) do |child|
+        next unless match = child.match(/\.(\d+)\.part\d+\.new\.bc\z/)
+        next if Process.exists?(match[1].to_i64)
+
+        File.delete?(File.join(output_dir, child))
+      end
+    end
+
     private def bc_flags_changed?(output_dir, release_parts = 1)
       bc_flags_changed = true
       current_bc_flags = "#{@codegen_target}|#{@mcpu}|#{@mattr}|#{@link_flags}|#{@mcmodel}"
@@ -617,12 +754,18 @@ module Crystal
 
       is_single_module = @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
 
+      output_dir = CacheDir.instance.directory_for(sources)
+      @cached_part_bitcode_filenames = nil
+      module_spill = @last_module_spill = module_spill_for(output_dir, is_single_module)
+
       llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
         program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: is_single_module
+          single_module: is_single_module, release_typed_bodies: !@incremental,
+          module_spill: module_spill
       end
-
-      output_dir = CacheDir.instance.directory_for(sources)
+      # Printed as soon as the stage ends: a build that is stopped after IR
+      # generation still shows them.
+      print_module_spill_stats
 
       # Load cached data for module-level skip optimization (Phase 4).
       # Only applicable in multi-module mode with incremental compilation enabled.
@@ -659,8 +802,11 @@ module Crystal
       modules_skipped = 0
 
       units = llvm_modules.map do |type_name, info|
-        llvm_mod = info.mod
-        llvm_mod.target = target_triple
+        # A module is either in memory or, all of its parts, on disk.
+        if info.resident?
+          llvm_mod = info.mod
+          llvm_mod.target = target_triple
+        end
 
         # Phase 4: Check if we can skip IR generation entirely for this module.
         # A module can be skipped if:
@@ -671,23 +817,7 @@ module Crystal
         skip_codegen = false
         if cached_module_mapping && changed_files && !bc_flags_changed
           # Determine the compilation unit name for cache directory lookup
-          unit_name = type_name.empty? ? "_main" : type_name
-          safe_name = String.build do |str|
-            unit_name.each_char do |char|
-              case char
-              when 'a'..'z', '0'..'9', '_'
-                str << char
-              when 'A'..'Z'
-                str << char << '-'
-              else
-                str << char.ord
-              end
-            end
-          end
-          if safe_name.size > 50
-            safe_name = "#{safe_name[0..16]}-#{Crystal::Digest::MD5.hexdigest(safe_name)}"
-          end
-          safe_name = "#{safe_name}#{optimization_mode.suffix}"
+          safe_name = CompilationUnit.file_basename(type_name, optimization_mode)
           object_ext = @codegen_target.object_extension
           cached_obj_path = File.join(output_dir, "#{safe_name}#{object_ext}")
 
@@ -700,7 +830,7 @@ module Crystal
           end
         end
 
-        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, skip_codegen, release_parts)
+        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, skip_codegen, release_parts, info.list_of_spill_paths)
       end
 
       # Store module source files for later saving to incremental cache
@@ -717,8 +847,8 @@ module Crystal
       if @cross_compile
         cross_compile program, units, output_filename
       else
-        units = with_file_lock(output_dir) do
-          codegen program, units, output_filename, output_dir
+        units = with_file_lock(output_dir) do |build_lock|
+          codegen program, units, output_filename, output_dir, build_lock
         end
 
         {% if flag?(:darwin) %}
@@ -757,7 +887,7 @@ module Crystal
     private def with_file_lock(output_dir, &)
       File.open(File.join(output_dir, "compiler.lock"), "w") do |file|
         file.flock_exclusive do
-          yield
+          yield file
         end
       end
     end
@@ -776,7 +906,7 @@ module Crystal
       run_dsymutil(output_filename) unless File.exists?(dwarf_filename)
     end
 
-    private def run_dsymutil(filename)
+    protected def run_dsymutil(filename)
       dsymutil = Process.find_executable("dsymutil")
       return unless dsymutil
 
@@ -1037,16 +1167,33 @@ module Crystal
       end
     end
 
-    private def codegen(program, units : Array(CompilationUnit), output_filename, output_dir)
+    private def codegen(program, units : Array(CompilationUnit), output_filename, output_dir, build_lock : File)
       object_names = units.flat_map &.object_filenames
 
-      @progress_tracker.stage("Codegen (bc+obj)") do
+      @progress_tracker.stage(ObjectStage::STAGE_NAME) do
+        stage_started_at = Time.utc
         @progress_tracker.stage_progress_total = units.size
 
         n_threads = @n_threads.clamp(1..units.size)
 
         if n_threads == 1
           sequential_codegen(units)
+        elsif (worker_executable = @codegen_worker_executable) && units.size > 1
+          list_of_jobs = write_bitcode_and_release_modules(units)
+          unless list_of_jobs.empty?
+            if object_stage_handoff? && !@incremental
+              hand_off_object_stage(program, units, list_of_jobs, n_threads, worker_executable,
+                output_filename, output_dir, object_names, stage_started_at, build_lock)
+            end
+
+            # IR generation leaves garbage behind in the heap. Hand it back
+            # before the workers start, so their memory does not stack on top
+            # of it. The same goes for the memory the disposed LLVM contexts
+            # freed.
+            return_free_memory_to_os
+            return_free_malloc_memory_to_os
+            build_objects_in_workers(list_of_jobs, n_threads, worker_executable)
+          end
         else
           parallel_codegen(units, n_threads)
         end
@@ -1073,15 +1220,9 @@ module Crystal
         @progress_tracker.stage("Codegen (linking)") { }
       else
         @progress_tracker.stage("Codegen (linking)") do
-          # Save source directory before changing to output_dir so CRYSTAL_PATH
-          # relative entries (e.g. "src:lib") resolve correctly in linker_command
-          src_dir = Dir.current
+          linker_name, command, args = linker_invocation(program, units, object_names, output_filename, output_dir)
+          Dir.cd(output_dir) { run_linker linker_name, command, args }
           split_into_parts = units.any? { |unit| unit.part_count > 1 }
-          Dir.cd(output_dir) do
-            linker_name, command, args = linker_command(program, object_names, output_filename, output_dir, expand: true, source_dir: src_dir)
-            command += private_symbols_strip_flag(output_dir) if split_into_parts && program.codegen_target.macos?
-            run_linker linker_name, command, args
-          end
           remove_private_symbols(output_filename) if split_into_parts && program.codegen_target.linux?
         end
       end
@@ -1096,10 +1237,168 @@ module Crystal
     end
 
     private def sequential_codegen(units)
+      # A single unit is emitted after this loop (`--emit`), so its module
+      # must stay alive. With several units, nothing reads a unit's module
+      # once its object file is written: free each one right away instead of
+      # holding every optimized module until the GC finalizes them.
+      dispose_after_compile = units.size > 1
       units.each do |unit|
         unit.compile
+        unit.dispose_module if dispose_after_compile
         @progress_tracker.stage_progress += 1
       end
+    end
+
+    # Releases what only semantic analysis needed (untyped def and macro
+    # bodies) and hands the freed heap pages back to the OS, so the memory
+    # LLVM allocates during codegen does not stack on top of it.
+    #
+    # Skipped in incremental mode, whose signature pass reads the program
+    # after codegen.
+    private def release_semantic_only_data(program)
+      @progress_tracker.stage("Semantic (release)") do
+        program.release_semantic_only_data
+        return_free_memory_to_os
+      end
+    end
+
+    private def return_free_memory_to_os : Nil
+      {% if flag?(:gc_none) || flag?(:wasm32) %}
+        # no collector, nothing to return
+      {% else %}
+        LibGC.set_force_unmap_on_gcollect(1)
+        # The first collection frees the released bodies; the next ones
+        # coalesce the free blocks so they can be unmapped.
+        3.times { GC.collect }
+        LibGC.set_force_unmap_on_gcollect(0)
+      {% end %}
+    end
+
+    # Asks the C allocator to hand its free pages back to the OS. LLVM
+    # allocates with `malloc`, and the allocator otherwise keeps most of what
+    # a disposed context frees for later allocations.
+    private def return_free_malloc_memory_to_os : Nil
+      {% if flag?(:darwin) %}
+        LibDarwinMalloc.malloc_zone_pressure_relief(nil, 0)
+      {% end %}
+    end
+
+    # The linker to run from *output_dir* to link *object_names* into
+    # *output_filename* (an absolute path): its name, the shell command, and
+    # the command's arguments.
+    private def linker_invocation(program, units, object_names, output_filename, output_dir) : {String, String, Array(String)?}
+      # Save source directory before changing to output_dir so CRYSTAL_PATH
+      # relative entries (e.g. "src:lib") resolve correctly in linker_command
+      src_dir = Dir.current
+      split_into_parts = units.any? { |unit| unit.part_count > 1 }
+      Dir.cd(output_dir) do
+        linker_name, command, args = linker_command(program, object_names, output_filename, output_dir, expand: true, source_dir: src_dir)
+        command += private_symbols_strip_flag(output_dir) if split_into_parts && program.codegen_target.macos?
+        {linker_name, command, args}
+      end
+    end
+
+    # Links the object files with a linker command that was put together
+    # earlier (see `#linker_invocation`), as the last step of a build that
+    # was handed to `ObjectStage`.
+    protected def link_object_files(linker_name : String, command : String, args : Array(String)?,
+                                    output_filename : String, output_dir : String) : Nil
+      if Dir.exists?(output_filename)
+        raise CompilerError.new("can't use `#{output_filename}` as output filename because it's a directory", :USAGE_ERROR)
+      end
+
+      @progress_tracker.stage("Codegen (linking)") do
+        Dir.cd(output_dir) { run_linker linker_name, command, args }
+      end
+    end
+
+    # Prepares the units for the object-file workers (see `CodegenWorker`):
+    # every unit writes its module to its bitcode file and frees it, so the
+    # generated IR leaves this process before any worker starts. Returns the
+    # jobs of the units whose object file must be built.
+    private def write_bitcode_and_release_modules(units) : Array(CodegenWorker::Job)
+      list_of_jobs = [] of CodegenWorker::Job
+      units.each do |unit|
+        if unit.write_bitcode_and_release_module
+          list_of_jobs << unit.codegen_worker_job
+        else
+          @progress_tracker.stage_progress += 1
+        end
+      end
+      list_of_jobs
+    end
+
+    # Builds the object files of *list_of_jobs* in up to *thread_count*
+    # worker processes, each compiling one bitcode file at a time, within the
+    # workers' memory budget (see `CodegenWorkerPool`).
+    protected def build_objects_in_workers(list_of_jobs : Array(CodegenWorker::Job), thread_count : Int32,
+                                           worker_executable : String) : Nil
+      pool = CodegenWorkerPool.new(worker_executable, CodegenWorker::Settings.from_compiler(self),
+        list_of_jobs, thread_count, codegen_worker_memory_budget_bytes_for(thread_count))
+      @last_codegen_worker_pool = pool
+      pool.perform { @progress_tracker.stage_progress += 1 }
+    end
+
+    private def codegen_worker_memory_budget_bytes_for(thread_count : Int32) : Int64
+      @codegen_worker_memory_budget_bytes || CodegenWorkerPool.default_memory_budget_bytes(thread_count)
+    end
+
+    # Ends this process's part of the build: writes the `ObjectStage::Handoff`
+    # and replaces this process image with the compiler's object stage, which
+    # builds the object files, links and reports. All the memory of this
+    # process returns to the system at that moment, before any worker starts.
+    #
+    # Returns only when the process image could not be replaced; the build
+    # then goes on in this process.
+    private def hand_off_object_stage(program, units, list_of_jobs, thread_count, worker_executable,
+                                      output_filename, output_dir, object_names, stage_started_at,
+                                      build_lock : File) : Nil
+      {% unless flag?(:win32) || flag?(:wasm32) %}
+        output_filename = File.expand_path(output_filename)
+        linker_name, command, args = linker_invocation(program, units, object_names, output_filename, output_dir)
+        writes_dwarf_companion = {{ flag?(:darwin) }} && !debug.none? && dsymutil?
+
+        handoff = ObjectStage::Handoff.new(
+          worker_executable: worker_executable,
+          settings: CodegenWorker::Settings.from_compiler(self),
+          list_of_jobs: list_of_jobs,
+          thread_count: thread_count,
+          memory_budget_bytes: codegen_worker_memory_budget_bytes_for(thread_count),
+          linker_name: linker_name,
+          linker_command: command,
+          list_of_linker_arguments: args,
+          output_directory: output_dir,
+          output_filename: output_filename,
+          writes_dwarf_companion: writes_dwarf_companion,
+          cleans_cache_directory: cleanup?,
+          lock_file_descriptor: build_lock.fd,
+          verbose: verbose?,
+          color: color?,
+          stats: @progress_tracker.stats?,
+          progress: @progress_tracker.progress?,
+          stage_number: @progress_tracker.current_stage,
+          stage_started_at_unix_ms: stage_started_at.to_unix_ms,
+          stage_progress: @progress_tracker.stage_progress,
+          stage_progress_total: units.size,
+          list_of_unit_summaries: units.map(&.summary),
+          stats_report_before_codegen: String.build { |io| print_macro_run_stats(program, io) },
+          list_of_warnings: warnings.infos,
+          error_on_warnings: warnings.error_on_warnings?,
+        )
+        handoff_filename = File.join(output_dir, "object-stage-handoff.json")
+        File.write(handoff_filename, handoff.to_json)
+
+        # The new image inherits the locked file, so the build stays locked.
+        build_lock.close_on_exec = false
+        STDOUT.flush
+        STDERR.flush
+        begin
+          Process.exec(worker_executable, [ObjectStage::COMMAND, handoff_filename])
+        rescue IO::Error
+          build_lock.close_on_exec = true
+          File.delete?(handoff_filename)
+        end
+      {% end %}
     end
 
     private def parallel_codegen(units, n_threads)
@@ -1260,28 +1559,41 @@ module Crystal
       workers
     end
 
-    private def print_macro_run_stats(program)
+    private def print_macro_run_stats(program, io : IO = STDOUT)
       return unless @progress_tracker.stats?
       return if program.compiled_macros_cache.empty?
 
-      puts
-      puts "Macro runs:"
+      io.puts
+      io.puts "Macro runs:"
       program.compiled_macros_cache.each do |filename, compiled_macro_run|
-        print " - "
-        print filename
-        print ": "
+        io << " - " << filename << ": "
         if compiled_macro_run.reused
-          print "reused previous compilation (#{compiled_macro_run.elapsed})"
+          io << "reused previous compilation (#{compiled_macro_run.elapsed})"
         else
-          print compiled_macro_run.elapsed
+          io << compiled_macro_run.elapsed
         end
-        puts
+        io.puts
       end
     end
 
-    private def print_codegen_stats(units)
+    private def print_module_spill_stats
       return unless @progress_tracker.stats?
-      return unless units
+      return unless module_spill = @last_module_spill
+
+      megabyte = 1024 * 1024
+      puts
+      puts "LLVM module spilling:"
+      puts " - limits: #{module_spill.resident_ir_bytes // megabyte} MB of estimated IR, #{module_spill.resident_limit} idle modules (0 is no limit)"
+      puts " - most in memory at once: #{module_spill.peak_resident_count} modules, #{module_spill.peak_resident_ir_bytes // megabyte} MB of estimated IR"
+      puts " - instructions built: #{module_spill.built_instruction_count}"
+      puts " - module parts written to disk: #{module_spill.spill_count} (#{module_spill.written_bitcode_bytes // megabyte} MB, #{module_spill.write_time.total_seconds.round(1)} s)"
+      puts " - modules made of several parts: #{module_spill.multi_part_module_count}"
+      puts " - function signatures recorded: #{module_spill.recorded_signature_count}"
+      STDOUT.flush
+    end
+
+    protected def print_codegen_stats(units : Array(ObjectStage::UnitSummary))
+      return unless @progress_tracker.stats?
 
       reused = units.count(&.reused_previous_compilation?)
 
@@ -1298,8 +1610,16 @@ module Crystal
         puts "These modules were not reused:"
         units.each do |unit|
           next if unit.reused_previous_compilation?
-          puts " - #{unit.original_name} (#{unit.name}.bc)"
+          puts " - #{unit.original_name} (#{unit.bitcode_name})"
         end
+      end
+
+      if pool = @last_codegen_worker_pool
+        megabyte = 1024 * 1024
+        puts " - object files were built by #{pool.worker_count} worker processes"
+        puts " - modules in flight at most: #{(pool.maximum_in_flight_bitcode_bytes / megabyte).round(1)} MB of bitcode, " \
+             "estimated #{pool.maximum_in_flight_memory_bytes // megabyte} MB of worker memory " \
+             "(budget #{pool.memory_budget_bytes // megabyte} MB)"
       end
 
       # Phase 4: Report modules skipped via source-file-level caching
@@ -1514,12 +1834,12 @@ module Crystal
 
       # Capture file-level dependencies (convert Set to sorted Array for JSON)
       file_deps = unless program.file_dependencies.empty?
-                    result = {} of String => Array(String)
-                    program.file_dependencies.each do |user_file, provider_set|
-                      result[user_file] = provider_set.to_a.sort
-                    end
-                    result
-                  end
+        result = {} of String => Array(String)
+        program.file_dependencies.each do |user_file, provider_set|
+          result[user_file] = provider_set.to_a.sort
+        end
+        result
+      end
 
       data = IncrementalCacheData.new(
         compiler_version: Config.version,
@@ -1612,6 +1932,33 @@ module Crystal
       end
     {% end %}
 
+    # Loads the module in *bitcode_filename* into a context of its own,
+    # optimizes it and writes *object_filename*, exactly as a compilation
+    # unit is compiled in-process. The module is freed before returning.
+    def compile_bitcode_file_to_object(bitcode_filename : String, object_filename : String,
+                                       llvm_ir_filename : String? = nil, verifies_module : Bool = false,
+                                       list_of_more_bitcode_filenames : Array(String) = [] of String) : Nil
+      context = LLVM::Context.new
+      begin
+        llvm_mod = Compiler.parse_linked_bitcode_files([bitcode_filename] + list_of_more_bitcode_filenames, context)
+        llvm_mod.verify if verifies_module
+
+        temporary_object_filename = "#{object_filename}.tmp"
+        target_machine = create_target_machine
+        begin
+          optimize llvm_mod, target_machine unless optimization_mode.o0?
+          target_machine.emit_obj_to_file llvm_mod, temporary_object_filename
+        ensure
+          target_machine.dispose
+        end
+        File.rename(temporary_object_filename, object_filename)
+
+        llvm_mod.print_to_file llvm_ir_filename if llvm_ir_filename
+      ensure
+        context.dispose
+      end
+    end
+
     protected def optimize(llvm_mod, target_machine)
       {% if LibLLVM::IS_LT_130 %}
         optimize_with_pass_manager(llvm_mod)
@@ -1625,7 +1972,7 @@ module Crystal
       {% end %}
     end
 
-    private def run_linker(linker_name, command, args)
+    protected def run_linker(linker_name, command, args)
       print_command(command, args) if verbose?
 
       begin
@@ -1775,7 +2122,6 @@ module Crystal
       getter compiler
       getter name
       getter original_name
-      getter llvm_mod
       property? reused_previous_compilation = false
       # True if this module was skipped entirely (no IR gen, no bitcode, no obj compile)
       # because all contributing source files were unchanged from the previous compilation.
@@ -1786,14 +2132,16 @@ module Crystal
       # The number of object files this unit is emitted as (see `Compiler#release_units`).
       getter part_count : Int32
       @bc_name : String?
+      @llvm_mod : LLVM::Module?
+      @worker_verifies_module = false
 
-      def initialize(@compiler : Compiler, program : Program, @name : String,
-                     @llvm_mod : LLVM::Module, @output_dir : String, @bc_flags_changed : Bool,
-                     @skipped_via_module_cache : Bool = false, @part_count : Int32 = 1)
-        @name = "_main" if @name == ""
-        @original_name = @name
-        @name = String.build do |str|
-          @name.each_char do |char|
+      # The file a unit's bitcode and object files are named after: the
+      # name of the unit's type, made safe for a file system, plus the
+      # suffix of the optimization mode.
+      def self.file_basename(type_name : String, optimization_mode : OptimizationMode) : String
+        type_name = "_main" if type_name == ""
+        basename = String.build do |str|
+          type_name.each_char do |char|
             case char
             when 'a'..'z', '0'..'9', '_'
               str << char
@@ -1807,17 +2155,99 @@ module Crystal
           end
         end
 
-        if @name.size > 50
+        if basename.size > 50
           # 17 chars from name + 1 (dash) + 32 (md5) = 50
-          @name = "#{@name[0..16]}-#{::Crystal::Digest::MD5.hexdigest(@name)}"
+          basename = "#{basename[0..16]}-#{::Crystal::Digest::MD5.hexdigest(basename)}"
         end
 
-        @name = "#{@name}#{@compiler.optimization_mode.suffix}"
+        "#{basename}#{optimization_mode.suffix}"
+      end
+
+      # *llvm_mod* is the unit's module, unless IR generation spilled it to
+      # disk: then *list_of_spilled_bitcode_paths* are the files that hold
+      # the bitcode of its parts, in the order they are linked.
+      def initialize(@compiler : Compiler, program : Program, @name : String,
+                     @llvm_mod : LLVM::Module?, @output_dir : String, @bc_flags_changed : Bool,
+                     @skipped_via_module_cache : Bool = false, @part_count : Int32 = 1,
+                     list_of_spilled_bitcode_paths : Array(String) = [] of String)
+        @original_name = @name == "" ? "_main" : @name
+        @name = CompilationUnit.file_basename(@name, @compiler.optimization_mode)
         @object_extension = compiler.codegen_target.object_extension
+        @list_of_spilled_bitcode_paths = list_of_spilled_bitcode_paths.dup
+        @spilled_part_count = list_of_spilled_bitcode_paths.size
+      end
+
+      # The spill files of this unit's module parts that the cache has not
+      # taken over yet.
+      @list_of_spilled_bitcode_paths : Array(String)
+
+      # How many parts IR generation spilled this unit's module in (0 for a
+      # module that stayed in memory).
+      @spilled_part_count : Int32
+
+      private def spilled? : Bool
+        @spilled_part_count > 0
+      end
+
+      # The unit's module. A module that IR generation spilled to disk is
+      # parsed from its bitcode files on first use, in a context of its own.
+      def llvm_mod : LLVM::Module
+        @llvm_mod ||= load_spilled_module
+      end
+
+      # Frees the unit's module, if it is in memory.
+      def dispose_module : Nil
+        @llvm_mod.try &.context.dispose
+      end
+
+      # The cached bitcode file of part *part_index* of a spilled unit. The
+      # first part is the unit's `.bc` file.
+      private def part_bc_name(part_index : Int32) : String
+        part_index == 0 ? bc_name : "#{@output_dir}/#{@name}.part#{part_index}.bc"
+      end
+
+      private def list_of_part_bc_names : Array(String)
+        Array.new(@spilled_part_count) { |part_index| part_bc_name(part_index) }
+      end
+
+      # The cached bitcode files of the parts after the first one.
+      private def list_of_more_part_bc_names : Array(String)
+        list_of_part_bc_names.skip(1)
+      end
+
+      private def load_spilled_module : LLVM::Module
+        # The spill files are the unit's cached bitcode files once the cache
+        # took them over.
+        list_of_paths = @list_of_spilled_bitcode_paths.empty? ? list_of_part_bc_names : @list_of_spilled_bitcode_paths
+        spilled_module = Compiler.parse_linked_bitcode_files(list_of_paths, LLVM::Context.new)
+        # Modules that stayed in memory were verified when IR generation
+        # finished; a spilled one is verified here, the one time it is
+        # complete and in memory anyway.
+        spilled_module.verify
+        spilled_module
+      end
+
+      # Deletes the cached bitcode files of every part after the first one,
+      # whatever number of parts the build that left them had.
+      private def delete_cached_part_files : Nil
+        compiler.take_cached_part_bitcode_filenames(@output_dir, @name).each do |part_filename|
+          File.delete?(File.join(@output_dir, part_filename))
+        end
+      end
+
+      # Makes the spill files the unit's cached bitcode files.
+      private def move_spilled_bitcode_into_cache : Nil
+        delete_cached_part_files
+        @list_of_spilled_bitcode_paths.each_with_index do |spilled_bitcode_path, part_index|
+          File.rename(spilled_bitcode_path, part_bc_name(part_index))
+        end
+        @list_of_spilled_bitcode_paths.clear
       end
 
       def generate_bitcode : LLVM::MemoryBuffer?
         return nil if @skipped_via_module_cache
+        # A spilled unit already is bitcode, on disk.
+        return nil if spilled?
         @memory_buffer ||= llvm_mod.write_bitcode_to_memory_buffer
       end
 
@@ -1844,7 +2274,8 @@ module Crystal
         if @skipped_via_module_cache
           @reused_previous_compilation = true
           # The cached object file stands in for this module (see below).
-          llvm_mod.context.dispose if isolate_context
+          dispose_module if isolate_context
+          discard_spilled_bitcode
           return
         end
 
@@ -1864,11 +2295,112 @@ module Crystal
         # otherwise keep their contexts alive for the rest of the
         # compilation, including the codegen of a macro run program that
         # happens in the middle of the main program's semantic phase.
-        llvm_mod.context.dispose if isolate_context
+        dispose_module if isolate_context
+      end
+
+      private def discard_spilled_bitcode : Nil
+        @list_of_spilled_bitcode_paths.each { |spilled_bitcode_path| File.delete?(spilled_bitcode_path) }
+        @list_of_spilled_bitcode_paths.clear
+      end
+
+      # The same decision as `must_compile?`, for a unit whose new bitcode
+      # is in files: each part is compared with its cached bitcode file.
+      private def must_compile_spilled? : Bool
+        return true unless compiler.emit_targets.none?
+        return true if @bc_flags_changed
+        return true unless object_names.all? { |name| File.exists?(name) && File.size(name) > 0 }
+        # The build that left the objects had more parts.
+        return true if File.exists?(part_bc_name(@spilled_part_count))
+
+        unchanged = @list_of_spilled_bitcode_paths.each_with_index.all? do |(spilled_bitcode_path, part_index)|
+          cached_bitcode_name = part_bc_name(part_index)
+          File.exists?(cached_bitcode_name) && File.open(cached_bitcode_name) do |cached_file|
+            File.open(spilled_bitcode_path) { |spilled_file| IO.same_content?(cached_file, spilled_file) }
+          end
+        end
+        # The cached bitcode files hold the same module from now on.
+        discard_spilled_bitcode if unchanged
+        !unchanged
+      end
+
+      # The size of this unit's bitcode, known once it was generated.
+      getter bitcode_bytesize : Int64 = 0_i64
+
+      # Prepares this unit for a `CodegenWorker`: writes the module to its
+      # bitcode file unless the previous object file can be reused, and frees
+      # the module. Returns whether a worker must build the object file.
+      def write_bitcode_and_release_module : Bool
+        if @skipped_via_module_cache
+          @reused_previous_compilation = true
+          dispose_module
+          discard_spilled_bitcode
+          return false
+        end
+
+        return hand_spilled_bitcode_to_worker if spilled?
+
+        # Generated even with --no-cache: the worker reads the module from
+        # its bitcode file, and the object it writes comes from that file.
+        if memory_buffer = generate_bitcode
+          @bitcode_bytesize = memory_buffer.to_slice.size.to_i64
+        end
+
+        must_compile = must_compile?
+        if must_compile
+          update_bitcode_cache
+        else
+          @reused_previous_compilation = true
+          dump_llvm_ir
+        end
+        llvm_mod.context.dispose
+        must_compile
+      end
+
+      # The same for a unit that IR generation spilled: its bitcode is
+      # already in files and its module is not in memory. The spill files
+      # become the unit's cached bitcode files, the ones the worker links
+      # and compiles (with --no-cache too). Nothing has verified the module
+      # yet, so the worker does.
+      private def hand_spilled_bitcode_to_worker : Bool
+        @bitcode_bytesize = @list_of_spilled_bitcode_paths.sum { |spilled_bitcode_path| File.size(spilled_bitcode_path) }
+        must_compile = compiler.no_cache? || must_compile_spilled?
+        if must_compile
+          delete_object_files
+          move_spilled_bitcode_into_cache
+          @worker_verifies_module = true
+        else
+          @reused_previous_compilation = true
+          dump_llvm_ir
+          dispose_module
+        end
+        must_compile
+      end
+
+      def codegen_worker_job : CodegenWorker::Job
+        CodegenWorker::Job.new(
+          bitcode_filename: bc_name,
+          object_filename: object_name,
+          llvm_ir_filename: compiler.dump_ll? ? ll_name : nil,
+          verifies_module: @worker_verifies_module,
+          list_of_more_bitcode_filenames: list_of_more_part_bc_names,
+          name: original_name,
+          bitcode_bytesize: bitcode_bytesize,
+        )
+      end
+
+      # What `--stats` tells about this unit.
+      def summary : ObjectStage::UnitSummary
+        ObjectStage::UnitSummary.new(
+          original_name: original_name,
+          bitcode_name: "#{name}.bc",
+          reused_previous_compilation: reused_previous_compilation?,
+        )
       end
 
       private def must_compile?
         return true if compiler.no_cache?
+
+        return must_compile_spilled? if spilled?
 
         memory_buffer = generate_bitcode
 
@@ -1880,6 +2412,8 @@ module Crystal
         return true unless compiler.emit_targets.none?
         return true if @bc_flags_changed
         return true unless File.exists?(bc_name)
+        # The build that left the objects spilled this module in parts.
+        return true if File.exists?(part_bc_name(1))
 
         # If the user cancelled a previous compilation
         # it might be that a .o file is missing or empty
@@ -1898,7 +2432,11 @@ module Crystal
       # dedicated context, so we can safely optimize & compile the module in
       # multiple threads (llvm contexts can't be shared across threads).
       private def isolate_module_context
+        # A spilled unit is parsed from its file into a context of its own
+        # by whichever thread compiles it.
         generated_module = @llvm_mod
+        return unless generated_module
+
         @llvm_mod = LLVM::Module.parse(@memory_buffer.not_nil!, LLVM::Context.new)
 
         # In multi-module mode every module is generated in a context of its
@@ -1907,24 +2445,41 @@ module Crystal
         generated_module.context.dispose
       end
 
-      private def update_bitcode_cache
-        # Delete existing .o files, including the parts of any part count
-        # (only the main unit is ever split). They cannot be used anymore:
-        # every object left next to the .bc file must have been built from
-        # it, or a later build (with another part count, or after a
-        # --no-cache build) could link objects of another program.
+      # Deletes existing .o files, including the parts of any part count
+      # (only the main unit is ever split). They cannot be used anymore:
+      # every object left next to the .bc file must have been built from
+      # it, or a later build (with another part count, or after a
+      # --no-cache build) could link objects of another program.
+      private def delete_object_files : Nil
         File.delete?(object_name)
         object_names.each { |name| File.delete?(name) }
         delete_part_objects_of_every_count if @original_name == "_main"
+      end
 
-        if memory_buffer = @memory_buffer
+      private def update_bitcode_cache
+        delete_object_files
+
+        if spilled?
+          if compiler.no_cache?
+            # The module is compiled from the spill files, which are not kept.
+            llvm_mod
+            File.delete?(bc_name)
+            delete_cached_part_files
+            discard_spilled_bitcode
+          else
+            # The spill files become the bitcode files (for next compilations)
+            move_spilled_bitcode_into_cache
+          end
+        elsif memory_buffer = @memory_buffer
           # Create the .bc file (for next compilations)
           File.write(bc_name, memory_buffer.to_slice)
           memory_buffer.dispose
+          delete_cached_part_files
         else
           # --no-cache generates no bitcode: the objects written next do not
           # come from the cached .bc file, so it must not match them later.
           File.delete?(bc_name)
+          delete_cached_part_files
         end
       end
 

@@ -72,17 +72,30 @@ module Crystal
       nil
     end
 
-    @c_calling_convention : Bool? = nil
-    property c_calling_convention
+    # Whether this def must respect the C calling convention:
+    # 0 when not computed yet, 1 for no, 2 for yes.
+    @c_calling_convention_state : UInt8 = 0_u8
+
+    def c_calling_convention : Bool?
+      case @c_calling_convention_state
+      when 1 then false
+      when 2 then true
+      end
+    end
+
+    def c_calling_convention=(value : Bool?)
+      @c_calling_convention_state = value.nil? ? 0_u8 : (value ? 2_u8 : 1_u8)
+      value
+    end
 
     # Returns `self` as an `External` if this Def is an External
     # that must respect the C calling convention.
     def c_calling_convention?
-      if @c_calling_convention.nil?
-        @c_calling_convention = compute_c_calling_convention
+      if @c_calling_convention_state == 0
+        self.c_calling_convention = compute_c_calling_convention
       end
 
-      @c_calling_convention ? self : nil
+      @c_calling_convention_state == 2 ? self : nil
     end
 
     def llvm_intrinsic?

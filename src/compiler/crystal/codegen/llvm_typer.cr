@@ -12,7 +12,22 @@ module Crystal
 
     @@closure_counter = 0
 
-    def initialize(@program : Program, @llvm_context : LLVM::Context)
+    # Starts the numbering of closure structs over. Each code generation
+    # does, so that a program gets the same struct names (and the same
+    # bitcode) whatever was compiled before it in this process.
+    def self.reset_closure_counter : Nil
+      @@closure_counter = 0
+    end
+
+    # *data_layout* computes sizes and offsets. LLVM caches the layout of a
+    # struct in the data layout object, by the address of the struct type,
+    # and never forgets one. A typer whose context can be disposed while
+    # the compiler goes on must therefore get the data layout of a module of
+    # that context (`LLVM::Module#data_layout`), which goes away with it:
+    # in a data layout that outlives the context, a struct type of a later
+    # context that is allocated at the same address would get the size of
+    # the struct that used to be there.
+    def initialize(@program : Program, @llvm_context : LLVM::Context, data_layout : LLVM::TargetData? = nil)
       @cache = TypeCache.new
       @struct_cache = TypeCache.new
 
@@ -47,9 +62,13 @@ module Crystal
 
       @structs = {} of String => LLVM::Type
 
-      machine = program.target_machine
-      @layout = machine.data_layout
+      @layout = data_layout || program.target_machine.data_layout
       @landing_pad_type = @llvm_context.struct([@llvm_context.void_pointer, @llvm_context.int32], "landing_pad")
+    end
+
+    # The data layout this typer computes sizes, alignments and offsets with.
+    def data_layout : LLVM::TargetData
+      @layout
     end
 
     def type_id_pointer

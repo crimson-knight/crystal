@@ -12,7 +12,19 @@ module Crystal
     getter stage_progress = 0
     getter stage_progress_total : Int32?
 
-    def stage(name, &)
+    # Continues the stage *name* that another process started at
+    # *started_at* as stage number *stage_number*, with *stage_progress* of
+    # *stage_progress_total* steps already done (see
+    # `Compiler::ObjectStage`). The time reported is the whole stage's.
+    def resume_stage(name, *, stage_number : Int32, started_at : Time,
+                     stage_progress : Int32, stage_progress_total : Int32, &)
+      @current_stage = stage_number
+      @stage_progress = stage_progress
+      @stage_progress_total = stage_progress_total
+      stage(name, started_at: started_at) { yield }
+    end
+
+    def stage(name, *, started_at : Time? = nil, &)
       @current_stage_name = name
 
       print_stats
@@ -20,7 +32,8 @@ module Crystal
 
       time_start = Time.instant
       retval = yield
-      time_taken = time_start.elapsed
+      GCTuning.stage_finished(name)
+      time_taken = started_at ? Time.utc - started_at : time_start.elapsed
 
       print_stats(time_taken)
       print_progress

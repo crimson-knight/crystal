@@ -1064,6 +1064,12 @@ module Crystal
     def notify_subclass_added
       @subclass_observers.try &.dup.each &.on_new_subclass
     end
+
+    # Forgets the calls waiting for new subclasses (see
+    # `Program#release_semantic_only_data`).
+    def release_subclass_observers : Nil
+      @subclass_observers = nil
+    end
   end
 
   # A type that can have instance var initializers, like
@@ -1986,10 +1992,31 @@ module Crystal
       generic_type.class_var_owner
     end
 
+    # The parents of the generic type with this instance's type arguments in
+    # place. Type lookups ask for them constantly, and working them out
+    # allocates, so the answer is kept. The generic type's parents only ever
+    # grow (an `include` or a superclass adds one): the answer is worked out
+    # again when their number changes. Callers must not change the array.
+    @parents : Array(Type)?
+    @generic_parents : Array(Type)?
+    @generic_parents_size = 0
+
     def parents
-      generic_type.parents.try &.map do |parent|
-        parent.replace_type_parameters(self)
+      generic_parents = generic_type.parents
+      return nil unless generic_parents
+
+      parents = @parents
+      if parents && @generic_parents.same?(generic_parents) && @generic_parents_size == generic_parents.size
+        return parents
       end
+
+      size = generic_parents.size
+      parents = generic_parents.map do |parent|
+        parent.replace_type_parameters(self).as(Type)
+      end
+      @generic_parents = generic_parents
+      @generic_parents_size = size
+      @parents = parents
     end
 
     def replace_type_parameters(instance)
