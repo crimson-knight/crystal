@@ -65,6 +65,11 @@ module Crystal
       {% end %}
     end
 
+    # With `CRYSTAL_PEAK_TRACE=1`, IR generation prints the collector's
+    # numbers and the C allocator's bytes to standard error as it goes
+    # (see `CodeGenVisitor#trace_peak`).
+    class_getter?(traces : Bool) { ENV["CRYSTAL_PEAK_TRACE"]? == "1" }
+
     def self.record(io : IO, label : String, system_report : Bool = true) : Nil
       {% unless flag?(:gc_none) || flag?(:wasm32) %}
         stats = GC.prof_stats
@@ -84,6 +89,35 @@ module Crystal
   end
 
   class CodeGenVisitor
+    # For the node classes that fill the heap: how many objects are live,
+    # and how many of them still have type-inference edges (the ones
+    # `InferenceEdgeReleaser` did not reach).
+    private def report_live_nodes_with_edges(io : IO) : Nil
+      {% for node_class in %w(Call Var MetaVar Assign If Path InstanceVar TypeFilteredNode Block Def Arg) %}
+        live_count = 0
+        with_dependencies = 0
+        with_observers = 0
+        MemoryCensus.each_object_of({{node_class.id}}.crystal_instance_type_id, instance_sizeof({{node_class.id}})) do |pointer|
+          node = pointer.as({{node_class.id}})
+          live_count += 1
+          with_dependencies += 1 if node.dependencies.first?
+          with_observers += 1 if node.@observers.first?
+        end
+        io.printf("live %-18s %9d objects, %9d with dependencies, %9d with observers\n",
+          {{node_class}}, live_count, with_dependencies, with_observers)
+      {% end %}
+      io.flush
+    end
+
+    # Prints one line of `PeakProbe` numbers with the modules in memory.
+    def trace_peak(label : String) : Nil
+      return unless PeakProbe.traces?
+
+      STDERR.printf("peak-trace modules_in_memory=%d estimated_ir_mb=%.1f spills=%d ", @resident_modules.size,
+        @resident_ir_bytes / 1e6, @module_spill.try(&.spill_count) || 0)
+      PeakProbe.record(STDERR, label, system_report: false)
+    end
+
     # See `PeakProbe`. Exits the compiler.
     def run_peak_probe(node : ASTNode) : NoReturn
       directory = PeakProbe.directory || raise "BUG: the peak probe ran without CRYSTAL_PEAK_PROBE"
@@ -127,6 +161,7 @@ module Crystal
             LibDarwinMalloc.malloc_zone_pressure_relief(nil, 0)
           {% end %}
           PeakProbe.record(io, "after unmapping free heap blocks")
+          report_live_nodes_with_edges(io)
         {% end %}
       end
       MemoryCensus.report(@program, node, "Codegen (crystal)", File.join(directory, "census.txt"))

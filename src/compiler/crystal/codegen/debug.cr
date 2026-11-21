@@ -499,15 +499,31 @@ module Crystal
       end
     end
 
+    # The file of the last debug location set in the main function, and its
+    # scope. Top-level code sets one location after the other in the same
+    # file, and this is asked for every one of them.
+    @last_main_scope_filename : String?
+    @last_main_scope : LibLLVM::MetadataRef?
+
     def get_current_debug_scope(location)
-      if context.fun.name == MAIN_NAME
+      # The main function is recognized by identity: reading a function's
+      # name from LLVM allocates a string each time.
+      if context.fun == @main
+        filename = location.filename
+        if filename.is_a?(String) && filename.same?(@last_main_scope_filename)
+          if last_main_scope = @last_main_scope
+            return last_main_scope
+          end
+        end
         main_scopes = (@main_scopes ||= {} of {String, String} => LibLLVM::MetadataRef)
-        file, dir = file_and_dir(location.filename)
+        file, dir = file_and_dir(filename)
         main_scope = main_scopes[{file, dir}] ||= begin
           di_builder = di_builder(@main_module_info)
           file = di_builder.create_file(file, dir)
           di_builder.create_lexical_block(fun_metadatas(@main_module_info)[context.fun][0].metadata, file, 1, 1)
         end
+        @last_main_scope_filename = filename.as?(String)
+        @last_main_scope = main_scope
         main_scope
       else
         scope = nil

@@ -236,6 +236,11 @@ module Crystal
     property? release_typed_bodies = false
     @released_body_count = 0
 
+    # Released bodies between two collections that return free heap pages
+    # to the OS (`CRYSTAL_RELEASED_BODIES_PER_UNMAP` overrides it for
+    # measuring; 0 turns these collections off).
+    @released_bodies_per_unmap : Int32 = ENV["CRYSTAL_RELEASED_BODIES_PER_UNMAP"]?.try(&.to_i?) || RELEASED_BODIES_PER_UNMAP
+
     # The groups of typed defs that share one function, or `nil` when sharing
     # is off (see `OwnerShapeSharing`).
     getter owner_shape_sharing : OwnerShapeSharing?
@@ -625,6 +630,7 @@ module Crystal
     end
 
     def finish
+      trace_peak("finish begins")
       clear_current_debug_location if @debug.line_numbers?
       codegen_return @main_ret_type
 
@@ -666,8 +672,10 @@ module Crystal
         mod.verify
       end
 
+      trace_peak("modules verified")
       dispose_di_builders
       spill_last_parts_of_spilled_modules
+      trace_peak("last parts written")
 
       if type_info_path = ENV["CRYSTAL_DUMP_TYPE_INFO"]?.presence
         dump_type_info(type_info_path)

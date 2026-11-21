@@ -434,7 +434,7 @@ module Crystal
         end
 
         unless @no_codegen
-          release_semantic_only_data(program) unless @incremental
+          release_semantic_only_data(program, node) unless @incremental
           units = codegen program, node, source, output_filename
         end
 
@@ -759,9 +759,11 @@ module Crystal
       module_spill = @last_module_spill = module_spill_for(output_dir, is_single_module)
 
       llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
-        program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: is_single_module, release_typed_bodies: !@incremental,
-          module_spill: module_spill
+        GCTuning.with_ir_generation_divisor do
+          program.codegen node, debug: debug, frame_pointers: frame_pointers,
+            single_module: is_single_module, release_typed_bodies: !@incremental,
+            module_spill: module_spill
+        end
       end
       # Printed as soon as the stage ends: a build that is stopped after IR
       # generation still shows them.
@@ -1255,9 +1257,9 @@ module Crystal
     #
     # Skipped in incremental mode, whose signature pass reads the program
     # after codegen.
-    private def release_semantic_only_data(program)
+    private def release_semantic_only_data(program, node : ASTNode)
       @progress_tracker.stage("Semantic (release)") do
-        program.release_semantic_only_data
+        program.release_semantic_only_data(node)
         return_free_memory_to_os
       end
     end
