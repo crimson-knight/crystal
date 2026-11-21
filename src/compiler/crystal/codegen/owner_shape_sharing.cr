@@ -691,8 +691,15 @@ module Crystal
         end
       end
 
-      def visit(node : Nop | NilLiteral | Unreachable | Expressions | Assign | If | While | Not | Return | Break | Next | Yield | TupleLiteral | ExceptionHandler | TypeDeclaration | UninitializedVar | Underscore) : Bool
+      def visit(node : Nop | NilLiteral | Unreachable | Expressions | If | While | Not | Return | Break | Next | Yield | TupleLiteral | ExceptionHandler | UninitializedVar | Underscore) : Bool
         enter(node)
+        true
+      end
+
+      # Codegen skips an assignment or declaration marked as discarded.
+      def visit(node : Assign | TypeDeclaration) : Bool
+        enter(node)
+        mix(node.discarded?)
         true
       end
 
