@@ -129,8 +129,21 @@ module Crystal
     # that embeds the compiler leaves it unset and compiles objects in-process.
     property codegen_worker_executable : String?
 
-    # How many worker processes built the object files of the last compilation.
-    @last_codegen_worker_count = 0
+    # Whether the compiler may end a build by replacing its own process image
+    # with `crystal internal-object-stage` (see `ObjectStage`), which builds
+    # the object files in workers, links, and exits with the build's status.
+    # `Compiler#compile` then never returns for a build that reaches the
+    # object files. The `crystal build` command turns it on; it takes effect
+    # together with `#codegen_worker_executable`.
+    property? object_stage_handoff = false
+
+    # The memory the object-file workers may use together, in bytes (see
+    # `CodegenWorkerPool`). `nil` takes the default for `n_threads` and this
+    # machine's memory. Set by `--object-memory-budget`.
+    property codegen_worker_memory_budget_bytes : Int64?
+
+    # The worker processes that built the object files of the last compilation.
+    @last_codegen_worker_pool : CodegenWorkerPool?
 
     # Default prelude file to use. This ends up adding a
     # `require "prelude"` (or whatever name is set here) to
@@ -416,7 +429,7 @@ module Crystal
 
       @progress_tracker.clear
       print_macro_run_stats(program)
-      print_codegen_stats(units)
+      print_codegen_stats(units.map(&.summary)) if units
       print_parse_cache_stats
       print_signature_stats
       print_compilation_skip_stats if compilation_skipped
@@ -740,8 +753,8 @@ module Crystal
       if @cross_compile
         cross_compile program, units, output_filename
       else
-        units = with_file_lock(output_dir) do
-          codegen program, units, output_filename, output_dir
+        units = with_file_lock(output_dir) do |build_lock|
+          codegen program, units, output_filename, output_dir, build_lock
         end
 
         {% if flag?(:darwin) %}
@@ -780,7 +793,7 @@ module Crystal
     private def with_file_lock(output_dir, &)
       File.open(File.join(output_dir, "compiler.lock"), "w") do |file|
         file.flock_exclusive do
-          yield
+          yield file
         end
       end
     end
@@ -799,7 +812,7 @@ module Crystal
       run_dsymutil(output_filename) unless File.exists?(dwarf_filename)
     end
 
-    private def run_dsymutil(filename)
+    protected def run_dsymutil(filename)
       dsymutil = Process.find_executable("dsymutil")
       return unless dsymutil
 
@@ -1060,10 +1073,11 @@ module Crystal
       end
     end
 
-    private def codegen(program, units : Array(CompilationUnit), output_filename, output_dir)
+    private def codegen(program, units : Array(CompilationUnit), output_filename, output_dir, build_lock : File)
       object_names = units.flat_map &.object_filenames
 
-      @progress_tracker.stage("Codegen (bc+obj)") do
+      @progress_tracker.stage(ObjectStage::STAGE_NAME) do
+        stage_started_at = Time.utc
         @progress_tracker.stage_progress_total = units.size
 
         n_threads = @n_threads.clamp(1..units.size)
@@ -1071,7 +1085,21 @@ module Crystal
         if n_threads == 1
           sequential_codegen(units)
         elsif (worker_executable = @codegen_worker_executable) && units.size > 1
-          worker_process_codegen(units, n_threads, worker_executable)
+          list_of_jobs = write_bitcode_and_release_modules(units)
+          unless list_of_jobs.empty?
+            if object_stage_handoff? && !@incremental
+              hand_off_object_stage(program, units, list_of_jobs, n_threads, worker_executable,
+                output_filename, output_dir, object_names, stage_started_at, build_lock)
+            end
+
+            # IR generation leaves garbage behind in the heap. Hand it back
+            # before the workers start, so their memory does not stack on top
+            # of it. The same goes for the memory the disposed LLVM contexts
+            # freed.
+            return_free_memory_to_os
+            return_free_malloc_memory_to_os
+            build_objects_in_workers(list_of_jobs, n_threads, worker_executable)
+          end
         else
           parallel_codegen(units, n_threads)
         end
@@ -1098,15 +1126,9 @@ module Crystal
         @progress_tracker.stage("Codegen (linking)") { }
       else
         @progress_tracker.stage("Codegen (linking)") do
-          # Save source directory before changing to output_dir so CRYSTAL_PATH
-          # relative entries (e.g. "src:lib") resolve correctly in linker_command
-          src_dir = Dir.current
+          linker_name, command, args = linker_invocation(program, units, object_names, output_filename, output_dir)
+          Dir.cd(output_dir) { run_linker linker_name, command, args }
           split_into_parts = units.any? { |unit| unit.part_count > 1 }
-          Dir.cd(output_dir) do
-            linker_name, command, args = linker_command(program, object_names, output_filename, output_dir, expand: true, source_dir: src_dir)
-            command += private_symbols_strip_flag(output_dir) if split_into_parts && program.codegen_target.macos?
-            run_linker linker_name, command, args
-          end
           remove_private_symbols(output_filename) if split_into_parts && program.codegen_target.linux?
         end
       end
@@ -1167,158 +1189,122 @@ module Crystal
       {% end %}
     end
 
-    # Builds the object files in worker processes (see `CodegenWorker`).
-    #
-    # First every unit writes its module to its bitcode file and frees it, so
-    # the generated IR leaves this process before any worker starts. Then up
-    # to *n_threads* workers each compile one bitcode file at a time. Memory
-    # during the stage is this process without its IR plus one module per
-    # worker, and the units are optimized in parallel.
-    private def worker_process_codegen(units, n_threads, worker_executable)
-      units_to_compile = units.select do |unit|
-        must_compile = unit.write_bitcode_and_release_module
-        @progress_tracker.stage_progress += 1 unless must_compile
-        must_compile
-      end
-      return if units_to_compile.empty?
-
-      # IR generation leaves garbage behind in the heap. Hand it back before
-      # the workers start, so their memory does not stack on top of it. The
-      # same goes for the memory the disposed LLVM contexts freed.
-      return_free_memory_to_os
-      return_free_malloc_memory_to_os
-
-      settings_line = CodegenWorker::Settings.from_compiler(self).to_json
-      work_queue = CodegenWorkQueue.new(units_to_compile)
-      lock = Sync::Mutex.new
-      first_failure_message = nil.as(String?)
-
-      worker_count = n_threads.clamp(1..units_to_compile.size)
-      @last_codegen_worker_count = worker_count
-      workers_done = Channel(Nil).new(worker_count)
-      worker_count.times do
-        spawn do
-          failure_message = begin
-            run_codegen_worker(worker_executable, settings_line, work_queue) do
-              lock.synchronize { @progress_tracker.stage_progress += 1 }
-            end
-          rescue ex
-            "#{ex.message} (#{ex.class})"
-          end
-          if failure_message
-            work_queue.stop
-            lock.synchronize { first_failure_message ||= failure_message }
-          end
-          workers_done.send(nil)
-        end
-      end
-      worker_count.times { workers_done.receive }
-
-      if failure_message = lock.synchronize { first_failure_message }
-        raise CompilerError.new("object file worker failed: #{failure_message}")
+    # The linker to run from *output_dir* to link *object_names* into
+    # *output_filename* (an absolute path): its name, the shell command, and
+    # the command's arguments.
+    private def linker_invocation(program, units, object_names, output_filename, output_dir) : {String, String, Array(String)?}
+      # Save source directory before changing to output_dir so CRYSTAL_PATH
+      # relative entries (e.g. "src:lib") resolve correctly in linker_command
+      src_dir = Dir.current
+      split_into_parts = units.any? { |unit| unit.part_count > 1 }
+      Dir.cd(output_dir) do
+        linker_name, command, args = linker_command(program, object_names, output_filename, output_dir, expand: true, source_dir: src_dir)
+        command += private_symbols_strip_flag(output_dir) if split_into_parts && program.codegen_target.macos?
+        {linker_name, command, args}
       end
     end
 
-    # Runs one worker process, giving it one unit of *work_queue* at a time
-    # until the queue hands out no more, and yielding after each finished
-    # unit. Returns a description of what went wrong, or `nil` when every
-    # unit it was given has its object file.
-    private def run_codegen_worker(worker_executable : String, settings_line : String,
-                                   work_queue : CodegenWorkQueue, & : -> Nil) : String?
-      process = Process.new(worker_executable, [CodegenWorker::COMMAND],
-        input: :pipe, output: :pipe, error: :inherit)
-      failure_message = nil
-      begin
-        process.input.puts settings_line
-        while unit = work_queue.take
-          process.input.puts unit.codegen_worker_job.to_json
-          process.input.flush
-          outcome_line = process.output.gets
-          work_queue.finished(unit)
-          unless outcome_line
-            failure_message = "the worker stopped while compiling #{unit.original_name}"
-            break
-          end
-          if error_message = CodegenWorker::Outcome.from_json(outcome_line).error_message
-            failure_message = error_message
-            break
-          end
-          yield
-        end
-        process.input.close
-      rescue ex : IO::Error
-        failure_message ||= "lost the connection to the worker (#{ex.message})"
+    # Links the object files with a linker command that was put together
+    # earlier (see `#linker_invocation`), as the last step of a build that
+    # was handed to `ObjectStage`.
+    protected def link_object_files(linker_name : String, command : String, args : Array(String)?,
+                                    output_filename : String, output_dir : String) : Nil
+      if Dir.exists?(output_filename)
+        raise CompilerError.new("can't use `#{output_filename}` as output filename because it's a directory", :USAGE_ERROR)
       end
-      status = process.wait
-      failure_message ||= "the worker exited abnormally (#{status})" unless status.success?
-      failure_message
+
+      @progress_tracker.stage("Codegen (linking)") do
+        Dir.cd(output_dir) { run_linker linker_name, command, args }
+      end
     end
 
-    # Hands the units to compile out to the object file workers.
+    # Prepares the units for the object-file workers (see `CodegenWorker`):
+    # every unit writes its module to its bitcode file and frees it, so the
+    # generated IR leaves this process before any worker starts. Returns the
+    # jobs of the units whose object file must be built.
+    private def write_bitcode_and_release_modules(units) : Array(CodegenWorker::Job)
+      list_of_jobs = [] of CodegenWorker::Job
+      units.each do |unit|
+        if unit.write_bitcode_and_release_module
+          list_of_jobs << unit.codegen_worker_job
+        else
+          @progress_tracker.stage_progress += 1
+        end
+      end
+      list_of_jobs
+    end
+
+    # Builds the object files of *list_of_jobs* in up to *thread_count*
+    # worker processes, each compiling one bitcode file at a time, within the
+    # workers' memory budget (see `CodegenWorkerPool`).
+    protected def build_objects_in_workers(list_of_jobs : Array(CodegenWorker::Job), thread_count : Int32,
+                                           worker_executable : String) : Nil
+      pool = CodegenWorkerPool.new(worker_executable, CodegenWorker::Settings.from_compiler(self),
+        list_of_jobs, thread_count, codegen_worker_memory_budget_bytes_for(thread_count))
+      @last_codegen_worker_pool = pool
+      pool.perform { @progress_tracker.stage_progress += 1 }
+    end
+
+    private def codegen_worker_memory_budget_bytes_for(thread_count : Int32) : Int64
+      @codegen_worker_memory_budget_bytes || CodegenWorkerPool.default_memory_budget_bytes(thread_count)
+    end
+
+    # Ends this process's part of the build: writes the `ObjectStage::Handoff`
+    # and replaces this process image with the compiler's object stage, which
+    # builds the object files, links and reports. All the memory of this
+    # process returns to the system at that moment, before any worker starts.
     #
-    # The largest modules take the longest to optimize and need the most
-    # memory, roughly in proportion to their bitcode size. They are handed
-    # out first, so the longest one is under way from the start, but only
-    # while the bitcode being compiled stays within twice the largest
-    # module: a worker that cannot take a large module takes the smallest
-    # one instead. The largest modules are therefore never all in memory
-    # at once.
-    private class CodegenWorkQueue
-      @units : Array(CompilationUnit)
-      @in_flight_bytesize_limit : Int64
+    # Returns only when the process image could not be replaced; the build
+    # then goes on in this process.
+    private def hand_off_object_stage(program, units, list_of_jobs, thread_count, worker_executable,
+                                      output_filename, output_dir, object_names, stage_started_at,
+                                      build_lock : File) : Nil
+      {% unless flag?(:win32) || flag?(:wasm32) %}
+        output_filename = File.expand_path(output_filename)
+        linker_name, command, args = linker_invocation(program, units, object_names, output_filename, output_dir)
+        writes_dwarf_companion = {{ flag?(:darwin) }} && !debug.none? && dsymutil?
 
-      def initialize(units : Array(CompilationUnit))
-        @units = units.sort_by { |unit| -unit.bitcode_bytesize }
-        @taken = Array(Bool).new(@units.size, false)
-        @first_untaken_index = 0
-        @last_untaken_index = @units.size - 1
-        @in_flight_bytesize = 0_i64
-        largest_unit = @units.first?
-        @in_flight_bytesize_limit = largest_unit ? largest_unit.bitcode_bytesize * 2 : 0_i64
-        @stopped = false
-        @lock = Sync::Mutex.new
-      end
+        handoff = ObjectStage::Handoff.new(
+          worker_executable: worker_executable,
+          settings: CodegenWorker::Settings.from_compiler(self),
+          list_of_jobs: list_of_jobs,
+          thread_count: thread_count,
+          memory_budget_bytes: codegen_worker_memory_budget_bytes_for(thread_count),
+          linker_name: linker_name,
+          linker_command: command,
+          list_of_linker_arguments: args,
+          output_directory: output_dir,
+          output_filename: output_filename,
+          writes_dwarf_companion: writes_dwarf_companion,
+          cleans_cache_directory: cleanup?,
+          lock_file_descriptor: build_lock.fd,
+          verbose: verbose?,
+          color: color?,
+          stats: @progress_tracker.stats?,
+          progress: @progress_tracker.progress?,
+          stage_number: @progress_tracker.current_stage,
+          stage_started_at_unix_ms: stage_started_at.to_unix_ms,
+          stage_progress: @progress_tracker.stage_progress,
+          stage_progress_total: units.size,
+          list_of_unit_summaries: units.map(&.summary),
+          stats_report_before_codegen: String.build { |io| print_macro_run_stats(program, io) },
+          list_of_warnings: warnings.infos,
+          error_on_warnings: warnings.error_on_warnings?,
+        )
+        handoff_filename = File.join(output_dir, "object-stage-handoff.json")
+        File.write(handoff_filename, handoff.to_json)
 
-      # Returns the next unit to compile, or `nil` when none is left or the
-      # queue was stopped.
-      def take : CompilationUnit?
-        @lock.synchronize do
-          next nil if @stopped
-
-          while @first_untaken_index <= @last_untaken_index && @taken[@first_untaken_index]
-            @first_untaken_index += 1
-          end
-          while @first_untaken_index <= @last_untaken_index && @taken[@last_untaken_index]
-            @last_untaken_index -= 1
-          end
-          next nil if @first_untaken_index > @last_untaken_index
-
-          index = index_of_largest_unit_within_limit || @last_untaken_index
-          @taken[index] = true
-          unit = @units[index]
-          @in_flight_bytesize += unit.bitcode_bytesize
-          unit
+        # The new image inherits the locked file, so the build stays locked.
+        build_lock.close_on_exec = false
+        STDOUT.flush
+        STDERR.flush
+        begin
+          Process.exec(worker_executable, [ObjectStage::COMMAND, handoff_filename])
+        rescue IO::Error
+          build_lock.close_on_exec = true
+          File.delete?(handoff_filename)
         end
-      end
-
-      # Tells the queue that *unit*, handed out by `#take`, is done.
-      def finished(unit : CompilationUnit) : Nil
-        @lock.synchronize { @in_flight_bytesize -= unit.bitcode_bytesize }
-      end
-
-      # Makes `#take` hand out no more units.
-      def stop : Nil
-        @lock.synchronize { @stopped = true }
-      end
-
-      private def index_of_largest_unit_within_limit : Int32?
-        return @first_untaken_index if @in_flight_bytesize == 0
-
-        room = @in_flight_bytesize_limit - @in_flight_bytesize
-        (@first_untaken_index..@last_untaken_index).find do |index|
-          !@taken[index] && @units[index].bitcode_bytesize <= room
-        end
-      end
+      {% end %}
     end
 
     private def parallel_codegen(units, n_threads)
@@ -1479,28 +1465,25 @@ module Crystal
       workers
     end
 
-    private def print_macro_run_stats(program)
+    private def print_macro_run_stats(program, io : IO = STDOUT)
       return unless @progress_tracker.stats?
       return if program.compiled_macros_cache.empty?
 
-      puts
-      puts "Macro runs:"
+      io.puts
+      io.puts "Macro runs:"
       program.compiled_macros_cache.each do |filename, compiled_macro_run|
-        print " - "
-        print filename
-        print ": "
+        io << " - " << filename << ": "
         if compiled_macro_run.reused
-          print "reused previous compilation (#{compiled_macro_run.elapsed})"
+          io << "reused previous compilation (#{compiled_macro_run.elapsed})"
         else
-          print compiled_macro_run.elapsed
+          io << compiled_macro_run.elapsed
         end
-        puts
+        io.puts
       end
     end
 
-    private def print_codegen_stats(units)
+    protected def print_codegen_stats(units : Array(ObjectStage::UnitSummary))
       return unless @progress_tracker.stats?
-      return unless units
 
       reused = units.count(&.reused_previous_compilation?)
 
@@ -1517,12 +1500,16 @@ module Crystal
         puts "These modules were not reused:"
         units.each do |unit|
           next if unit.reused_previous_compilation?
-          puts " - #{unit.original_name} (#{unit.name}.bc)"
+          puts " - #{unit.original_name} (#{unit.bitcode_name})"
         end
       end
 
-      if @last_codegen_worker_count > 0
-        puts " - object files were built by #{@last_codegen_worker_count} worker processes"
+      if pool = @last_codegen_worker_pool
+        megabyte = 1024 * 1024
+        puts " - object files were built by #{pool.worker_count} worker processes"
+        puts " - modules in flight at most: #{(pool.maximum_in_flight_bitcode_bytes / megabyte).round(1)} MB of bitcode, " \
+             "estimated #{pool.maximum_in_flight_memory_bytes // megabyte} MB of worker memory " \
+             "(budget #{pool.memory_budget_bytes // megabyte} MB)"
       end
 
       # Phase 4: Report modules skipped via source-file-level caching
@@ -1878,7 +1865,7 @@ module Crystal
       {% end %}
     end
 
-    private def run_linker(linker_name, command, args)
+    protected def run_linker(linker_name, command, args)
       print_command(command, args) if verbose?
 
       begin
@@ -2155,6 +2142,17 @@ module Crystal
           bitcode_filename: bc_name,
           object_filename: object_name,
           llvm_ir_filename: compiler.dump_ll? ? ll_name : nil,
+          name: original_name,
+          bitcode_bytesize: bitcode_bytesize,
+        )
+      end
+
+      # What `--stats` tells about this unit.
+      def summary : ObjectStage::UnitSummary
+        ObjectStage::UnitSummary.new(
+          original_name: original_name,
+          bitcode_name: "#{name}.bc",
+          reused_previous_compilation: reused_previous_compilation?,
         )
       end
 

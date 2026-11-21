@@ -50,14 +50,20 @@ module Crystal
 
     # One module to compile: where its bitcode is, where its object file
     # goes, and where to print the optimized IR (`--emit llvm-ir` style dump).
+    # `name` and `bitcode_bytesize` are for the pool that hands the job out
+    # (`CodegenWorkerPool`): what to call the module in a message, and the
+    # size its memory estimate comes from.
     struct Job
       include JSON::Serializable
 
       getter bitcode_filename : String
       getter object_filename : String
       getter llvm_ir_filename : String?
+      getter name : String = ""
+      getter bitcode_bytesize : Int64 = 0_i64
 
-      def initialize(@bitcode_filename, @object_filename, @llvm_ir_filename = nil)
+      def initialize(@bitcode_filename, @object_filename, @llvm_ir_filename = nil,
+                     @name = bitcode_filename, @bitcode_bytesize = 0_i64)
       end
     end
 
