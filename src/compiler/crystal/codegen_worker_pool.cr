@@ -5,8 +5,9 @@ module Crystal
   #
   # A worker's memory grows with the bitcode of the module it compiles, so
   # the pool keeps the estimated memory of the jobs in flight within a
-  # budget. The largest job that fits goes out first; a job larger than the
-  # whole budget runs when nothing else is in flight. A worker process is
+  # budget. The largest job that fits goes out first, as long as the other
+  # idle workers can still take a job; a job larger than the whole budget
+  # runs when nothing else is in flight. A worker process is
   # started the first time a job is handed to it, so a tight budget also
   # starts fewer processes.
   class CodegenWorkerPool
@@ -107,7 +108,7 @@ module Crystal
       first_failure_message = nil.as(String?)
 
       loop do
-        while first_failure_message.nil? && !list_of_idle_seats.empty? && (job_index = next_job_index)
+        while first_failure_message.nil? && !list_of_idle_seats.empty? && (job_index = next_job_index(list_of_idle_seats.size))
           seat = list_of_idle_seats.pop
           @worker_count += 1 unless seat.started?
           hand_out(job_index)
@@ -161,9 +162,13 @@ module Crystal
       @maximum_in_flight_bitcode_bytes = Math.max(@maximum_in_flight_bitcode_bytes, @in_flight_bitcode_bytes)
     end
 
-    # The largest waiting job that fits in what is left of the budget, or the
-    # largest waiting job when nothing is in flight.
-    private def next_job_index : Int32?
+    # The job for one of *idle_seat_count* idle seats: the largest waiting
+    # job when nothing is in flight; otherwise the largest waiting job that
+    # fits in what is left of the budget and still leaves room for a job of
+    # middling size on each of the other idle seats, so that one large
+    # module does not keep the other workers waiting. When no job leaves
+    # that room, the largest one that fits.
+    private def next_job_index(idle_seat_count : Int32) : Int32?
       while @first_waiting_job_index < @list_of_jobs.size && @job_was_handed_out[@first_waiting_job_index]
         @first_waiting_job_index += 1
       end
@@ -171,6 +176,12 @@ module Crystal
       return @first_waiting_job_index if @in_flight_memory_bytes == 0
 
       room = @memory_budget_bytes - @in_flight_memory_bytes
+      middle_job_index = (@first_waiting_job_index + @list_of_jobs.size) // 2
+      room_for_other_seats = (idle_seat_count - 1) * @list_of_memory_estimates[middle_job_index]
+      largest_waiting_job_index_within(room - room_for_other_seats) || largest_waiting_job_index_within(room)
+    end
+
+    private def largest_waiting_job_index_within(room : Int64) : Int32?
       (@first_waiting_job_index...@list_of_jobs.size).find do |job_index|
         !@job_was_handed_out[job_index] && @list_of_memory_estimates[job_index] <= room
       end
