@@ -1458,12 +1458,48 @@ module Crystal
 
       recalculate_call(node)
 
+      restore_vars_unchanged_by_block(node, after_vars) if after_vars
+
       check_call_in_initialize node
 
       @type_filters = nil
       @unreachable = true if node.no_returns?
 
       false
+    end
+
+    # A call with a block wraps every variable in scope in an "after" var, so
+    # that what the block assigns reaches the code after the call. A block is
+    # typed once, and by then its assignments, `break`s and `next`s are all
+    # bound. A wrapper they left alone only repeats the variable it wraps, and
+    # nothing but this visitor has seen it, so the variable takes its place
+    # again and the wrapper is dropped.
+    private def restore_vars_unchanged_by_block(node : Call, after_vars : MetaVars) : Nil
+      block = node.block
+      return unless block && block.visited?
+      # A block made from a block argument (`&block`) has no after vars: no
+      # code in it can assign a variable.
+      owns_after_vars = block.after_vars.same?(after_vars)
+      return unless owns_after_vars || block.after_vars.nil?
+
+      unchanged = nil
+      after_vars.each do |name, after_var|
+        next unless @vars[name]?.same?(after_var)
+        next unless after_var.unchanged_wrapper?
+        wrapped = after_var.dependencies.first.as(MetaVar)
+        after_var.unbind_from(wrapped)
+        @vars[name] = wrapped
+        (unchanged ||= [] of String) << name
+      end
+      return unless unchanged
+
+      if !owns_after_vars
+        # Nothing else holds this map.
+      elsif unchanged.size == after_vars.size
+        block.after_vars = nil
+      else
+        unchanged.each { |name| after_vars.delete(name) }
+      end
     end
 
     def prepare_call(node)

@@ -42,6 +42,28 @@ module Crystal
       objects
     end
 
+    # Yields every marked object whose class header is *type_id*, and leaves
+    # no pointer to them behind (the collector scans the list conservatively).
+    def self.each_object_of(type_id : Int32, bytes_at_least : Int32, & : Void* ->) : Nil
+      objects = objects_of(type_id, bytes_at_least)
+      objects.each { |object| yield object }
+      objects.to_unsafe.clear(objects.size)
+      objects.clear
+    end
+
+    def self.count_objects_of(type_id : Int32) : Int32
+      count = 0
+      box = Box.box({pointerof(count), type_id})
+      GC.disable
+      LibGC.enumerate_reachable_objects_inner(->(object : Void*, bytes : LibC::SizeT, data : Void*) {
+        counter, wanted = Box({Pointer(Int32), Int32}).unbox(data)
+        counter.value += 1 if bytes >= 16 && object.as(Int32*).value == wanted
+        nil
+      }, box)
+      GC.enable
+      count
+    end
+
     def self.marked_bytes : {Int64, Int64}
       totals = {0_i64, 0_i64}
       pointer = pointerof(totals)
@@ -63,14 +85,15 @@ module Crystal
     # block owns (`Def#vars`, `Block#vars`, `Block#after_vars`); the others
     # are reachable only through inference edges and visitors.
     def print_inference_state(io : IO) : Nil
-      meta_vars = MemoryCensus.objects_of(MetaVar.crystal_instance_type_id, instance_sizeof(MetaVar))
+      meta_var_count = 0
       shapes = Hash({Bool, Int32, Int32}, Int64).new(0_i64)
       dependency_classes = Hash({Bool, String}, Int64).new(0_i64)
       observer_classes = Hash({Bool, String}, Int64).new(0_i64)
       frozen = 0_i64
       typed = 0_i64
-      meta_vars.each do |pointer|
+      MemoryCensus.each_object_of(MetaVar.crystal_instance_type_id, instance_sizeof(MetaVar)) do |pointer|
         meta_var = pointer.as(MetaVar)
+        meta_var_count += 1
         walked = @seen.includes?(meta_var.object_id)
         dependencies = meta_var.dependencies
         observers = meta_var.@observers
@@ -82,7 +105,7 @@ module Crystal
         end
         observers.each { |observer| observer_classes[{walked, observer.class.name}] += 1 }
       end
-      io.printf("infer    MetaVar objects %d, with a type %d, with a freeze type %d\n", meta_vars.size, typed, frozen)
+      io.printf("infer    MetaVar objects %d, with a type %d, with a freeze type %d\n", meta_var_count, typed, frozen)
       shapes.to_a.sort_by { |entry| -entry[1] }.each do |(walked, dependencies, observers), count|
         io.printf("infer    MetaVar %-8s dependencies %d%s observers %d%s %12d objects\n",
           walked ? "owned" : "edge", dependencies, dependencies == 3 ? "+" : " ", observers, observers == 3 ? "+" : " ", count)
@@ -94,12 +117,13 @@ module Crystal
         io.printf("infer    MetaVar %-8s observed by %-40s %12d\n", walked ? "owned" : "edge", name, count)
       end
 
-      visitors = MemoryCensus.objects_of(MainVisitor.crystal_instance_type_id, instance_sizeof(MainVisitor))
+      visitor_count = 0
       block_visitors = 0_i64
       vars_entries = 0_i64
       vars_bytes = 0_i64
-      visitors.each do |pointer|
+      MemoryCensus.each_object_of(MainVisitor.crystal_instance_type_id, instance_sizeof(MainVisitor)) do |pointer|
         visitor = pointer.as(MainVisitor)
+        visitor_count += 1
         block_visitors += 1 if visitor.block
         vars = visitor.vars
         vars_entries += vars.size
@@ -107,22 +131,23 @@ module Crystal
         vars_bytes += gc_bytes(vars.as(Void*)) + gc_bytes(vars.@entries.as(Void*)) + (large ? owned_bytes(large) : 0_i64)
       end
       io.printf("infer    MainVisitor objects %d (%d for a block), their vars hold %d entries in %.1f MB\n",
-        visitors.size, block_visitors, vars_entries, vars_bytes / 1e6)
+        visitor_count, block_visitors, vars_entries, vars_bytes / 1e6)
 
-      calls = MemoryCensus.objects_of(Call.crystal_instance_type_id, instance_sizeof(Call))
+      call_count = 0
       with_visitor = 0_i64
       empty_args = 0_i64
       one_arg = 0_i64
       args_bytes = 0_i64
-      calls.each do |pointer|
+      MemoryCensus.each_object_of(Call.crystal_instance_type_id, instance_sizeof(Call)) do |pointer|
         call = pointer.as(Call)
+        call_count += 1
         with_visitor += 1 if call.parent_visitor?
         empty_args += 1 if call.args.empty?
         one_arg += 1 if call.args.size == 1
         args_bytes += owned_bytes(call.args)
       end
       io.printf("infer    Call objects %d, with a parent visitor %d, no arguments %d, one argument %d, argument arrays %.1f MB\n",
-        calls.size, with_visitor, empty_args, one_arg, args_bytes / 1e6)
+        call_count, with_visitor, empty_args, one_arg, args_bytes / 1e6)
       io.flush
     end
 
@@ -131,18 +156,18 @@ module Crystal
     def print_what_if(io : IO) : Nil
       what_if_line(io, "as is")
 
-      MemoryCensus.objects_of(MainVisitor.crystal_instance_type_id, instance_sizeof(MainVisitor)).each do |pointer|
+      MemoryCensus.each_object_of(MainVisitor.crystal_instance_type_id, instance_sizeof(MainVisitor)) do |pointer|
         pointer.as(MainVisitor).census_drop_vars
       end
       what_if_line(io, "visitors drop their vars")
 
-      MemoryCensus.objects_of(Call.crystal_instance_type_id, instance_sizeof(Call)).each do |pointer|
+      MemoryCensus.each_object_of(Call.crystal_instance_type_id, instance_sizeof(Call)) do |pointer|
         pointer.as(Call).census_drop_parent_visitor
       end
       what_if_line(io, "calls drop their parent visitor")
 
       spliced = 0_i64
-      MemoryCensus.objects_of(MetaVar.crystal_instance_type_id, instance_sizeof(MetaVar)).each do |pointer|
+      MemoryCensus.each_object_of(MetaVar.crystal_instance_type_id, instance_sizeof(MetaVar)) do |pointer|
         meta_var = pointer.as(MetaVar)
         next if @seen.includes?(meta_var.object_id)
         spliced += 1 if meta_var.census_splice_out
@@ -150,7 +175,7 @@ module Crystal
       what_if_line(io, "edge MetaVars with one dependency spliced out (#{spliced})")
 
       spliced = 0_i64
-      MemoryCensus.objects_of(MetaVar.crystal_instance_type_id, instance_sizeof(MetaVar)).each do |pointer|
+      MemoryCensus.each_object_of(MetaVar.crystal_instance_type_id, instance_sizeof(MetaVar)) do |pointer|
         meta_var = pointer.as(MetaVar)
         next if @seen.includes?(meta_var.object_id)
         next unless meta_var.@observers.empty?
@@ -173,7 +198,7 @@ module Crystal
         {"Crystal::Call", Call.crystal_instance_type_id},
         {"Crystal::TypeFilteredNode", TypeFilteredNode.crystal_instance_type_id},
       }.each do |(name, type_id)|
-        io.printf("whatif     %-62s %12d objects\n", name, MemoryCensus.objects_of(type_id, 16).size)
+        io.printf("whatif     %-62s %12d objects\n", name, MemoryCensus.count_objects_of(type_id))
       end
     end
   end

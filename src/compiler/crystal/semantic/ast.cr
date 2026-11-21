@@ -525,6 +525,17 @@ module Crystal
     def initialize(@name : String, @type : Type? = nil)
     end
 
+    # Is this var a wrapper that only repeats one other var? It is bound to
+    # that var alone, nothing reads it, and it says the same as the wrapped
+    # var about being nil when read.
+    def unchanged_wrapper? : Bool
+      return false unless @dependencies.size == 1 && @observers.empty?
+      return false if @freeze_type
+      wrapped = @dependencies.first
+      return false unless wrapped.is_a?(MetaVar)
+      wrapped.nil_if_read? == nil_if_read? && wrapped.type?.same?(type?)
+    end
+
     # Marks this variable as closured.
     def mark_as_closured
       self.closured = true
