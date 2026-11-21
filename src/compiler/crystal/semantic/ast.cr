@@ -139,10 +139,10 @@ module Crystal
     property! owner : Type
     property! original_owner : Type
     property vars : MetaVars?
-    property yield_vars : Array(Var)?
-    property previous : DefWithMetadata?
-    property next : Def?
-    property special_vars : Set(String)?
+    rare_property yield_vars : Array(Var)?
+    rare_property previous : DefWithMetadata?
+    rare_property next : Def?
+    rare_property special_vars : Set(String)?
     property freeze_type : Type?
     property block_nest = 0
     property? raises = false
@@ -160,10 +160,10 @@ module Crystal
     property? returns_twice = false
 
     # Set to the value of the `@[TargetFeature("+sve,+sve2")]` annotation
-    property target_features : String? = nil
+    rare_property target_features : String?
 
     # Set to the value of the `@[TargetFeature(cpu: "apple-m4")]` annotation
-    property target_cpu : String? = nil
+    rare_property target_cpu : String?
 
     # `true` if this def has the `@[Naked]` annotation
     property? naked = false
@@ -172,30 +172,39 @@ module Crystal
     property? new = false
 
     # Name of the original def if this def has been expanded (default arguments)
-    property? original_name : String?
+    rare_property explicit_original_name : String?
 
-    @macro_owner : Type?
+    rare_property explicit_macro_owner : Type?
 
     # Used to override the meaning of `self` in restrictions
-    property self_restriction_type : Type?
+    rare_property self_restriction_type : Type?
 
-    def macro_owner=(@macro_owner)
+    def original_name? : String?
+      explicit_original_name
+    end
+
+    def original_name=(original_name : String?)
+      self.explicit_original_name = original_name
+    end
+
+    def macro_owner=(macro_owner : Type?)
+      self.explicit_macro_owner = macro_owner
     end
 
     def macro_owner
-      @macro_owner || @owner
+      explicit_macro_owner || @owner
     end
 
     def macro_owner?
-      @macro_owner
+      explicit_macro_owner
     end
 
     def original_name
-      @original_name || @name
+      explicit_original_name || @name
     end
 
     def add_special_var(name)
-      special_vars = @special_vars ||= Set(String).new
+      special_vars = (self.special_vars ||= Set(String).new)
       special_vars << name
     end
 
@@ -247,7 +256,7 @@ module Crystal
     end
 
     def free_var?(node : Path)
-      free_vars = @free_vars
+      free_vars = self.free_vars
       return false unless free_vars
       name = node.single_name?
       !name.nil? && free_vars.includes?(name)
@@ -456,41 +465,55 @@ module Crystal
 
     # True if we need to mark this variable as nilable
     # if this variable is read.
-    property? nil_if_read = false
+    flag_property? nil_if_read, 0
 
     # A variable is closured if it's used in a ProcLiteral context
     # where it wasn't created.
-    getter? closured = false
+    flag_property? closured, 1
 
     # Is this metavar assigned a value?
-    property? assigned_to = false
+    flag_property? assigned_to, 2
 
     # Is this metavar closured in a mutable way?
     # This means it's closured and it got a value assigned to it more than once.
     # If that's the case, when it's closured then all local variable related to
     # it will also be bound to it.
-    property? mutably_closured = false
+    flag_property? mutably_closured, 3
 
     # Local variables associated with this meta variable.
-    # Can be Var or MetaVar.
-    property(local_vars) { [] of ASTNode }
+    # Can be Var or MetaVar. Most meta variables have a single one, which is
+    # stored directly; an array is created from the second one on.
+    @local_vars : ASTNode | Array(ASTNode) | Nil
+
+    def add_local_var(var : ASTNode) : Nil
+      local_vars = @local_vars
+      if local_vars.is_a?(Array(ASTNode))
+        local_vars << var
+      elsif local_vars
+        @local_vars = [local_vars, var] of ASTNode
+      else
+        @local_vars = var
+      end
+    end
 
     def initialize(@name : String, @type : Type? = nil)
     end
 
     # Marks this variable as closured.
     def mark_as_closured
-      @closured = true
+      self.closured = true
 
       return unless mutably_closured?
-
-      local_vars = @local_vars
-      return unless local_vars
 
       # If a meta var is not readonly and it became a closure we must
       # bind all previously related local vars to it so that
       # they get all types assigned to it.
-      local_vars.each &.bind_to self
+      local_vars = @local_vars
+      if local_vars.is_a?(Array(ASTNode))
+        local_vars.each &.bind_to self
+      elsif local_vars
+        local_vars.bind_to self
+      end
     end
 
     # True if this variable belongs to the given context
@@ -505,8 +528,8 @@ module Crystal
     end
 
     # Is this metavar associated with any local vars?
-    def local_vars?
-      @local_vars
+    def local_vars? : Bool
+      !@local_vars.nil?
     end
 
     def ==(other : self)
@@ -541,6 +564,8 @@ module Crystal
   # class or instance variable (globals belong to the program).
   class MetaTypeVar < Var
     include Annotatable
+
+    property doc : String?
 
     property nil_reason : NilReason?
 
@@ -614,7 +639,7 @@ module Crystal
   end
 
   class Call
-    property before_vars : MetaVars?
+    rare_property before_vars : MetaVars?
 
     def clone_without_location
       cloned = previous_def

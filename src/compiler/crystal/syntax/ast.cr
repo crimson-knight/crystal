@@ -37,6 +37,33 @@ end
 module Crystal
   # Base class for nodes in the grammar.
   abstract class ASTNode
+    # Set by type inference when this node's type changed and its observers
+    # have yet to be told. Declared first so it shares the object header's
+    # padding instead of taking a word of its own.
+    @dirty : Bool = false
+
+    # Bits for the boolean properties of the node classes with the most
+    # instances (see `flag_property?`). Like `@dirty`, this byte sits in the
+    # object header's padding.
+    @flags : UInt8 = 0_u8
+
+    # Defines the boolean property *name* stored in bit *bit* of `@flags`.
+    # A class and its subclasses must give each of their flags its own bit.
+    macro flag_property?(name, bit)
+      def {{name.id}}? : Bool
+        @flags & (1_u8 << {{bit}}) != 0
+      end
+
+      def {{name.id}}=(value : Bool)
+        if value
+          @flags |= 1_u8 << {{bit}}
+        else
+          @flags &= ~(1_u8 << {{bit}})
+        end
+        value
+      end
+    end
+
     # The location where this node starts, or `nil`
     # if the location is not known.
     property location : Location?
@@ -44,6 +71,41 @@ module Crystal
     # The location where this node ends, or `nil`
     # if the location is not known.
     property end_location : Location?
+
+    # Gives this class a `RareFields` side object for the fields that few of
+    # its instances set. An instance allocates it the first time one of those
+    # fields gets a value, so every other instance pays a single pointer for
+    # all of them. Declare each such field with `rare_property`.
+    macro has_rare_fields
+      class RareFields
+      end
+
+      @rare_fields : RareFields?
+
+      private def rare_fields : RareFields
+        @rare_fields ||= RareFields.new
+      end
+    end
+
+    # Declares a nilable property stored in this class's `RareFields`.
+    macro rare_property(declaration)
+      class RareFields
+        property {{declaration}}
+      end
+
+      def {{declaration.var}} : {{declaration.type}}
+        if rare_fields = @rare_fields
+          rare_fields.{{declaration.var}}
+        end
+      end
+
+      def {{declaration.var}}=(value : {{declaration.type}})
+        if !value.nil? || @rare_fields
+          rare_fields.{{declaration.var}} = value
+        end
+        value
+      end
+    end
 
     # Updates this node's location and returns `self`
     def at(@location : Location?)
@@ -761,7 +823,6 @@ module Crystal
     include SpecialVar
 
     property name : String
-    property doc : String?
 
     def initialize(@name : String)
     end
@@ -780,6 +841,25 @@ module Crystal
       pp_type(pp, "Var[", "]") do
         name.pretty_print(pp)
       end
+    end
+  end
+
+  # A `Var` that carries a doc comment. The parser creates one in place of a
+  # `Var` when doc comments are enabled and the variable has one, so that
+  # every other `Var` does without the field.
+  class DocumentedVar < Var
+    property doc : String?
+
+    def initialize(name : String, @doc : String? = nil)
+      super(name)
+    end
+
+    def self.class_desc
+      "Var"
+    end
+
+    def clone_without_location
+      DocumentedVar.new(@name, @doc)
     end
   end
 
@@ -851,18 +931,22 @@ module Crystal
     property name : String
     property args : Array(ASTNode)
     property block : Block?
-    property block_arg : ASTNode?
-    property named_args : Array(NamedArgument)?
     property name_location : Location?
+    has_rare_fields
     @name_size = -1
-    property doc : String?
     property visibility = Visibility::Public
     property? global : Bool
     property? expansion = false
     property? args_in_brackets = false
     property? has_parentheses = false
 
-    def initialize(@obj : ASTNode?, @name : String, @args : Array(ASTNode) = [] of ASTNode, @block = nil, @block_arg = nil, @named_args = nil, @global : Bool = false)
+    rare_property block_arg : ASTNode?
+    rare_property named_args : Array(NamedArgument)?
+    rare_property doc : String?
+
+    def initialize(@obj : ASTNode?, @name : String, @args : Array(ASTNode) = [] of ASTNode, @block = nil, block_arg = nil, named_args = nil, @global : Bool = false)
+      self.block_arg = block_arg if block_arg
+      self.named_args = named_args if named_args
       if block = @block
         block.call = self
       end
@@ -900,13 +984,13 @@ module Crystal
     def accept_children(visitor)
       @obj.try &.accept visitor
       @args.each &.accept visitor
-      @named_args.try &.each &.accept visitor
-      @block_arg.try &.accept visitor
+      named_args.try &.each &.accept visitor
+      block_arg.try &.accept visitor
       @block.try &.accept visitor
     end
 
     def clone_without_location
-      clone = Call.new(@obj.clone, @name, @args.clone, @block.clone, @block_arg.clone, @named_args.clone, @global)
+      clone = Call.new(@obj.clone, @name, @args.clone, @block.clone, block_arg.clone, named_args.clone, @global)
       clone.name_location = name_location
       clone.has_parentheses = has_parentheses?
       clone.name_size = name_size
@@ -1420,11 +1504,8 @@ module Crystal
   #     'end'
   #
   class Def < ASTNode
-    property free_vars : Array(String)?
-    property receiver : ASTNode?
     property name : String
     property args : Array(Arg)
-    property double_splat : Arg?
     property body : ASTNode
     property block_arg : Arg?
     property return_type : ASTNode?
@@ -1432,9 +1513,14 @@ module Crystal
     # `nil` if it does not receive a block.
     property block_arity : Int32?
     property name_location : Location?
-    property splat_index : Int32?
-    property doc : String?
+    has_rare_fields
     property visibility = Visibility::Public
+
+    rare_property free_vars : Array(String)?
+    rare_property receiver : ASTNode?
+    rare_property double_splat : Arg?
+    rare_property splat_index : Int32?
+    rare_property doc : String?
 
     property? macro_def : Bool
     property? calls_super = false
@@ -1444,14 +1530,18 @@ module Crystal
     property? assigns_special_var = false
     property? abstract : Bool
 
-    def initialize(@name, @args = [] of Arg, body = nil, @receiver = nil, @block_arg = nil, @return_type = nil, @macro_def = false, @block_arity = nil, @abstract = false, @splat_index = nil, @double_splat = nil, @free_vars = nil)
+    def initialize(@name, @args = [] of Arg, body = nil, receiver : ASTNode? = nil, @block_arg = nil, @return_type = nil, @macro_def = false, @block_arity = nil, @abstract = false, splat_index : Int32? = nil, double_splat : Arg? = nil, free_vars : Array(String)? = nil)
       @body = Expressions.from body
+      self.receiver = receiver if receiver
+      self.splat_index = splat_index if splat_index
+      self.double_splat = double_splat if double_splat
+      self.free_vars = free_vars if free_vars
     end
 
     def accept_children(visitor)
-      @receiver.try &.accept visitor
+      receiver.try &.accept visitor
       @args.each &.accept visitor
-      @double_splat.try &.accept visitor
+      double_splat.try &.accept visitor
       @block_arg.try &.accept visitor
       @return_type.try &.accept visitor
       @body.accept visitor
@@ -1462,7 +1552,7 @@ module Crystal
     end
 
     def clone_without_location
-      a_def = Def.new(@name, @args.clone, @body.clone, @receiver.clone, @block_arg.clone, @return_type.clone, @macro_def, @block_arity, @abstract, @splat_index, @double_splat.clone, @free_vars)
+      a_def = Def.new(@name, @args.clone, @body.clone, receiver.clone, @block_arg.clone, @return_type.clone, @macro_def, @block_arity, @abstract, splat_index, double_splat.clone, free_vars)
       a_def.calls_super = calls_super?
       a_def.calls_initialize = calls_initialize?
       a_def.calls_previous_def = calls_previous_def?
@@ -1473,7 +1563,7 @@ module Crystal
       a_def
     end
 
-    def_equals_and_hash @name, @args, @body, @receiver, @block_arg, @return_type, @macro_def, @block_arity, @abstract, @splat_index, @double_splat
+    def_equals_and_hash @name, @args, @body, receiver, @block_arg, @return_type, @macro_def, @block_arity, @abstract, splat_index, double_splat
 
     def autogenerated?
       location == body.location
@@ -1880,10 +1970,20 @@ module Crystal
   #
   class Path < ASTNode
     property names : Array(String)
-    property? global : Bool
-    property visibility = Visibility::Public
+    flag_property? global, 0
 
-    def initialize(@names : Array, @global = false)
+    def initialize(@names : Array, global = false)
+      self.global = true if global
+    end
+
+    # The visibility takes bits 1 and 2 of the node's flags.
+    def visibility : Visibility
+      Visibility.new(((@flags >> 1) & 3_u8).to_i8!)
+    end
+
+    def visibility=(visibility : Visibility)
+      @flags = (@flags & ~(3_u8 << 1)) | (visibility.value.to_u8! << 1)
+      visibility
     end
 
     def self.new(name : String, global = false)
@@ -1913,12 +2013,13 @@ module Crystal
       names.first if names.size == 1 && !global?
     end
 
+    # A clone shares the names array: paths are copied once per typed def
+    # instance and nothing changes a path's names in place.
     def clone_without_location
-      ident = Path.new(@names.clone, @global)
-      ident
+      Path.new(@names, global?)
     end
 
-    def_equals_and_hash @names, @global
+    def_equals_and_hash @names, global?
 
     def pretty_print(pp) : Nil
       if global?

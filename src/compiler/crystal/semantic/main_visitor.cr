@@ -1830,7 +1830,7 @@ module Crystal
 
         visited = @visited
 
-        node.target_defs.try &.each do |target_def|
+        node.each_target_def do |target_def|
           if target_def.owner == @scope
             next if visited.try &.includes?(target_def)
 
@@ -3695,7 +3695,7 @@ module Crystal
       if meta_var.closured? && meta_var.mutably_closured?
         var.bind_to(meta_var)
       else
-        meta_var.local_vars << var
+        meta_var.add_local_var(var)
       end
     end
 
