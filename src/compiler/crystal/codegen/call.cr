@@ -107,6 +107,9 @@ class Crystal::CodeGenVisitor
         else
           if node.uses_with_scope? && (yield_scope = context.vars["%scope"]?)
             call_args << downcast(yield_scope.pointer, target_def.owner, node.with_scope.not_nil!, true)
+          elsif target_def.type_once? && (self_var = context.vars["self"]?)
+            # An implicit call on `self` from a subclass's own copy.
+            call_args << type_once_cast(target_def, self_var.pointer, owner, self_var.type)
           else
             call_args << llvm_self(owner)
           end

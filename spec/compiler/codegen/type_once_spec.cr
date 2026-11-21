@@ -162,6 +162,35 @@ describe "Code gen: @[TypeOnce]" do
       )).to_string.should eq("square:6+shape:6")
   end
 
+  it "calls a typed-once method on self from a subclass method" do
+    run(SHAPES + %(
+      class Square < Shape
+        def shout : String
+          describe(3).upcase
+        end
+      end
+
+      Square.new(2).shout + " " + Cube.new(1).shout
+      )).to_string.should eq("SQUARE:12 SQUARE:18")
+  end
+
+  it "passes self to a typed-once method that takes the base class" do
+    run(SHAPES + %(
+      @[TypeOnce]
+      def area_of(shape : Shape, scale : Int32?) : Int32
+        shape.area * (scale || 1)
+      end
+
+      class Square < Shape
+        def own_area : Int32
+          area_of(self, nil) + area_of(self, 2)
+        end
+      end
+
+      Square.new(3).own_area + Cube.new(1).own_area
+      )).to_i.should eq(27 + 18)
+  end
+
   it "passes a captured block" do
     run(SHAPES + %(
       class Shape
