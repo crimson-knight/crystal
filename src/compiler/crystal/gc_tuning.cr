@@ -1,0 +1,47 @@
+{% unless flag?(:gc_none) || flag?(:wasm32) %}
+  lib LibGC
+    fun set_free_space_divisor = GC_set_free_space_divisor(value : Word)
+    fun get_free_space_divisor = GC_get_free_space_divisor : Word
+  end
+{% end %}
+
+module Crystal
+  # How the compiler runs its own garbage collector.
+  #
+  # The collector lets the heap grow by `heap / free_space_divisor` before it
+  # collects again, so a larger divisor keeps the heap closer to the live data
+  # and pays for it with more collections. Environment variables are for
+  # measuring the trade:
+  #
+  # * `CRYSTAL_GC_FREE_SPACE_DIVISOR=N` sets the divisor.
+  # * `CRYSTAL_GC_COLLECT_AT_STAGES=1` runs a full collection when a compiler
+  #   stage ends.
+  # * `CRYSTAL_GC_TRACE=1` prints the collector's numbers to standard error
+  #   when a stage ends.
+  module GCTuning
+    class_property? collects_at_stages : Bool = false
+    class_property? traces_stages : Bool = false
+
+    def self.configure_from_env : Nil
+      {% unless flag?(:gc_none) || flag?(:wasm32) %}
+        if divisor = ENV["CRYSTAL_GC_FREE_SPACE_DIVISOR"]?.try(&.to_u64?)
+          LibGC.set_free_space_divisor(LibGC::Word.new(divisor)) if divisor > 0
+        end
+        self.collects_at_stages = ENV["CRYSTAL_GC_COLLECT_AT_STAGES"]? == "1"
+        self.traces_stages = ENV["CRYSTAL_GC_TRACE"]? == "1"
+      {% end %}
+    end
+
+    def self.stage_finished(name : String?) : Nil
+      {% unless flag?(:gc_none) || flag?(:wasm32) %}
+        GC.collect if collects_at_stages?
+        return unless traces_stages?
+        stats = GC.prof_stats
+        STDERR.printf("gc-trace stage=%s heap_mb=%.1f free_mb=%.1f unmapped_mb=%.1f since_gc_mb=%.1f collections=%d allocated_mb=%.1f divisor=%d\n",
+          (name || "?").gsub(' ', '_'), stats.heap_size / 1e6, stats.free_bytes / 1e6, stats.unmapped_bytes / 1e6,
+          stats.bytes_since_gc / 1e6, stats.gc_no, (stats.bytes_before_gc + stats.bytes_since_gc) / 1e6,
+          LibGC.get_free_space_divisor)
+      {% end %}
+    end
+  end
+end
