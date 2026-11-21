@@ -51,6 +51,7 @@ class Crystal::Program
       cleanup_types
       cleanup_files
     end
+    MemoryCensus.report_owner_shapes(self, result) if MemoryCensus.enabled?
 
     @progress_tracker.stage("Semantic (recursive struct check)") do
       RecursiveStructChecker.new(self).run

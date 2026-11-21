@@ -124,6 +124,26 @@ module Crystal
       @stats.seconds = (Time.instant - started).total_seconds
     end
 
+    # Walks *first* and *second* again and describes the first place where
+    # their own shapes differ (census diagnostics only).
+    def describe_difference(first : Def, second : Def) : String
+      walker = ShapeWalker.new(@program, @types, Set(UInt64).new)
+      traces = {first, second}.map do |typed_def|
+        trace = [] of {UInt64, String}
+        walker.trace = trace
+        walker.walk(Shape.new(typed_def))
+        trace
+      end
+      traces[0].each_with_index do |(value, place), index|
+        other = traces[1][index]?
+        if other.nil? || other[0] != value
+          before = traces[0][{index - 3, 0}.max...index].map(&.[1]).join(" > ")
+          return "step #{index}: #{place} / #{other.try(&.[1])} after #{before}"
+        end
+      end
+      "no difference in #{traces[0].size} steps (other has #{traces[1].size})"
+    end
+
     private def collect_cached_defs(type : Type, seen : Set(UInt64), pending : Array(Def)) : Nil
       return unless seen.add?(type.object_id)
       if type.is_a?(DefInstanceContainer)
@@ -240,6 +260,11 @@ module Crystal
       @layouts = Hash(UInt64, UInt64).new
       @receives = Hash({UInt64, UInt64}, Bool).new
 
+      # Measurement switch: treat casts at different source lines as equal,
+      # so a shared function reports the line of its representative when a
+      # cast fails.
+      getter? ignore_cast_location : Bool = ENV["CRYSTAL_OWNER_SHAPES_IGNORE_CAST_LOCATION"]? == "1"
+
       # A class whose values are interchangeable pointers (see the class doc).
       def interchangeable?(type : Type) : Bool
         cached = @interchangeable[type.object_id]?
@@ -316,18 +341,34 @@ module Crystal
         @layouts[type.object_id] = hash
       end
 
+      # How a value of *type* is stored inside an object: equal results mean
+      # equal size, alignment and position of what follows it.
       private def storage(type : Type) : UInt64
         return type.object_id unless mentions?(type)
-        if interchangeable?(type)
-          1_u64
-        elsif type.is_a?(NilableType) && (interchangeable?(type.not_nil_type) || generic_reference?(type.not_nil_type))
-          2_u64
-        elsif generic_reference?(type)
-          OwnerShapeSharing.mix_first(3_u64, type.as(GenericClassInstanceType).generic_type.object_id)
-        elsif type.is_a?(PointerInstanceType)
+        case type
+        when PointerInstanceType
           4_u64
+        when ProcInstanceType, NilableProcType
+          5_u64
+        when TupleInstanceType
+          type.tuple_types.reduce(6_u64) { |hash, member| OwnerShapeSharing.mix_first(hash, storage(member)) }
+        when NamedTupleInstanceType
+          type.entries.reduce(7_u64) { |hash, entry| OwnerShapeSharing.mix_first(hash, storage(entry.type)) }
+        when MixedUnionType
+          # A union is as large as its largest member.
+          members = type.union_types.map { |member| storage(member) }.sort!
+          members.reduce(9_u64) { |hash, member| OwnerShapeSharing.mix_first(hash, member) }
+        when GenericClassInstanceType
+          if type.struct?
+            OwnerShapeSharing.mix_first(8_u64, layout(type))
+          else
+            1_u64
+          end
+        when MetaclassType, GenericClassInstanceMetaclassType, GenericModuleInstanceMetaclassType, VirtualMetaclassType
+          # A metaclass value is a type id.
+          10_u64
         else
-          type.object_id
+          type.reference_like? ? 1_u64 : type.object_id
         end
       end
 
@@ -359,6 +400,8 @@ module Crystal
       TOKEN_NILABLE = 0xbe5466cf34e90c6c_u64
       TOKEN_POINTER = 0xc0ac29b7c97c50dd_u64
       TOKEN_GENERIC = 0x3f84d5b5b5470917_u64
+      TOKEN_VIRTUAL = 0xa4093822299f31d0_u64
+      TOKEN_NAME    = 0x082efa98ec4e6c89_u64
       TOKEN_META    = 0x9216d5d98979fb1b_u64
       TOKEN_EDGE    = 0xd1310ba698dfb5ac_u64
       TOKEN_CONST   = 0x2ffd72dbd01adfb7_u64
@@ -370,10 +413,12 @@ module Crystal
       @numbered = [] of Type
       @mixed_slots = [] of Type
       @sources = [] of Type
+      @made_up_names = [] of String
       @shape : Shape
       @owner : Type?
       @owner_instance : Type?
       @def_filename : String | VirtualFile | Nil
+      @place = "signature"
 
       def initialize(@program : Program, @types : TypeFacts, @super_targets : Set(UInt64))
         @shape = Shape.new(Def.new("unused"))
@@ -386,12 +431,14 @@ module Crystal
         @numbered.clear
         @mixed_slots.clear
         @sources.clear
+        @made_up_names.clear
         @discovered.clear
 
         typed_def = shape.typed_def
         @owner = owner = typed_def.owner?
         @owner_instance = owner.try { |type| type.metaclass? ? type.instance_type : type }
         @def_filename = typed_def.location.try(&.filename)
+        @place = "signature"
 
         if typed_def.is_a?(External) || typed_def.body.is_a?(Primitive) || typed_def.body.is_a?(ReleasedBody)
           block("external, primitive or released def")
@@ -414,7 +461,12 @@ module Crystal
         shape.base_second = @second
       end
 
+      # When set, every mixed value is recorded with the place it came from
+      # (census diagnostics only).
+      property trace : Array({UInt64, String})?
+
       private def mix(value : UInt64) : Nil
+        @trace.try &.<<({value, @place})
         @first = OwnerShapeSharing.mix_first(@first, value)
         @second = OwnerShapeSharing.mix_second(@second, value)
       end
@@ -429,6 +481,23 @@ module Crystal
 
       private def mix(value : String) : Nil
         mix(value.hash)
+      end
+
+      # Mixes the name of a local variable. Names the compiler makes up
+      # (`__temp_1`, `__arg0`) are counted in order of appearance: their
+      # number comes from a program-wide counter and does not reach the code.
+      private def mix_local_name(name : String?) : Nil
+        if name && (name.starts_with?("__temp_") || name.starts_with?("__arg"))
+          index = @made_up_names.index(name)
+          unless index
+            index = @made_up_names.size
+            @made_up_names << name
+          end
+          mix(TOKEN_NAME)
+          mix(index)
+        else
+          mix(name)
+        end
       end
 
       private def mix(value : Nil) : Nil
@@ -461,6 +530,7 @@ module Crystal
           mix(0_u64)
           return
         end
+        @place = "#{@place.partition(" :: ")[0]} :: #{type}" if @trace
         flags = @types.flags(type)
         if flags & TypeFacts::MIXED_SLOT != 0 && !@mixed_slots.any?(&.same?(type))
           @mixed_slots << type
@@ -503,11 +573,15 @@ module Crystal
           end
           mix(@types.layout(type))
           note_source(type)
+        elsif type.is_a?(VirtualType) && @types.generic_reference?(type.base_type)
+          # A pointer whose type id is read from the object.
+          mix(TOKEN_VIRTUAL)
+          mix_mentioning(type.base_type, false)
         elsif metaclass_as_name && type.is_a?(MetaclassType) && @types.interchangeable?(type.instance_type)
           mix(TOKEN_META)
           mix_mentioning(type.instance_type, false)
         else
-          pin("a value of #{type_kind(type)} that names an interchangeable class")
+          pin("a value of #{type_kind(type)} that names an interchangeable class (#{@place})")
           mix(type.object_id)
         end
       end
@@ -544,6 +618,7 @@ module Crystal
       end
 
       private def enter(node : ASTNode) : Nil
+        @place = node.class.name.lchop("Crystal::")
         @shape.node_count += 1
         mix(node.crystal_type_id)
         mix(node.@flags)
@@ -564,16 +639,17 @@ module Crystal
       end
 
       private def mix_def(node : Def) : Nil
+        @place = "signature"
         mix(node.name)
         mix_type(node.owner?, metaclass_as_name: true)
         mix(node.args.size)
         node.args.each do |arg|
-          mix(arg.name)
+          mix_local_name(arg.name)
           mix_type(arg.type?)
         end
         mix(node.splat_index || -1)
         if block_arg = node.block_arg
-          mix(block_arg.name)
+          mix_local_name(block_arg.name)
           mix_type(block_arg.type?)
         end
         mix(node.block_arity || -1)
@@ -600,9 +676,10 @@ module Crystal
       # program's nil var.
       private def mix_vars(vars : MetaVars?, holder : ASTNode) : Nil
         return unless vars
+        @place = "local var"
         nil_var = @program.nil_var
         vars.each_value do |meta_var|
-          mix(meta_var.name)
+          mix_local_name(meta_var.name)
           mix(meta_var.@flags)
           # `self` is not a local: a class method never stores its metaclass,
           # unless a closure captures it.
@@ -653,7 +730,7 @@ module Crystal
 
       def visit(node : Var) : Bool
         enter(node)
-        mix(node.name)
+        mix_local_name(node.name)
         @shape.owner_use |= OwnerUse::SelfPassed if node.name == "self"
         false
       end
@@ -693,7 +770,7 @@ module Crystal
 
       def visit(node : Rescue) : Bool
         enter(node)
-        mix(node.name)
+        mix_local_name(node.name)
         true
       end
 
@@ -745,8 +822,11 @@ module Crystal
         mix_identity(node.obj.type?, "a cast of an interchangeable class")
         mix_identity(node.to.type?, "a cast of an interchangeable class")
         mix_identity(node.type?, "a cast of an interchangeable class")
-        # A failed cast raises with the location of the cast in its message.
-        mix_location(node.location)
+        if node.is_a?(Cast)
+          mix(node.upcast?)
+          # A cast that can fail raises with its own location in the message.
+          mix_location(node.location) unless node.upcast? || @types.ignore_cast_location?
+        end
         node.obj.accept(self)
         false
       end
@@ -788,8 +868,11 @@ module Crystal
         mix(node.name)
         mix(node.global?)
 
-        if node.expanded || node.uses_with_scope?
-          block("a call that was expanded or uses with scope")
+        # Codegen raises on a call that still has an expansion, so a typed
+        # def that codegen reaches never runs this one: it is dead code.
+        return false if node.expanded
+        if node.uses_with_scope?
+          block("a call that uses with scope")
           return false
         end
 
@@ -856,6 +939,7 @@ module Crystal
           return
         end
 
+        @place = "callee signature"
         mix_type(target_def.owner?, metaclass_as_name: true)
         target_def.args.each { |arg| mix_type(arg.type?) }
         mix_type(target_def.type?)
@@ -922,6 +1006,14 @@ module Crystal
         elsif target_owner.metaclass? && target_owner.instance_type.same?(owner_instance) && !@owner.same?(target_owner)
           @shape.owner_use |= OwnerUse::ClassSide
         end
+      end
+
+      # Cleanup replaces every expandable node codegen can reach, and codegen
+      # raises on one that is left. What remains sits in code that was never
+      # typed, so only its place in the tree matters.
+      def visit(node : ExpandableNode) : Bool
+        mix(node.crystal_type_id)
+        false
       end
 
       # Any node class the whitelist does not name.
