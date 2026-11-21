@@ -1,9 +1,12 @@
 require "../../spec_helper"
 
 # Runs the block with the typed node pools on, and puts the setting back.
+# Every pool starts a new chunk first, so the nodes an example makes one
+# after the other never fall on two sides of a chunk boundary.
 private def with_node_pools(&)
   was_enabled = Crystal::NodePool.enabled?
   Crystal::NodePool.enabled = true
+  Crystal::NodePool.list_of_pools.each &.start_stage(0)
   begin
     yield
   ensure
@@ -11,8 +14,8 @@ private def with_node_pools(&)
   end
 end
 
-private def address_of(node : ASTNode) : UInt64
-  node.as(Void*).address
+private def address_of(node : ASTNode) : Int64
+  node.as(Void*).address.to_i64!
 end
 
 describe "Crystal::NodePool" do
@@ -50,7 +53,7 @@ describe "Crystal::NodePool" do
       call.obj.as(Var).name.should eq("receiver")
       call.args.size.should eq(1)
       call.same?(call).should be_true
-      call.object_id.should eq(address_of(call))
+      call.object_id.should eq(call.as(Void*).address)
 
       copy = call.clone
       copy.same?(call).should be_false
