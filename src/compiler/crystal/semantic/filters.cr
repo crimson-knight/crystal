@@ -14,6 +14,11 @@ module Crystal
       end
     end
 
+    def replace_dependency(old : ASTNode, new : ASTNode) : Nil
+      super
+      @node = new if @node.same?(old)
+    end
+
     def clone_without_location
       TypeFilteredNode.new(@filter, @node)
     end

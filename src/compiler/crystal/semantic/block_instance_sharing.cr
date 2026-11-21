@@ -328,11 +328,30 @@ module Crystal
     end
   end
 
+  # What `MainVisitor#release_inference_state` did, for the memory census.
+  class InferenceReleaseStats
+    property released_visitors = 0_i64
+    property visitors_keeping_vars = 0_i64
+    property point_vars_of_keeping_visitors = 0_i64
+    property spliced_point_vars = 0_i64
+    property kept_point_vars = 0_i64
+    property point_vars_left_bound = 0_i64
+    property restored_after_vars = 0_i64
+  end
+
   class Program
     # Whether calls that pass a block to a yielding def share one typed def
     # per def, argument types and block type. `CRYSTAL_SHARE_BLOCK_INSTANCES=0`
     # types a private clone per call site, as before.
     property? share_block_instances : Bool = ENV["CRYSTAL_SHARE_BLOCK_INSTANCES"]? != "0"
+
+    # Whether a visitor that finished typing a def, block or proc literal
+    # lets go of the type-inference state only its visit used (see
+    # `MainVisitor#release_inference_state`). `CRYSTAL_RELEASE_INFERENCE_STATE=0`
+    # keeps all of it, as before.
+    property? release_inference_state : Bool = ENV["CRYSTAL_RELEASE_INFERENCE_STATE"]? != "0"
+
+    getter inference_release_stats = InferenceReleaseStats.new
 
     getter block_instance_stats = BlockInstanceStats.new
   end

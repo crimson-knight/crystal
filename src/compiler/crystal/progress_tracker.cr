@@ -20,6 +20,7 @@ module Crystal
 
       time_start = Time.instant
       retval = yield
+      GCTuning.stage_finished(name)
       time_taken = time_start.elapsed
 
       print_stats(time_taken)
