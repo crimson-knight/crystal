@@ -30,13 +30,9 @@ module Crystal
 
     @current_debug_location : Location?
 
-    # We cache these either for performance, memory use, or protection from the GC
-    @debug_files_per_module = {} of LLVM::Module => Hash(DebugFilename, LibLLVM::MetadataRef)
-    @debug_types_per_module = {} of LLVM::Module => Hash(Type, LibLLVM::MetadataRef?)
-
-    def di_builder(llvm_module = @llvm_mod || @main_mod)
-      di_builders = @di_builders ||= {} of LLVM::Module => DIBuilder
-      di_builders[llvm_module] ||= DIBuilder.new(llvm_module).tap do |di_builder|
+    def di_builder(module_info : ModuleInfo = @module_info)
+      module_info.di_builder ||= DIBuilder.new(module_info.mod).tap do |di_builder|
+        llvm_module = module_info.mod
         file, dir = file_and_dir(llvm_module.name == "" ? "main" : llvm_module.name)
         # @debug.variables? is set to true if parameter --debug is set in command line.
         # This flag affects only debug variables generation. It sets Optimized parameter to false.
@@ -50,12 +46,32 @@ module Crystal
     # builder refers to its module's context, and a compilation unit may
     # dispose that context before the GC would finalize the builder.
     def dispose_di_builders : Nil
-      @di_builders.try &.each_value &.dispose
-      @di_builders = nil
+      @modules.each_value do |module_info|
+        module_info.di_builder.try &.dispose
+        module_info.di_builder = nil
+      end
     end
 
-    def push_debug_info_metadata(mod)
-      di_builder(mod).end
+    # Completes the debug info of a module that is about to be verified or
+    # written as bitcode. A module that was parsed back from bitcode and got
+    # more debug info since then has a new compile unit to complete; its
+    # module flags are already there.
+    def finish_module_debug_info(module_info : ModuleInfo) : Nil
+      if module_info.has_debug_info_flags?
+        if di_builder = module_info.di_builder
+          di_builder.end
+          di_builder.dispose
+          module_info.di_builder = nil
+        end
+        return
+      end
+
+      mod = module_info.mod
+      di_builder = di_builder(module_info)
+      di_builder.end
+      di_builder.dispose
+      module_info.di_builder = nil
+      module_info.has_debug_info_flags = true
 
       if @program.has_flag?("msvc")
         # Windows uses CodeView instead of DWARF
@@ -69,8 +85,8 @@ module Crystal
       )
     end
 
-    def fun_metadatas
-      @fun_metadatas ||= {} of LLVM::Function => Array(FunMetadata)
+    def fun_metadatas(module_info : ModuleInfo = @module_info)
+      module_info.fun_metadatas
     end
 
     def fun_metadata_type(debug_types = [] of LibLLVM::MetadataRef)
@@ -84,13 +100,13 @@ module Crystal
     def debug_type_cache
       # We must cache debug types per module so metadata of a type
       # from one module isn't incorrectly used in another module.
-      @debug_types_per_module[@llvm_mod] ||= {} of Type => LibLLVM::MetadataRef?
+      @module_info.debug_types
     end
 
     def debug_files_cache
       # We must cache debug files per module so metadata of a type
       # from one module isn't incorrectly used in another module.
-      @debug_files_per_module[@llvm_mod] ||= {} of DebugFilename => LibLLVM::MetadataRef
+      @module_info.debug_files
     end
 
     private def current_debug_file
@@ -500,9 +516,9 @@ module Crystal
         main_scopes = (@main_scopes ||= {} of {String, String} => LibLLVM::MetadataRef)
         file, dir = file_and_dir(location.filename)
         main_scope = main_scopes[{file, dir}] ||= begin
-          di_builder = di_builder(@main_mod)
+          di_builder = di_builder(@main_module_info)
           file = di_builder.create_file(file, dir)
-          di_builder.create_lexical_block(fun_metadatas[context.fun][0].metadata, file, 1, 1)
+          di_builder.create_lexical_block(fun_metadatas(@main_module_info)[context.fun][0].metadata, file, 1, 1)
         end
         main_scope
       else

@@ -12,7 +12,10 @@ module Crystal
 
     @@closure_counter = 0
 
-    def initialize(@program : Program, @llvm_context : LLVM::Context)
+    # *adopts_existing_structs* is for a context that already holds a module
+    # parsed from bitcode: named struct types that came with the module are
+    # reused, so new code and loaded code agree on every struct type.
+    def initialize(@program : Program, @llvm_context : LLVM::Context, @adopts_existing_structs : Bool = false)
       @cache = TypeCache.new
       @struct_cache = TypeCache.new
 
@@ -49,7 +52,21 @@ module Crystal
 
       machine = program.target_machine
       @layout = machine.data_layout
-      @landing_pad_type = @llvm_context.struct([@llvm_context.void_pointer, @llvm_context.int32], "landing_pad")
+      loaded_landing_pad_type = @adopts_existing_structs ? @llvm_context.named_struct?("landing_pad") : nil
+      @landing_pad_type = loaded_landing_pad_type || @llvm_context.struct([@llvm_context.void_pointer, @llvm_context.int32], "landing_pad")
+    end
+
+    # The named struct this typer already made, or (for a context loaded from
+    # bitcode) the one that came with the loaded module.
+    private def known_struct?(llvm_name : String) : LLVM::Type?
+      if known = @structs[llvm_name]?
+        return known
+      end
+      return nil unless @adopts_existing_structs
+
+      if existing = @llvm_context.named_struct?(llvm_name)
+        @structs[llvm_name] = existing
+      end
     end
 
     def type_id_pointer
@@ -59,13 +76,13 @@ module Crystal
     @proc_type : LLVM::Type?
 
     def proc_type
-      @proc_type ||= @structs["->"] ||= @llvm_context.struct [@llvm_context.void_pointer, @llvm_context.void_pointer], "->"
+      @proc_type ||= known_struct?("->") || (@structs["->"] = @llvm_context.struct [@llvm_context.void_pointer, @llvm_context.void_pointer], "->")
     end
 
     @nil_type : LLVM::Type?
 
     def nil_type
-      @nil_type ||= @structs["Nil"] ||= @llvm_context.struct([] of LLVM::Type, "Nil")
+      @nil_type ||= known_struct?("Nil") || (@structs["Nil"] = @llvm_context.struct([] of LLVM::Type, "Nil"))
     end
 
     def nil_value
@@ -183,7 +200,7 @@ module Crystal
     private def create_llvm_type(type : TupleInstanceType, wants_size)
       llvm_name = llvm_name(type, wants_size)
 
-      if s = @structs[llvm_name]?
+      if s = known_struct?(llvm_name)
         return s
       end
 
@@ -201,7 +218,7 @@ module Crystal
 
     private def create_llvm_type(type : NamedTupleInstanceType, wants_size)
       llvm_name = llvm_name(type, wants_size)
-      if s = @structs[llvm_name]?
+      if s = known_struct?(llvm_name)
         return s
       end
 
@@ -286,7 +303,7 @@ module Crystal
       end
 
       llvm_name = llvm_name(type, wants_size)
-      if s = @structs[llvm_name]?
+      if s = known_struct?(llvm_name)
         return s
       end
 
@@ -319,7 +336,7 @@ module Crystal
 
     private def create_llvm_c_union_struct_type(type, wants_size)
       llvm_name = llvm_name(type, wants_size)
-      if s = @structs[llvm_name]?
+      if s = known_struct?(llvm_name)
         return s
       end
 
@@ -557,7 +574,7 @@ module Crystal
       when .struct?
         llvm_name = type.struct_name
         if llvm_name
-          @structs[llvm_name] ||= begin
+          known_struct?(llvm_name) || begin
             @llvm_context.struct(llvm_name, type.packed_struct?) do |the_struct|
               @structs[llvm_name] = the_struct
               copy_types(type.struct_element_types)
