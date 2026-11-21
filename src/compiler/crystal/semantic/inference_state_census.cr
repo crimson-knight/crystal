@@ -117,6 +117,11 @@ module Crystal
         io.printf("infer    MetaVar %-8s observed by %-40s %12d\n", walked ? "owned" : "edge", name, count)
       end
 
+      stats = @program.inference_release_stats
+      io.printf("infer    release: visitors released %d, keeping their vars %d (with %d point vars); point vars spliced out %d, doing more than repeating one node %d, left bound %d; after vars restored %d\n",
+        stats.released_visitors, stats.visitors_keeping_vars, stats.point_vars_of_keeping_visitors,
+        stats.spliced_point_vars, stats.kept_point_vars, stats.point_vars_left_bound, stats.restored_after_vars)
+
       visitor_count = 0
       block_visitors = 0_i64
       vars_entries = 0_i64

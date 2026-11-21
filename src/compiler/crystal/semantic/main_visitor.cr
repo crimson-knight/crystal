@@ -1221,16 +1221,26 @@ module Crystal
     # Takes *var* out of the type-inference edges when it only repeats one
     # other node. *meta_var* is the cumulative var of the same variable.
     private def splice_out_point_var(var : MetaVar, meta_var : MetaVar?) : Nil
-      return unless var.repeats_one_dependency?
+      stats = @program.inference_release_stats
+      unless var.repeats_one_dependency?
+        stats.kept_point_vars += 1
+        return
+      end
 
-      if var.listed_as_local_var?
-        # If the variable is later captured by a closure and assigned again,
-        # every node listed is bound to the cumulative var. The nodes that
-        # read this var take its place in that list.
-        return unless meta_var && meta_var.local_vars?
-        return unless var.splice_out_of_bindings_leaving_observers_to(meta_var)
+      spliced =
+        if var.listed_as_local_var?
+          # If the variable is later captured by a closure and assigned
+          # again, every node listed is bound to the cumulative var. The
+          # nodes that read this var take its place in that list.
+          !meta_var.nil? && meta_var.local_vars? && var.splice_out_of_bindings_leaving_observers_to(meta_var)
+        else
+          var.splice_out_of_bindings
+        end
+
+      if spliced
+        stats.spliced_point_vars += 1
       else
-        var.splice_out_of_bindings
+        stats.point_vars_left_bound += 1
       end
     end
 
@@ -1252,14 +1262,20 @@ module Crystal
     def release_inference_state : Nil
       return if @vars_released
 
+      stats = @program.inference_release_stats
       if keeps_vars?
         @vars.each_value { |var| var.kept_by_visitor = true }
+        stats.visitors_keeping_vars += 1
+        stats.point_vars_of_keeping_visitors += @point_vars.try(&.size) || 0
         @point_vars = nil
         return
       end
+      stats.released_visitors += 1
 
       if point_vars = @point_vars
-        point_vars.each do |var|
+        # Newest first: a later var often reads an earlier one, and is taken
+        # out before the earlier one hands its readers over.
+        point_vars.reverse_each do |var|
           splice_out_point_var(var, @meta_vars[var.name]?)
         end
         @point_vars = nil
@@ -1652,6 +1668,7 @@ module Crystal
         next if wrapped.notifying_observers?
         after_var.unbind_from(wrapped)
         @vars[name] = wrapped
+        @program.inference_release_stats.restored_after_vars += 1
         (unchanged ||= [] of String) << name
       end
       return unless unchanged

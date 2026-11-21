@@ -562,7 +562,7 @@ module Crystal
         size = local_vars.size
         local_vars.reject! &.same?(var)
         return false if local_vars.size == size
-        var.each_observer { |observer| local_vars << observer }
+        var.each_observer { |observer| local_vars << list_as_local_var(observer) }
         case local_vars.size
         when 0 then @local_vars = nil
         when 1 then @local_vars = local_vars.first
@@ -570,11 +570,18 @@ module Crystal
         true
       elsif local_vars.same?(var)
         @local_vars = nil
-        var.each_observer { |observer| add_local_var(observer) }
+        var.each_observer { |observer| add_local_var(list_as_local_var(observer)) }
         true
       else
         false
       end
+    end
+
+    # An observer that is itself a point var may be spliced out later: it
+    # must know it is listed, to hand its place over in turn.
+    private def list_as_local_var(node : ASTNode) : ASTNode
+      node.listed_as_local_var = true if node.is_a?(MetaVar)
+      node
     end
 
     # `splice_out_of_bindings`, for a var that *meta_var* lists as a local

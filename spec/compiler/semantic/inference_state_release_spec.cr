@@ -41,6 +41,20 @@ private class MetaVarCollector < Visitor
   end
 end
 
+private def semantic_without_release(code : String) : SemanticResult
+  program = Program.new
+  program.color = false
+  program.release_inference_state = false
+  node = parse(code).as(Expressions)
+  node.expressions.unshift(Crystal::Require.new("primitives"))
+  node = program.semantic(program.normalize(node))
+  SemanticResult.new(program, node)
+end
+
+private def last_type(result : SemanticResult) : String
+  result.node.as(Expressions).last.type.to_s
+end
+
 private def typed_def(result : SemanticResult, name : String) : Def
   result.program.def_instances.each_value do |typed_def|
     return typed_def if typed_def.name == name
@@ -394,22 +408,59 @@ describe "MainVisitor#release_inference_state" do
       foo("text")
       )
     released = semantic(code, inject_primitives: true)
+    kept = semantic_without_release(code)
 
-    program = Program.new
-    program.compiler = Compiler.new
-    program.color = false
-    program.release_inference_state = false
-    node = program.normalize(inject_primitives_into(parse(code)))
-    node = program.semantic(node)
-
-    node.as(Expressions).last.type.to_s.should eq(released.node.as(Expressions).last.type.to_s)
-    kept = collect_meta_vars(typed_def(SemanticResult.new(program, node), "foo")).meta_vars.size
-    left = collect_meta_vars(typed_def(released, "foo")).meta_vars.size
-    left.should be < kept
+    last_type(kept).should eq(last_type(released))
+    kept_count = collect_meta_vars(typed_def(kept, "foo")).meta_vars.size
+    left_count = collect_meta_vars(typed_def(released, "foo")).meta_vars.size
+    left_count.should be < kept_count
   end
-end
 
-private def inject_primitives_into(node : ASTNode) : ASTNode
-  node.as(Expressions).expressions.unshift(Crystal::Require.new("primitives"))
-  node
+  # `second` is typed, and its visitor finished, before `first` has a type.
+  # The block of `capture` becomes a proc literal only then, and assigns `x`:
+  # every read of `x` in `second`, also the ones that went through vars that
+  # were spliced out in the meantime, must get the type the closure assigns.
+  it "binds reads that went through spliced vars when a closure typed late assigns the variable" do
+    code = %(
+      def capture(value, &block : -> Int32)
+        block
+      end
+
+      def each_one
+        yield 1
+      end
+
+      def first(n)
+        if n == 0
+          1
+        else
+          second(n - 1)[0]
+        end
+      end
+
+      def second(n)
+        x = 2
+        count = 0
+        in_loop = 0
+        while count < 1
+          in_loop = x
+          count += 1
+        end
+        in_block = each_one { |y| x }
+        after = x
+        capture(first(n)) do
+          x = "text"
+          4
+        end.call
+        {in_loop, in_block, after}
+      end
+
+      second(3)
+      )
+    released = semantic(code, inject_primitives: true)
+    kept = semantic_without_release(code)
+
+    last_type(released).should eq(last_type(kept))
+    last_type(released).should eq("Tuple(Int32 | String, Int32 | String, Int32 | String)")
+  end
 end
