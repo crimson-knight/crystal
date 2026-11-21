@@ -23,6 +23,17 @@ module Crystal
     @category = "main program"
     @pending_target_defs = [] of Def
     @typed_defs_by_source = Hash(String, {Int64, Int64}).new
+    @cached_typed_defs = [] of Def
+    @cached_typed_def_ids = Set(UInt64).new
+    @fingerprints = Hash(UInt64, TypedDefFingerprint).new
+    @block_call_copies = [] of {Def, Call}
+    @main_node : ASTNode?
+
+    # What codegen reads from one typed def: a hash over every node class and
+    # node type in its body (and, through its calls, in the uncached typed
+    # defs those calls own), the same hash with the def's owner erased, and the
+    # bytes of the def's own nodes.
+    record TypedDefFingerprint, content : UInt64, content_without_owner : UInt64, bytes : Int64
 
     def initialize(@program : Program)
     end
@@ -58,6 +69,7 @@ module Crystal
         end
       end
       @program_fields = @program.census_field_bytes(self)
+      @main_node = main_node
     end
 
     def print(io : IO, stage : String, live_bytes : Int64, heap_bytes : Int64) : Nil
@@ -77,6 +89,10 @@ module Crystal
         io.printf("program  %-48s %12s         %10.1f MB\n", name, "", bytes / 1e6)
       end
       print_typed_defs_by_source(io)
+      print_identical_copies(io)
+      stats = @program.block_instance_stats
+      io.printf("sharing  block instances typed %d, shared %d, reused by their first call %d, diverged %d, late yields %d, block type differs %d, yields depend on block %d\n",
+        stats.typed, stats.shared, stats.reused_by_first_call, stats.diverged, stats.late_yields, stats.block_type_differs, stats.yields_depend_on_block)
       io.flush
     end
 
@@ -141,6 +157,163 @@ module Crystal
       end
     end
 
+    # Reports how many typed copies are identical in everything codegen
+    # reads. Copies owned by a call with a block ("block-call copies") are
+    # grouped by content; copies cached in `def_instances` are grouped by
+    # content with the owner erased, which shows what treating the receiver as
+    # a parameter could share.
+    private def print_identical_copies(io : IO) : Nil
+      main_node = @main_node || return
+      fingerprint_node(main_node, nil)
+      # The list grows while it is walked: defs cached by owners the type walk
+      # does not reach are appended as calls to them are found.
+      index = 0
+      while index < @cached_typed_defs.size
+        fingerprint(@cached_typed_defs[index])
+        index += 1
+      end
+
+      block_groups = Hash(UInt64, {Int64, Int64}).new
+      block_sources = Hash(String, {Int64, Int64, Set(UInt64)}).new
+      block_bytes = 0_i64
+      with_params = {0_i64, 0_i64, Set(UInt64).new}
+      without_params = {0_i64, 0_i64, Set(UInt64).new}
+      @block_call_copies.each do |typed_def, call|
+        print_data = fingerprint(typed_def)
+        block_bytes += print_data.bytes
+        current = block_groups[print_data.content]? || {0_i64, print_data.bytes}
+        block_groups[print_data.content] = {current[0] + 1, current[1]}
+        key = source_key(typed_def)
+        source = block_sources[key]? || {0_i64, 0_i64, Set(UInt64).new}
+        source[2] << print_data.content
+        block_sources[key] = {source[0] + 1, source[1] + print_data.bytes, source[2]}
+        block = call.block
+        if block && (block.args.empty? && !block.splat_index)
+          without_params[2] << print_data.content
+          without_params = {without_params[0] + 1, without_params[1] + print_data.bytes, without_params[2]}
+        else
+          with_params[2] << print_data.content
+          with_params = {with_params[0] + 1, with_params[1] + print_data.bytes, with_params[2]}
+        end
+      end
+      io.printf("identical %-47s %12d copies  %10.1f MB\n", "block-call copies (own nodes)", @block_call_copies.size, block_bytes / 1e6)
+      io.printf("identical %-47s %12d copies  %10.1f MB\n", "block-call copies, distinct content", block_groups.size,
+        block_groups.sum { |_, value| value[1] } / 1e6)
+      io.printf("identical %-47s %12d copies  %10.1f MB  %d distinct\n", "block-call copies, block without parameters", without_params[0], without_params[1] / 1e6, without_params[2].size)
+      io.printf("identical %-47s %12d copies  %10.1f MB  %d distinct\n", "block-call copies, block with parameters", with_params[0], with_params[1] / 1e6, with_params[2].size)
+      block_sources.to_a.sort_by { |entry| -entry[1][1] }.first(25).each do |name, (count, bytes, distinct)|
+        io.printf("identical block  %-40s %12d copies  %10.1f MB  %d distinct\n", name[0, 40], count, bytes / 1e6, distinct.size)
+      end
+
+      cached_sources = Hash(String, {Int64, Int64, Set(UInt64), Set(UInt64), Set(UInt64)}).new
+      cached_bytes = 0_i64
+      erased_groups = Hash(UInt64, Int64).new
+      @cached_typed_defs.each do |typed_def|
+        print_data = fingerprint(typed_def)
+        cached_bytes += print_data.bytes
+        erased_groups[print_data.content_without_owner] ||= print_data.bytes
+        key = source_key(typed_def)
+        source = cached_sources[key]? || {0_i64, 0_i64, Set(UInt64).new, Set(UInt64).new, Set(UInt64).new}
+        source[2] << typed_def.owner.object_id
+        source[3] << print_data.content
+        source[4] << print_data.content_without_owner
+        cached_sources[key] = {source[0] + 1, source[1] + print_data.bytes, source[2], source[3], source[4]}
+      end
+      io.printf("identical %-47s %12d copies  %10.1f MB\n", "cached copies (own nodes)", @cached_typed_defs.size, cached_bytes / 1e6)
+      io.printf("identical %-47s %12d copies  %10.1f MB\n", "cached copies, distinct with owner erased", erased_groups.size,
+        erased_groups.sum { |_, value| value } / 1e6)
+      cached_sources.to_a.sort_by { |entry| -entry[1][1] }.first(25).each do |name, (count, bytes, owners, distinct, erased)|
+        io.printf("identical cached %-40s %12d copies  %10.1f MB  %d owners, %d distinct, %d distinct with owner erased\n",
+          name[0, 40], count, bytes / 1e6, owners.size, distinct.size, erased.size)
+      end
+    end
+
+    private def source_key(typed_def : Def) : String
+      location = typed_def.location
+      location ? "#{typed_def.name} #{File.basename(location.filename.to_s)}:#{location.line_number}" : typed_def.name
+    end
+
+    private def fingerprint(typed_def : Def) : TypedDefFingerprint
+      if existing = @fingerprints[typed_def.object_id]?
+        return existing
+      end
+      # A def that reaches itself is named by its identity inside its own walk.
+      @fingerprints[typed_def.object_id] = TypedDefFingerprint.new(typed_def.object_id, typed_def.object_id, 0_i64)
+      result = fingerprint_node(typed_def, typed_def.owner)
+      @fingerprints[typed_def.object_id] = result
+      result
+    end
+
+    private def mix(hash : UInt64, value : UInt64) : UInt64
+      (hash ^ value) &* 0x100000001b3_u64 &+ (hash >> 29)
+    end
+
+    private def fingerprint_node(root : ASTNode, owner : Type?) : TypedDefFingerprint
+      erased = Set(UInt64).new
+      if owner
+        erased << owner.object_id
+        erased << owner.metaclass.object_id unless owner.metaclass?
+        erased << owner.instance_type.object_id if owner.metaclass?
+        erased << owner.virtual_type.object_id
+      end
+      content = 0xcbf29ce484222325_u64
+      content_without_owner = content
+      bytes = 0_i64
+      stack = [root] of ASTNode
+      collector = CensusChildCollector.new
+      while current = stack.pop?
+        bytes += gc_bytes(current.as(Void*)) + current.census_owned_bytes(self)
+        class_id = current.crystal_type_id.to_u64
+        type_id = current.type?.try(&.object_id) || 0_u64
+        content = mix(mix(content, class_id), type_id)
+        content_without_owner = mix(mix(content_without_owner, class_id), erased.includes?(type_id) ? 1_u64 : type_id)
+        collector.children.clear
+        current.accept_children(collector)
+        stack.concat(collector.children)
+        if current.is_a?(ExpandableNode)
+          current.expanded.try { |expanded| stack << expanded }
+        end
+        if current.is_a?(Def)
+          current.vars.try &.each_value { |meta_var| stack << meta_var }
+        end
+        if current.is_a?(Block)
+          current.vars.try &.each_value { |meta_var| stack << meta_var }
+        end
+        if current.is_a?(Call)
+          current.target_defs.try &.each do |target_def|
+            if @cached_typed_def_ids.includes?(target_def.object_id)
+              content = mix(content, target_def.object_id)
+              # A cached callee is named by its source and argument types, so
+              # two receivers that call the same method on themselves agree.
+              callee = target_def.name.hash
+              target_def.args.each do |arg|
+                arg_type_id = arg.type?.try(&.object_id) || 0_u64
+                callee = mix(callee, erased.includes?(arg_type_id) ? 1_u64 : arg_type_id)
+              end
+              callee_owner_id = target_def.owner.object_id
+              callee = mix(callee, erased.includes?(callee_owner_id) ? 1_u64 : callee_owner_id)
+              content_without_owner = mix(content_without_owner, callee)
+            elsif current.block && !target_def.block_arg.try(&.type?)
+              # Typed for this call alone: the def yields to the call's block.
+              first_visit = !@fingerprints.has_key?(target_def.object_id)
+              nested = fingerprint(target_def)
+              @block_call_copies << {target_def, current} if first_visit
+              content = mix(content, nested.content)
+              content_without_owner = mix(content_without_owner, nested.content_without_owner)
+            else
+              # Cached by an owner the type walk does not reach (a virtual
+              # type, a proc or tuple type, a metaclass of a generic instance).
+              @cached_typed_def_ids << target_def.object_id
+              @cached_typed_defs << target_def
+              content = mix(content, target_def.object_id)
+              content_without_owner = mix(content_without_owner, target_def.object_id)
+            end
+          end
+        end
+      end
+      TypedDefFingerprint.new(content, content_without_owner, bytes)
+    end
+
     private def walk_typed_def(typed_def : Def) : Nil
       return if @seen.includes?(typed_def.object_id)
       before = @categories[@category]?.try(&.[1]) || 0_i64
@@ -162,6 +335,8 @@ module Crystal
         if instances = type.@def_instances
           category = generic ? "typed defs (generic instance owners)" : "typed defs (plain owners)"
           instances.each_value do |typed_def|
+            @cached_typed_defs << typed_def
+            @cached_typed_def_ids << typed_def.object_id
             with_category(category) { walk_typed_def(typed_def) }
           end
         end

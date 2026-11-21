@@ -1022,6 +1022,7 @@ module Crystal
 
       # This is the case of a yield when there's a captured block
       if block.fun_literal
+        @typed_def.try(&.block_instance).try(&.shareable=(false))
         block_arg_name = typed_def.block_arg.not_nil!.name
         block_var = Var.new(block_arg_name).at(node)
         call = Call.new(block_var, "call", node.exps).at(node)
@@ -1058,6 +1059,10 @@ module Crystal
       end
 
       node.bind_to block
+
+      if (block_instance = @typed_def.try(&.block_instance)) && block_instance.first_block.same?(block)
+        block_instance.add_yield(node, @program)
+      end
 
       @type_filters = nil
       false

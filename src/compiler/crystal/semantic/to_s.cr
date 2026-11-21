@@ -80,6 +80,10 @@ module Crystal
       false
     end
 
+    def visit(node : BlockInstanceWatcher)
+      false
+    end
+
     def visit(node : FileNode)
       @str.puts
       @str << "# " << node.filename

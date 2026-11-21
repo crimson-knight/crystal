@@ -12,6 +12,10 @@ class Crystal::Call
   property expanded_macro : Macro?
   property? uses_with_scope = false
 
+  # Set once this call's block type stopped matching a shared typed def: the
+  # call keeps a private clone from then on (see `BlockInstance`).
+  property? block_instance_sharing_disabled = false
+
   class RetryLookupWithLiterals < ::Exception
     def initialize
       self.callstack = Exception::CallStack.empty
@@ -81,6 +85,7 @@ class Crystal::Call
 
     block = @block
 
+    detach_block_instance_watchers(block) if block && @target_defs
     unbind_from @target_defs if @target_defs
     unbind_from block.break if block
 
@@ -397,9 +402,22 @@ class Crystal::Call
       def_instance_key = DefInstanceKey.new(match.def.object_id, lookup_arg_types, block_type, named_args_types)
       typed_def = def_instance_owner.lookup_def_instance def_instance_key if use_cache
 
+      # A def that yields to this call's block is shared with the other calls
+      # that have the same def, argument types and block type.
+      shares_block_instance = block && !use_cache && shares_block_instance?(match.def, block)
+      if block && shares_block_instance
+        typed_def = lookup_shared_block_instance(def_instance_owner, def_instance_key, block, yield_vars)
+      end
+
       unless typed_def
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
+        if block && shares_block_instance
+          block_instance = BlockInstance.new(self, block, block_output_free_vars(match.def))
+          typed_def.block_instance = block_instance
+          def_instance_owner.add_block_def_instance(def_instance_key, typed_def)
+          program.block_instance_stats.typed += 1
+        end
 
         # Record file-level dependency for incremental compilation.
         # If a call in file A resolves to a def in file B, then A depends on B.
@@ -447,12 +465,124 @@ class Crystal::Call
             end
           end
         end
+
+        block_instance.ready = true if block_instance
       end
 
       typed_defs << typed_def
     end
 
     typed_defs
+  end
+
+  private def shares_block_instance?(untyped_def : Def, block : Block) : Bool
+    program.share_block_instances? && !untyped_def.uses_block_arg? && !block.fun_literal
+  end
+
+  # Names of the def's free variables that its block return type binds
+  # (`def map(& : T -> U) forall U`).
+  private def block_output_free_vars(untyped_def : Def) : Array(String)?
+    free_vars = untyped_def.free_vars || return nil
+    restriction = untyped_def.block_arg.try(&.restriction)
+    return nil unless restriction.is_a?(ProcNotation)
+    output = restriction.output || return nil
+
+    names = nil
+    pending = [output] of ASTNode
+    children = BlockInstanceChildCollector.new
+    while node = pending.pop?
+      if node.is_a?(Path) && node.names.size == 1 && free_vars.includes?(node.names.first)
+        names ||= [] of String
+        names << node.names.first
+      end
+      children.nodes.clear
+      node.accept_children(children)
+      pending.concat(children.nodes)
+    end
+    names
+  end
+
+  # Returns a typed def that another call typed for the same def and argument
+  # types and that this call's block can share, or `nil`.
+  private def lookup_shared_block_instance(owner : DefInstanceContainer, key : DefInstanceKey, block : Block, yield_vars : Array(Var)?) : Def?
+    candidates = owner.lookup_block_def_instances(key) || return nil
+    stats = program.block_instance_stats
+
+    # The call that typed a clone gets it back when it is typed again with
+    # the same arguments: the clone is already bound to this block.
+    candidates.each do |candidate|
+      block_instance = candidate.block_instance || next
+      if block_instance.first_block.same?(block) && block_instance.ready? && block_instance.shareable?
+        stats.reused_by_first_call += 1
+        # Matching the def's block parameter may have typed the block's
+        # parameters from this match alone; merge the `yield`s back in.
+        bind_block_to_yields(block, candidate, yield_vars)
+        return candidate
+      end
+    end
+
+    return nil if block_instance_sharing_disabled?
+
+    sharable = candidates.select do |candidate|
+      block_instance = candidate.block_instance
+      next false unless block_instance && block_instance.ready? && block_instance.first_block.type?
+      independent = block_instance.yields_independent_of_block?(candidate)
+      stats.yields_depend_on_block += 1 unless independent
+      independent
+    end
+    return nil if sharable.empty?
+
+    unless block.visited?
+      # Without sharing the block is typed at the clone's first `yield`, with
+      # its parameters bound to the `yield` expressions. Those have the same
+      # types in every candidate, so any of them stands in for a private clone.
+      bind_block_to_yields(block, sharable.first, yield_vars)
+      bubbling_exception { block.accept parent_visitor }
+    end
+
+    block_type = block.type? || return nil
+    typed_def = sharable.find do |candidate|
+      candidate.block_instance.try(&.first_block.type?).same?(block_type)
+    end
+    unless typed_def
+      stats.block_type_differs += 1
+      return nil
+    end
+
+    bind_block_to_yields(block, typed_def, yield_vars)
+    block_instance = typed_def.block_instance.not_nil!
+    unless block.type?.same?(block_instance.first_block.type?)
+      stats.block_type_differs += 1
+      return nil
+    end
+
+    watcher = BlockInstanceWatcher.new(typed_def, block_instance.first_block, block, self)
+    watcher.attach
+    block_instance.add_watcher(watcher)
+    stats.shared += 1
+    typed_def
+  end
+
+  private def bind_block_to_yields(block : Block, typed_def : Def, yield_vars : Array(Var)?) : Nil
+    block_instance = typed_def.block_instance || return
+    binder = block.binder ||= YieldBlockBinder.new(program, block)
+    block_instance.yields.each { |node| binder.add_yield_once(node, yield_vars) }
+    binder.update
+  end
+
+  private def detach_block_instance_watchers(block : Block) : Nil
+    block.each_observer do |observer|
+      if observer.is_a?(BlockInstanceWatcher) && observer.call.same?(self)
+        observer.detach
+      end
+    end
+  end
+
+  # Types a private clone for this call after its block's type stopped
+  # matching the one *typed_def* was typed against.
+  def give_private_block_instance(typed_def : Def) : Nil
+    @block_instance_sharing_disabled = true
+    recalculate
   end
 
   def raise_if_block_too_nested(block_nest)
