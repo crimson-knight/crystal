@@ -691,6 +691,34 @@ module Crystal
       linked_module || raise "BUG: a module needs at least one bitcode file"
     end
 
+    # The cached bitcode part files (`<unit>.part<N>.bc`) that earlier
+    # builds left in an output directory, by unit. The directory is read
+    # once, the first time a unit asks: reading it for each of several
+    # thousand units took over a minute of a 300-model build.
+    @cached_part_bitcode_filenames : Hash(String, Array(String))?
+    @cached_part_bitcode_directory : String?
+    @cached_part_bitcode_lock = Mutex.new
+
+    # Hands over the part files an earlier build left for the unit whose
+    # files are named *unit_basename*, so the unit can delete them. A unit
+    # asks before it writes part files of its own.
+    protected def take_cached_part_bitcode_filenames(output_dir : String, unit_basename : String) : Array(String)
+      @cached_part_bitcode_lock.synchronize do
+        filenames_by_unit = @cached_part_bitcode_filenames
+        if filenames_by_unit.nil? || @cached_part_bitcode_directory != output_dir
+          filenames_by_unit = Hash(String, Array(String)).new
+          Dir.each_child(output_dir) do |child|
+            next unless match = child.match(/\A(.+)\.part\d+\.bc\z/)
+
+            (filenames_by_unit[match[1]] ||= [] of String) << child
+          end
+          @cached_part_bitcode_filenames = filenames_by_unit
+          @cached_part_bitcode_directory = output_dir
+        end
+        filenames_by_unit.delete(unit_basename) || [] of String
+      end
+    end
+
     # An interrupted compilation leaves its spill files behind.
     private def remove_spill_files_of_ended_compilations(output_dir) : Nil
       Dir.each_child(output_dir) do |child|
@@ -727,6 +755,7 @@ module Crystal
       is_single_module = @single_module || @cross_compile || !@emit_targets.none? || program.has_flag?("wasm32")
 
       output_dir = CacheDir.instance.directory_for(sources)
+      @cached_part_bitcode_filenames = nil
       module_spill = @last_module_spill = module_spill_for(output_dir, is_single_module)
 
       llvm_modules, codegen_module_source_files = @progress_tracker.stage("Codegen (crystal)") do
@@ -2201,12 +2230,8 @@ module Crystal
       # Deletes the cached bitcode files of every part after the first one,
       # whatever number of parts the build that left them had.
       private def delete_cached_part_files : Nil
-        part_prefix = "#{@name}.part"
-        Dir.each_child(@output_dir) do |child|
-          next unless child.starts_with?(part_prefix) && child.ends_with?(".bc")
-          next unless child[part_prefix.size...-3].matches?(/\A\d+\z/)
-
-          File.delete?(File.join(@output_dir, child))
+        compiler.take_cached_part_bitcode_filenames(@output_dir, @name).each do |part_filename|
+          File.delete?(File.join(@output_dir, part_filename))
         end
       end
 
