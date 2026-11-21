@@ -3813,7 +3813,10 @@ module Crystal
     end
 
     def new_meta_var(name, context = current_context)
+      # A def's or block's own variable: codegen reads it.
+      NodePool.allocating_for_codegen = true
       meta_var = MetaVar.new(name)
+      NodePool.allocating_for_codegen = false
       meta_var.context = context
       meta_var
     end

@@ -478,6 +478,8 @@ module Crystal
   end
 
   class MetaVar < ASTNode
+    allocates_from_two_node_pools
+
     include SpecialVar
 
     property name : String

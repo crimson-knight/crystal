@@ -30,9 +30,11 @@ module Crystal
       print_stats
       print_progress
 
+      NodePool.start_stage(name) if name.in?(NodePool::STAGES_WITH_THEIR_OWN_CHUNKS)
       time_start = Time.instant
       retval = yield
       GCTuning.stage_finished(name)
+      NodePool.print_trace(name)
       time_taken = started_at ? Time.utc - started_at : time_start.elapsed
 
       print_stats(time_taken)

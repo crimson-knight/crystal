@@ -1,5 +1,7 @@
 module Crystal
   class TypeFilteredNode < ASTNode
+    allocates_from_node_pool
+
     def initialize(@filter : TypeFilter, @node : ASTNode)
       @dependencies.push @node
       node.add_observer self

@@ -34,6 +34,8 @@ private def pp_join(pp, ary)
   end
 end
 
+require "./node_pool"
+
 module Crystal
   # Base class for nodes in the grammar.
   abstract class ASTNode
@@ -244,6 +246,8 @@ module Crystal
 
   # A container for one or many expressions.
   class Expressions < ASTNode
+    allocates_from_node_pool
+
     enum Keyword
       None
       Paren
@@ -836,6 +840,8 @@ module Crystal
 
   # A local variable or block argument.
   class Var < ASTNode
+    allocates_from_node_pool
+
     include SpecialVar
 
     property name : String
@@ -943,6 +949,8 @@ module Crystal
   # the symbol of that operator instead of a string.
   #
   class Call < ASTNode
+    allocates_from_node_pool
+
     property obj : ASTNode?
     property name : String
     property args : Array(ASTNode)
@@ -1094,6 +1102,8 @@ module Crystal
   # An if elsif end is parsed as an If whose
   # else is another If.
   class If < ASTNode
+    allocates_from_node_pool
+
     property cond : ASTNode
     property then : ASTNode
     property else : ASTNode
@@ -1181,6 +1191,8 @@ module Crystal
   #     target '=' value
   #
   class Assign < ASTNode
+    allocates_from_node_pool
+
     property target : ASTNode
     property value : ASTNode
     property doc : String?
@@ -1436,6 +1448,8 @@ module Crystal
 
   # A def argument.
   class Arg < ASTNode
+    allocates_from_node_pool
+
     include SpecialVar
 
     # The internal name
@@ -1522,6 +1536,8 @@ module Crystal
   #     'end'
   #
   class Def < ASTNode
+    allocates_from_node_pool
+
     property name : String
     property args : Array(Arg)
     property body : ASTNode
@@ -1989,6 +2005,8 @@ module Crystal
   #     const [ '::' const ]*
   #
   class Path < ASTNode
+    allocates_from_node_pool
+
     property names : Array(String)
     flag_property? global, 0
 
