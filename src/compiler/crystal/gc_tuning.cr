@@ -10,23 +10,31 @@ module Crystal
   #
   # The collector lets the heap grow by `heap / free_space_divisor` before it
   # collects again, so a larger divisor keeps the heap closer to the live data
-  # and pays for it with more collections. Environment variables are for
+  # and pays for it with more collections. The compiler runs with
+  # `FREE_SPACE_DIVISOR`; the collector's own default is 3. Measured on a
+  # program whose type inference keeps 3.5 GB (notes/infer-state.md): the
+  # heap at the end of type inference is 4.7 GB with 3 and 4.1 GB with 10, in
+  # the same wall time, for 60% more CPU time spent by the mark threads. With
+  # 16 the wall time rises by a quarter. Environment variables are for
   # measuring the trade:
   #
-  # * `CRYSTAL_GC_FREE_SPACE_DIVISOR=N` sets the divisor.
+  # * `CRYSTAL_GC_FREE_SPACE_DIVISOR=N` sets the divisor (3 gives the
+  #   collector's default back).
   # * `CRYSTAL_GC_COLLECT_AT_STAGES=1` runs a full collection when a compiler
   #   stage ends.
   # * `CRYSTAL_GC_TRACE=1` prints the collector's numbers to standard error
   #   when a stage ends.
   module GCTuning
+    FREE_SPACE_DIVISOR = 10_u64
+
     class_property? collects_at_stages : Bool = false
     class_property? traces_stages : Bool = false
 
     def self.configure_from_env : Nil
       {% unless flag?(:gc_none) || flag?(:wasm32) %}
-        if divisor = ENV["CRYSTAL_GC_FREE_SPACE_DIVISOR"]?.try(&.to_u64?)
-          LibGC.set_free_space_divisor(LibGC::Word.new(divisor)) if divisor > 0
-        end
+        divisor = ENV["CRYSTAL_GC_FREE_SPACE_DIVISOR"]?.try(&.to_u64?) || FREE_SPACE_DIVISOR
+        divisor = FREE_SPACE_DIVISOR if divisor == 0
+        LibGC.set_free_space_divisor(LibGC::Word.new(divisor))
         self.collects_at_stages = ENV["CRYSTAL_GC_COLLECT_AT_STAGES"]? == "1"
         self.traces_stages = ENV["CRYSTAL_GC_TRACE"]? == "1"
       {% end %}
