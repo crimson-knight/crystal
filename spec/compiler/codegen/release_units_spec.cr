@@ -63,6 +63,17 @@ private def private_symbols_are_removed? : Bool
   {% end %}
 end
 
+# The Crystal functions of the executable's code section, in address order.
+private def function_names_by_address(nm, executable)
+  Process.capture([nm, "-n", executable]).lines.compact_map do |line|
+    fields = line.chomp.split(3)
+    next unless fields.size == 3
+
+    _, kind, name = fields
+    name if kind.in?("T", "t") && (name.includes?("::") || name.includes?("#"))
+  end.uniq
+end
+
 private def symbol_names(nm, executable)
   Process.capture([nm, executable]).lines.map { |line| line.split(' ', 3).last.chomp }
 end
@@ -150,6 +161,23 @@ describe "Compiler#release_units" do
       list_of_crystal_method_symbols.should_not be_empty
       (list_of_crystal_method_symbols - parts_symbols).should be_empty
       (parts_symbols - list_of_private_symbols).size.should be_close(single_symbols.size, single_symbols.size // 10)
+    end
+  end
+
+  it "lays out the functions in the order of the single-object build" do
+    nm = Process.find_executable("nm")
+    pending! "nm is not installed" unless nm
+
+    with_tempfile("release_units_order") do |directory|
+      Dir.mkdir_p(directory)
+      single_executable, _ = compile_release_units_program(directory, 1, "single")
+      parts_executable, _ = compile_release_units_program(directory, 4, "parts")
+
+      single_order = function_names_by_address(nm, single_executable)
+      parts_order = function_names_by_address(nm, parts_executable)
+      list_of_shared_names = single_order & parts_order
+      list_of_shared_names.size.should be > 100
+      (parts_order & list_of_shared_names).should eq(list_of_shared_names)
     end
   end
 end
