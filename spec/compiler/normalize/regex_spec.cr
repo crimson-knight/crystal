@@ -58,30 +58,53 @@ describe "Normalize: regex literal" do
       CRYSTAL
     end
   end
-  describe "with -Duse_mica" do
+  describe "on the Mica engine (the default)" do
     it "expands a literal inside the Mica dialect" do
-      assert_expand_regex_const %q(/(?<year>\d{4})-(?:a|b)+/i), <<-'CRYSTAL', flags: "use_mica"
+      assert_expand_regex_const %q(/(?<year>\d{4})-(?:a|b)+/i), <<-'CRYSTAL'
       ::Regex.new("(?<year>\\d{4})-(?:a|b)+", ::Regex::Options.new(1))
       CRYSTAL
     end
 
-    it "rejects a literal the Mica engine leaves out" do
-      expect_raises(Crystal::TypeException, "invalid regex for -Duse_mica: lookahead (at 1) is not supported by the Mica regex engine") do
-        assert_expand(Parser.parse(%q(/a(?=b)/)), flags: "use_mica") { }
+    it "rejects a literal the Mica engine leaves out and names -Duse_pcre2" do
+      expect_raises(Crystal::TypeException, "invalid regex for the Mica regex engine: lookahead (at 1) is not supported; build with -Duse_pcre2 to run this pattern on PCRE2") do
+        assert_expand(Parser.parse(%q(/a(?=b)/))) { }
       end
-      expect_raises(Crystal::TypeException, "invalid regex for -Duse_mica: a backreference (at 3)") do
-        assert_expand(Parser.parse(%q(/(a)\1/)), flags: "use_mica") { }
+      expect_raises(Crystal::TypeException, "invalid regex for the Mica regex engine: a backreference (at 3)") do
+        assert_expand(Parser.parse(%q(/(a)\1/))) { }
       end
     end
 
     it "reads the literal options" do
-      expect_raises(Crystal::TypeException, "invalid regex for -Duse_mica") do
-        assert_expand(Parser.parse(%q(/a (?=b)/x)), flags: "use_mica") { }
+      expect_raises(Crystal::TypeException, "invalid regex for the Mica regex engine") do
+        assert_expand(Parser.parse(%q(/a (?=b)/x))) { }
       end
     end
 
-    it "leaves the literal to the PCRE2 engine without the flag" do
-      assert_expand_regex_const %q(/a(?=b)/), <<-'CRYSTAL'
+    it "accepts -Duse_mica as the default" do
+      assert_expand_regex_const %q(/a+b/), <<-'CRYSTAL', flags: "use_mica"
+      ::Regex.new("a+b", ::Regex::Options.new(0))
+      CRYSTAL
+      expect_raises(Crystal::TypeException, "invalid regex for the Mica regex engine") do
+        assert_expand(Parser.parse(%q(/a(?=b)/)), flags: "use_mica") { }
+      end
+    end
+  end
+
+  describe "with -Duse_pcre2 or -Duse_pcre" do
+    it "leaves the literal to the PCRE2 engine" do
+      assert_expand_regex_const %q(/a(?=b)/), <<-'CRYSTAL', flags: "use_pcre2"
+      ::Regex.new("a(?=b)", ::Regex::Options.new(0))
+      CRYSTAL
+    end
+
+    it "leaves the literal to the legacy PCRE engine" do
+      assert_expand_regex_const %q(/(a)\1/), <<-'CRYSTAL', flags: "use_pcre"
+      ::Regex.new("(a)\\1", ::Regex::Options.new(0))
+      CRYSTAL
+    end
+
+    it "selects PCRE over -Duse_mica when both are given" do
+      assert_expand_regex_const %q(/a(?=b)/), <<-'CRYSTAL', flags: "use_mica use_pcre2"
       ::Regex.new("a(?=b)", ::Regex::Options.new(0))
       CRYSTAL
     end

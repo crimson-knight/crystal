@@ -1,6 +1,8 @@
 #! /usr/bin/env crystal
 
-{% if Regex::Engine.resolve.name == "Regex::PCRE2" %}
+{% if Regex::Engine.resolve.name == "Regex::MicaEngine" %}
+  puts "Using #{Regex::Engine.version}"
+{% elsif Regex::Engine.resolve.name == "Regex::PCRE2" %}
   enum LibPCRE2::BSR : UInt32
     UNICODE = 1
     ANYCRLF = 2

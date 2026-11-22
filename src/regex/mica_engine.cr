@@ -2,7 +2,7 @@ require "./mica/regex"
 
 # :nodoc:
 #
-# The `Regex` engine behind `-Duse_mica`: Mica's pure-Crystal engine, whose
+# The default `Regex` engine: Mica's pure-Crystal engine, whose
 # searches run in time linear in the haystack under a work allowance, and
 # which links no C regex library. See `doc/regex_mica.md`.
 module Regex::MicaEngine
@@ -338,10 +338,11 @@ module Regex::MicaEngine
 end
 
 class Regex
-  # Raised by `Regex.new` under the Mica engine (`-Duse_mica`) for a pattern
+  # Raised by `Regex.new` under the Mica engine (the default) for a pattern
   # that is valid PCRE2 but uses a construct Mica leaves out (backreferences,
   # lookaround, atomic groups, recursion, conditionals, `\K`, verbs). It is an
   # `ArgumentError`, like every other pattern `Regex.new` cannot compile.
+  # A program built with `-Duse_pcre2` runs such patterns on PCRE2.
   class UnsupportedSyntaxError < ArgumentError
     # The construct, for example `"lookahead"`.
     getter construct : String
@@ -350,7 +351,7 @@ class Regex
     getter byte_offset : Int32
 
     def initialize(@construct : String, @byte_offset : Int32)
-      super("#{@construct} is not supported by the Mica regex engine at #{@byte_offset} (see doc/regex_mica.md)")
+      super("#{@construct} is not supported by the Mica regex engine at #{@byte_offset} (build with -Duse_pcre2 to run it on PCRE2; see doc/regex_mica.md)")
     end
   end
 end

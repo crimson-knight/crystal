@@ -4,13 +4,13 @@ module Crystal
     # Returns the syntax error in the source of a regex literal, or nil.
     #
     # The parser checks literals with the engine the compiler itself was
-    # built with. A compiler built with `-Duse_mica` reads PCRE2's syntax
+    # built with. A compiler built on Mica (the default) reads PCRE2's syntax
     # through Mica's parser, which stops at the first construct Mica leaves
     # out (lookaround, backreferences, ...): such a pattern is valid PCRE2, so
-    # it is accepted here, and a program built with `-Duse_mica` has it
+    # it is accepted here, and a program that runs on Mica has it
     # checked again by `MicaRegexLiteral` when the literal is expanded.
     def self.error?(source : String) : String?
-      {% if flag?(:use_mica) %}
+      {% if Regex::Engine.resolve.name == "Regex::MicaEngine" %}
         begin
           Regex.new(source)
           nil
