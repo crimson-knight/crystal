@@ -71,31 +71,13 @@ module Crystal
       end
     end
 
-    # One part of the module's bitcode: its hash and its cached file.
-    struct BitcodePart
-      include JSON::Serializable
-
-      getter content_hash : String
-      getter file_stamp : FileStamp
-
-      def initialize(@content_hash, @file_stamp)
-      end
-    end
-
     # The hash of the module's bitcode (`BitcodeHash.of_module`).
     getter module_hash : String
-
-    # The module's parts, in the order they are linked.
-    getter list_of_bitcode_parts : Array(BitcodePart)
 
     # The stamps of the unit's object files, in their order.
     getter list_of_object_stamps : Array(FileStamp)
 
-    # A name no other record has: two records are equal only when they are
-    # the same record.
-    getter written_as : String
-
-    def initialize(@module_hash, @list_of_bitcode_parts, @list_of_object_stamps, @written_as)
+    def initialize(@module_hash, @list_of_object_stamps)
     end
 
     # The record in the file named *filename*, or `nil` when there is none
@@ -107,22 +89,12 @@ module Crystal
     end
 
     # Writes the record of the objects in *list_of_object_filenames*, built
-    # from the bitcode files in *list_of_bitcode_filenames*, whose contents
-    # hash to *list_of_part_hashes*. Without a hash, or when one of the
-    # files is missing, no record is left.
-    def self.write(filename : String, list_of_part_hashes : Array(String),
-                   list_of_bitcode_filenames : Array(String), list_of_object_filenames : Array(String)) : Nil
+    # from bitcode whose parts hash to *list_of_part_hashes*. Without a
+    # hash, or when an object file is missing, no record is left.
+    def self.write(filename : String, list_of_part_hashes : Array(String), list_of_object_filenames : Array(String)) : Nil
       File.delete?(filename)
       module_hash = BitcodeHash.of_module(list_of_part_hashes)
-      return unless module_hash && list_of_part_hashes.size == list_of_bitcode_filenames.size
-
-      list_of_bitcode_parts = [] of BitcodePart
-      list_of_part_hashes.each_with_index do |part_hash, part_index|
-        file_stamp = FileStamp.of?(list_of_bitcode_filenames[part_index])
-        return unless file_stamp
-
-        list_of_bitcode_parts << BitcodePart.new(part_hash, file_stamp)
-      end
+      return unless module_hash
 
       list_of_object_stamps = [] of FileStamp
       list_of_object_filenames.each do |object_filename|
@@ -132,8 +104,7 @@ module Crystal
         list_of_object_stamps << object_stamp
       end
 
-      written_as = "#{Process.pid}-#{Time.utc.to_unix_ns}-#{Random::Secure.hex(8)}"
-      record = new(module_hash, list_of_bitcode_parts, list_of_object_stamps, written_as)
+      record = new(module_hash, list_of_object_stamps)
       # Renamed into place: a reader finds a whole record or none.
       temporary_filename = "#{filename}.#{Process.pid}.tmp"
       File.write(temporary_filename, record.to_json)

@@ -63,20 +63,6 @@ module Crystal
     getter bitcode_time = Time::Span.zero
     getter hash_time = Time::Span.zero
 
-    # How many of the parts have the bitcode an earlier build left in the
-    # cache, so that the cached file was linked instead of written again,
-    # and their size.
-    getter linked_part_count = 0
-    getter linked_bitcode_bytes = 0_i64
-
-    # Where the cache keeps what an earlier build left for a part: the
-    # module's record (`CachedObjectRecord`) and the part's bitcode file.
-    # Without it, every part is written.
-    property cached_part_filenames : Proc(String, Int32, {String, String})?
-
-    # The records read so far, by file name.
-    @cached_records = {} of String => CachedObjectRecord?
-
     # How many types have a module of more than one part.
     getter multi_part_module_count = 0
 
@@ -116,59 +102,13 @@ module Crystal
     end
 
     def record_spill(bitcode_bytes : Int64, bitcode_time : Time::Span, hash_time : Time::Span,
-                     write_time : Time::Span, part_index : Int32, linked : Bool) : Nil
+                     write_time : Time::Span, part_index : Int32) : Nil
       @spill_count += 1
       @written_bitcode_bytes += bitcode_bytes
       @bitcode_time += bitcode_time
       @hash_time += hash_time
       @write_time += write_time
-      if linked
-        @linked_part_count += 1
-        @linked_bitcode_bytes += bitcode_bytes
-      end
       @multi_part_module_count += 1 if part_index == 1
-    end
-
-    # Makes *spill_path* a hard link to the bitcode file the cache has for
-    # part *part_index* of the module named *module_name*, when that file
-    # holds the bitcode that hashes to *part_hash*. Returns whether it did;
-    # the part is written otherwise.
-    #
-    # IR generation runs outside the cache directory's lock, so another
-    # compilation can replace the module's files at any moment. It deletes
-    # the module's record first and writes a new one last, and it replaces
-    # bitcode files, never writes into them. So when the record is still
-    # the same one after the link was made, the linked file is the one the
-    # record describes, and it keeps its content whatever happens to the
-    # cache from then on.
-    def link_unchanged_part?(module_name : String, part_index : Int32, part_hash : String,
-                             bitcode_bytes : Int64, spill_path : String) : Bool
-      return false unless cached_part_filenames = @cached_part_filenames
-
-      record_filename, cached_bitcode_filename = cached_part_filenames.call(module_name, part_index)
-      record = @cached_records.fetch(record_filename) do
-        @cached_records[record_filename] = CachedObjectRecord.read?(record_filename)
-      end
-      return false unless record
-
-      cached_part = record.list_of_bitcode_parts[part_index]?
-      return false unless cached_part && cached_part.content_hash == part_hash
-      return false unless cached_part.file_stamp.byte_size == bitcode_bytes
-
-      begin
-        File.link(cached_bitcode_filename, spill_path)
-      rescue File::Error
-        return false
-      end
-
-      record_now = CachedObjectRecord.read?(record_filename)
-      if record_now == record && CachedObjectRecord::FileStamp.of?(spill_path) == cached_part.file_stamp
-        true
-      else
-        File.delete?(spill_path)
-        @cached_records[record_filename] = record_now
-        false
-      end
     end
 
     def record_built_instructions(built_instruction_count : Int64) : Nil
@@ -533,17 +473,11 @@ module Crystal
         hash_started_at = Time.instant
         part_hash = BitcodeHash.of_part(bitcode_bytes)
         write_started_at = Time.instant
-        # A file of this name can only be what an ended compilation with
-        # this process id left behind, possibly a link to a cached file:
-        # it is removed, never written into.
-        File.delete?(path)
-        linked = !part_hash.nil? &&
-                 spill.link_unchanged_part?(module_info.name, part_index, part_hash, bitcode_bytes.size.to_i64, path)
-        File.write(path, bitcode_bytes) unless linked
+        File.write(path, bitcode_bytes)
         module_info.list_of_spill_paths << path
         module_info.list_of_spill_part_hashes << part_hash if part_hash
         spill.record_spill(bitcode_bytes.size.to_i64, hash_started_at - bitcode_started_at,
-          write_started_at - hash_started_at, Time.instant - write_started_at, part_index, linked)
+          write_started_at - hash_started_at, Time.instant - write_started_at, part_index)
       ensure
         bitcode.dispose
       end

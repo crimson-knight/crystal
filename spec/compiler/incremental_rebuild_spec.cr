@@ -91,7 +91,7 @@ describe "Compiler with --incremental" do
       list_of_cached(program, /\.hash\z/).size.should eq(objects_before.size)
 
       edit_helper(helper)
-      rebuild = build_incrementally(program, executable, resident_modules: 1)
+      build_incrementally(program, executable, resident_modules: 1)
       Process.capture(executable).should eq("112\n")
 
       list_of_bitcode_after = list_of_helper_bitcode(program)
@@ -100,12 +100,6 @@ describe "Compiler with --incremental" do
       objects_after = modification_times(list_of_cached(program, /\.o\z/))
       list_of_rebuilt = objects_after.keys.select { |filename| objects_after[filename] != objects_before[filename] }
       list_of_rebuilt.map { |filename| File.basename(filename) }.should eq(["H-elper.o0.o"])
-
-      # The parts whose bitcode the cache already had were linked to their
-      # cached files instead of written, and no spill file is left.
-      module_spill = rebuild.last_module_spill.should_not be_nil
-      module_spill.linked_part_count.should be > 0
-      module_spill.linked_part_count.should be < module_spill.spill_count
       list_of_cached(program, /\.new\.bc\z/).should be_empty
     end
   end
@@ -145,7 +139,7 @@ describe "Compiler with --incremental" do
       Process.capture(executable).should eq("111\n")
       record_after = Crystal::CachedObjectRecord.read?(helper_record).should_not be_nil
       record_after.module_hash.should eq(record_before.module_hash)
-      record_after.written_as.should_not eq(record_before.written_as)
+      record_after.list_of_object_stamps.should_not eq(record_before.list_of_object_stamps)
       record_after.describes_objects?([helper_object]).should be_true
     end
   end

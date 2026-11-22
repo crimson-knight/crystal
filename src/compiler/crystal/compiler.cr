@@ -677,20 +677,9 @@ module Crystal
 
       remove_spill_files_of_ended_compilations(output_dir)
 
-      module_spill = ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
+      ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
         File.join(output_dir, "#{CompilationUnit.file_basename(type_name, optimization_mode)}.#{Process.pid}.part#{part_index}.new.bc")
       end
-      # `CRYSTAL_LINK_UNCHANGED_BITCODE=0` writes every part, for measuring.
-      unless @no_cache || ENV["CRYSTAL_LINK_UNCHANGED_BITCODE"]? == "0"
-        module_spill.cached_part_filenames = ->(type_name : String, part_index : Int32) do
-          unit_basename = CompilationUnit.file_basename(type_name, optimization_mode)
-          {
-            File.join(output_dir, "#{unit_basename}#{CachedObjectRecord::FILE_EXTENSION}"),
-            File.join(output_dir, part_index == 0 ? "#{unit_basename}.bc" : "#{unit_basename}.part#{part_index}.bc"),
-          }
-        end
-      end
-      module_spill
     end
 
     # Loads the modules in the bitcode files of *list_of_filenames* into
@@ -1597,8 +1586,6 @@ module Crystal
       puts " - module parts written to disk: #{module_spill.spill_count} (#{module_spill.written_bitcode_bytes // megabyte} MB, #{spill_seconds.round(1)} s)"
       puts " - of that time: #{module_spill.bitcode_time.total_seconds.round(1)} s making bitcode, " \
            "#{module_spill.hash_time.total_seconds.round(1)} s hashing it, #{module_spill.write_time.total_seconds.round(1)} s putting it in files"
-      puts " - parts with the bitcode the cache already had, linked to the cached file instead of written: " \
-           "#{module_spill.linked_part_count} (#{module_spill.linked_bitcode_bytes // megabyte} MB)"
       puts " - modules made of several parts: #{module_spill.multi_part_module_count}"
       puts " - function signatures recorded: #{module_spill.recorded_signature_count}"
       STDOUT.flush
@@ -1965,8 +1952,7 @@ module Crystal
         end
         File.rename(temporary_object_filename, object_filename)
         if hash_record_filename
-          CachedObjectRecord.write(hash_record_filename, list_of_bitcode_part_hashes,
-            [bitcode_filename] + list_of_more_bitcode_filenames, [object_filename])
+          CachedObjectRecord.write(hash_record_filename, list_of_bitcode_part_hashes, [object_filename])
         end
 
         llvm_mod.print_to_file llvm_ir_filename if llvm_ir_filename
@@ -2231,18 +2217,13 @@ module Crystal
         record.module_hash == module_hash ? CachedBitcode::Same : CachedBitcode::Different
       end
 
-      # The cached bitcode files of this unit's module.
-      private def list_of_cached_bitcode_names : Array(String)
-        spilled? ? list_of_part_bc_names : [bc_name]
-      end
-
       # Leaves the record of the object files that were just built, or that
       # a comparison of the bitcode files found to be up to date.
       private def write_hash_record : Nil
         return if compiler.no_cache?
         return unless list_of_part_hashes = @list_of_part_hashes
 
-        CachedObjectRecord.write(hash_record_name, list_of_part_hashes, list_of_cached_bitcode_names, object_names)
+        CachedObjectRecord.write(hash_record_name, list_of_part_hashes, object_names)
       end
 
       # The spill files of this unit's module parts that the cache has not
@@ -2308,9 +2289,6 @@ module Crystal
         delete_cached_part_files
         @list_of_spilled_bitcode_paths.each_with_index do |spilled_bitcode_path, part_index|
           File.rename(spilled_bitcode_path, part_bc_name(part_index))
-          # A spill file that is a link to the cached file it replaces is
-          # still there: renaming one name of a file to another does nothing.
-          File.delete?(spilled_bitcode_path)
         end
         @list_of_spilled_bitcode_paths.clear
       end
@@ -2564,11 +2542,8 @@ module Crystal
             move_spilled_bitcode_into_cache
           end
         elsif memory_buffer = @memory_buffer
-          # Create the .bc file (for next compilations). The old file is
-          # replaced, not written into: a compilation that is generating IR
-          # may hold a link to it (`ModuleSpill#link_unchanged_part?`).
-          File.write(bc_name_new, memory_buffer.to_slice)
-          File.rename(bc_name_new, bc_name)
+          # Create the .bc file (for next compilations)
+          File.write(bc_name, memory_buffer.to_slice)
           memory_buffer.dispose
           delete_cached_part_files
         else
