@@ -3,6 +3,7 @@ require "file_utils"
 require "colorize"
 require "crystal/digest/md5"
 require "./incremental_cache"
+require "./codegen/cached_object_record"
 require "./tools/require_graph_discoverer"
 {% if flag?(:msvc) %}
   require "./loader"
@@ -676,9 +677,20 @@ module Crystal
 
       remove_spill_files_of_ended_compilations(output_dir)
 
-      ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
+      module_spill = ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
         File.join(output_dir, "#{CompilationUnit.file_basename(type_name, optimization_mode)}.#{Process.pid}.part#{part_index}.new.bc")
       end
+      # `CRYSTAL_LINK_UNCHANGED_BITCODE=0` writes every part, for measuring.
+      unless @no_cache || ENV["CRYSTAL_LINK_UNCHANGED_BITCODE"]? == "0"
+        module_spill.cached_part_filenames = ->(type_name : String, part_index : Int32) do
+          unit_basename = CompilationUnit.file_basename(type_name, optimization_mode)
+          {
+            File.join(output_dir, "#{unit_basename}#{CachedObjectRecord::FILE_EXTENSION}"),
+            File.join(output_dir, part_index == 0 ? "#{unit_basename}.bc" : "#{unit_basename}.part#{part_index}.bc"),
+          }
+        end
+      end
+      module_spill
     end
 
     # Loads the modules in the bitcode files of *list_of_filenames* into
@@ -796,10 +808,13 @@ module Crystal
         end
 
         # Whether the unit's previous object file is reused is decided by
-        # comparing its bitcode with the cached bitcode (`CompilationUnit#must_compile?`):
-        # a module's code depends on more than the files its own defs are in
-        # (inlined bodies, callee return types, type layouts).
-        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, release_parts, info.list_of_spill_paths)
+        # the content of its bitcode (`CompilationUnit#must_compile?`): its
+        # hash against the hash the object was built from, or the bitcode
+        # itself against the cached bitcode. A module's code depends on more
+        # than the files its own defs are in (inlined bodies, callee return
+        # types, type layouts).
+        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, release_parts,
+          info.list_of_spill_paths, info.list_of_spill_part_hashes)
       end
 
       @last_modules_total = units.size
@@ -1578,7 +1593,12 @@ module Crystal
       puts " - limits: #{module_spill.resident_ir_bytes // megabyte} MB of estimated IR, #{module_spill.resident_limit} idle modules (0 is no limit)"
       puts " - most in memory at once: #{module_spill.peak_resident_count} modules, #{module_spill.peak_resident_ir_bytes // megabyte} MB of estimated IR"
       puts " - instructions built: #{module_spill.built_instruction_count}"
-      puts " - module parts written to disk: #{module_spill.spill_count} (#{module_spill.written_bitcode_bytes // megabyte} MB, #{module_spill.write_time.total_seconds.round(1)} s)"
+      spill_seconds = (module_spill.bitcode_time + module_spill.hash_time + module_spill.write_time).total_seconds
+      puts " - module parts written to disk: #{module_spill.spill_count} (#{module_spill.written_bitcode_bytes // megabyte} MB, #{spill_seconds.round(1)} s)"
+      puts " - of that time: #{module_spill.bitcode_time.total_seconds.round(1)} s making bitcode, " \
+           "#{module_spill.hash_time.total_seconds.round(1)} s hashing it, #{module_spill.write_time.total_seconds.round(1)} s putting it in files"
+      puts " - parts with the bitcode the cache already had, linked to the cached file instead of written: " \
+           "#{module_spill.linked_part_count} (#{module_spill.linked_bitcode_bytes // megabyte} MB)"
       puts " - modules made of several parts: #{module_spill.multi_part_module_count}"
       puts " - function signatures recorded: #{module_spill.recorded_signature_count}"
       STDOUT.flush
@@ -1594,10 +1614,12 @@ module Crystal
       case reused
       when units.size
         puts " - all previous .o files were reused"
+        print_reuse_decision_stats(units)
       when .zero?
         puts " - no previous .o files were reused"
       else
         puts " - #{reused}/#{units.size} .o files were reused"
+        print_reuse_decision_stats(units)
         puts
         puts "These modules were not reused:"
         units.each do |unit|
@@ -1629,6 +1651,11 @@ module Crystal
       if @link_skipped
         puts " - Linking skipped (all .o files reused, binary unchanged)"
       end
+    end
+
+    private def print_reuse_decision_stats(units : Array(ObjectStage::UnitSummary)) : Nil
+      decided_by_hash = units.count(&.decided_by_bitcode_hash?)
+      puts " - object reuse was decided by bitcode hash for #{decided_by_hash} modules, by comparing bitcode files for #{units.size - decided_by_hash}"
     end
 
     private def print_parse_cache_stats(io : IO = STDOUT)
@@ -1920,7 +1947,9 @@ module Crystal
     # unit is compiled in-process. The module is freed before returning.
     def compile_bitcode_file_to_object(bitcode_filename : String, object_filename : String,
                                        llvm_ir_filename : String? = nil, verifies_module : Bool = false,
-                                       list_of_more_bitcode_filenames : Array(String) = [] of String) : Nil
+                                       list_of_more_bitcode_filenames : Array(String) = [] of String,
+                                       hash_record_filename : String? = nil,
+                                       list_of_bitcode_part_hashes : Array(String) = [] of String) : Nil
       context = LLVM::Context.new
       begin
         llvm_mod = Compiler.parse_linked_bitcode_files([bitcode_filename] + list_of_more_bitcode_filenames, context)
@@ -1935,6 +1964,10 @@ module Crystal
           target_machine.dispose
         end
         File.rename(temporary_object_filename, object_filename)
+        if hash_record_filename
+          CachedObjectRecord.write(hash_record_filename, list_of_bitcode_part_hashes,
+            [bitcode_filename] + list_of_more_bitcode_filenames, [object_filename])
+        end
 
         llvm_mod.print_to_file llvm_ir_filename if llvm_ir_filename
       ensure
@@ -2154,12 +2187,62 @@ module Crystal
       def initialize(@compiler : Compiler, program : Program, @name : String,
                      @llvm_mod : LLVM::Module?, @output_dir : String, @bc_flags_changed : Bool,
                      @part_count : Int32 = 1,
-                     list_of_spilled_bitcode_paths : Array(String) = [] of String)
+                     list_of_spilled_bitcode_paths : Array(String) = [] of String,
+                     list_of_spilled_part_hashes : Array(String) = [] of String)
         @original_name = @name == "" ? "_main" : @name
         @name = CompilationUnit.file_basename(@name, @compiler.optimization_mode)
         @object_extension = compiler.codegen_target.object_extension
         @list_of_spilled_bitcode_paths = list_of_spilled_bitcode_paths.dup
         @spilled_part_count = list_of_spilled_bitcode_paths.size
+        if spilled? && list_of_spilled_part_hashes.size == @spilled_part_count
+          @list_of_part_hashes = list_of_spilled_part_hashes.dup
+        end
+      end
+
+      # The hash of the bitcode of each part of this unit's module, in the
+      # order the parts are linked (one part for a module that stayed in
+      # memory). `nil` until the bitcode exists, and without a hash function.
+      @list_of_part_hashes : Array(String)?
+
+      # Whether the hash of this unit's bitcode told if its previous object
+      # file can be reused, without reading the cached bitcode.
+      getter? decided_by_bitcode_hash = false
+
+      # What the hash record of the cache says about this unit's bitcode.
+      private enum CachedBitcode
+        # The object files were built from bitcode with this unit's hash.
+        Same
+        # They were built from other bitcode.
+        Different
+        # There is no record of these object files, or no hash.
+        Unknown
+      end
+
+      private def cached_bitcode : CachedBitcode
+        list_of_part_hashes = @list_of_part_hashes
+        return CachedBitcode::Unknown unless list_of_part_hashes
+
+        module_hash = BitcodeHash.of_module(list_of_part_hashes)
+        record = CachedObjectRecord.read?(hash_record_name)
+        return CachedBitcode::Unknown unless module_hash && record
+        return CachedBitcode::Unknown unless record.describes_objects?(object_names)
+
+        @decided_by_bitcode_hash = true
+        record.module_hash == module_hash ? CachedBitcode::Same : CachedBitcode::Different
+      end
+
+      # The cached bitcode files of this unit's module.
+      private def list_of_cached_bitcode_names : Array(String)
+        spilled? ? list_of_part_bc_names : [bc_name]
+      end
+
+      # Leaves the record of the object files that were just built, or that
+      # a comparison of the bitcode files found to be up to date.
+      private def write_hash_record : Nil
+        return if compiler.no_cache?
+        return unless list_of_part_hashes = @list_of_part_hashes
+
+        CachedObjectRecord.write(hash_record_name, list_of_part_hashes, list_of_cached_bitcode_names, object_names)
       end
 
       # The spill files of this unit's module parts that the cache has not
@@ -2225,6 +2308,9 @@ module Crystal
         delete_cached_part_files
         @list_of_spilled_bitcode_paths.each_with_index do |spilled_bitcode_path, part_index|
           File.rename(spilled_bitcode_path, part_bc_name(part_index))
+          # A spill file that is a link to the cached file it replaces is
+          # still there: renaming one name of a file to another does nothing.
+          File.delete?(spilled_bitcode_path)
         end
         @list_of_spilled_bitcode_paths.clear
       end
@@ -2232,7 +2318,13 @@ module Crystal
       def generate_bitcode : LLVM::MemoryBuffer?
         # A spilled unit already is bitcode, on disk.
         return nil if spilled?
-        @memory_buffer ||= llvm_mod.write_bitcode_to_memory_buffer
+        @memory_buffer ||= begin
+          memory_buffer = llvm_mod.write_bitcode_to_memory_buffer
+          if part_hash = BitcodeHash.of_part(memory_buffer.to_slice)
+            @list_of_part_hashes = [part_hash]
+          end
+          memory_buffer
+        end
       end
 
       # To compile a file we first generate a `.bc` file and then create an
@@ -2241,10 +2333,15 @@ module Crystal
       #
       # On a next compilation of the same project, and if the compile flags
       # didn't change (a combination of the target triple, mcpu and link flags,
-      # amongst others), we check if the new `.bc` file is exactly the same as
+      # amongst others), we check if the new bitcode is exactly the same as
       # the old one. In that case the `.o` file will also be the same, so we
       # simply reuse the old one. Generating an `.o` file is what takes most
       # time.
+      #
+      # "The same" is decided by the hash of the bitcode against the hash in
+      # the record next to the `.o` file (`CachedObjectRecord`), without
+      # reading the old `.bc` file. Only when there is no record of the `.o`
+      # file is the new bitcode compared with the old `.bc` file.
       #
       # However, instead of directly generating the final `.o` file from the
       # `.bc` file, we generate it to a temporary name (`.o.tmp`) and then we
@@ -2257,6 +2354,7 @@ module Crystal
           isolate_module_context if isolate_context
           update_bitcode_cache
           compile_to_object
+          write_hash_record
         else
           @reused_previous_compilation = true
         end
@@ -2282,6 +2380,15 @@ module Crystal
       private def must_compile_spilled? : Bool
         return true unless compiler.emit_targets.none?
         return true if @bc_flags_changed
+
+        cached_bitcode = self.cached_bitcode
+        if cached_bitcode.same?
+          # The cached bitcode files hold the same module.
+          discard_spilled_bitcode
+          return false
+        end
+        return true if cached_bitcode.different?
+
         return true unless object_names.all? { |name| File.exists?(name) && File.size(name) > 0 }
         # The build that left the objects had more parts.
         return true if File.exists?(part_bc_name(@spilled_part_count))
@@ -2292,8 +2399,11 @@ module Crystal
             File.open(spilled_bitcode_path) { |spilled_file| IO.same_content?(cached_file, spilled_file) }
           end
         end
-        # The cached bitcode files hold the same module from now on.
-        discard_spilled_bitcode if unchanged
+        if unchanged
+          # The cached bitcode files hold the same module from now on.
+          discard_spilled_bitcode
+          write_hash_record
+        end
         !unchanged
       end
 
@@ -2350,6 +2460,8 @@ module Crystal
           llvm_ir_filename: compiler.dump_ll? ? ll_name : nil,
           verifies_module: @worker_verifies_module,
           list_of_more_bitcode_filenames: list_of_more_part_bc_names,
+          hash_record_filename: compiler.no_cache? || @list_of_part_hashes.nil? ? nil : hash_record_name,
+          list_of_bitcode_part_hashes: @list_of_part_hashes || [] of String,
           name: original_name,
           bitcode_bytesize: bitcode_bytesize,
           main_module: original_name == "_main",
@@ -2362,6 +2474,7 @@ module Crystal
           original_name: original_name,
           bitcode_name: "#{name}.bc",
           reused_previous_compilation: reused_previous_compilation?,
+          decided_by_bitcode_hash: decided_by_bitcode_hash?,
         )
       end
 
@@ -2377,6 +2490,14 @@ module Crystal
 
         return true unless compiler.emit_targets.none?
         return true if @bc_flags_changed
+
+        cached_bitcode = self.cached_bitcode
+        if cached_bitcode.same?
+          memory_buffer.dispose
+          return false
+        end
+        return true if cached_bitcode.different?
+
         return true unless File.exists?(bc_name)
         # The build that left the objects spilled this module in parts.
         return true if File.exists?(part_bc_name(1))
@@ -2389,7 +2510,10 @@ module Crystal
 
         changed = File.open(bc_name) { |bc_file| !IO.same_content?(bc_file, memory_io) }
 
-        memory_buffer.dispose unless changed
+        unless changed
+          memory_buffer.dispose
+          write_hash_record
+        end
 
         changed
       end
@@ -2417,6 +2541,9 @@ module Crystal
       # it, or a later build (with another part count, or after a
       # --no-cache build) could link objects of another program.
       private def delete_object_files : Nil
+        # The record goes first: it never describes other files than the
+        # ones it was written for.
+        File.delete?(hash_record_name)
         File.delete?(object_name)
         object_names.each { |name| File.delete?(name) }
         delete_part_objects_of_every_count if @original_name == "_main"
@@ -2437,8 +2564,11 @@ module Crystal
             move_spilled_bitcode_into_cache
           end
         elsif memory_buffer = @memory_buffer
-          # Create the .bc file (for next compilations)
-          File.write(bc_name, memory_buffer.to_slice)
+          # Create the .bc file (for next compilations). The old file is
+          # replaced, not written into: a compilation that is generating IR
+          # may hold a link to it (`ModuleSpill#link_unchanged_part?`).
+          File.write(bc_name_new, memory_buffer.to_slice)
+          File.rename(bc_name_new, bc_name)
           memory_buffer.dispose
           delete_cached_part_files
         else
@@ -2603,6 +2733,11 @@ module Crystal
 
       def bc_name_new
         "#{@output_dir}/#{@name}.new.bc"
+      end
+
+      # The record of the bitcode this unit's object files were built from.
+      def hash_record_name
+        "#{@output_dir}/#{@name}#{CachedObjectRecord::FILE_EXTENSION}"
       end
 
       def ll_name
