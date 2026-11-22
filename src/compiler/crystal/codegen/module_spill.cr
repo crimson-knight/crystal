@@ -193,6 +193,13 @@ module Crystal
       # the type's first module has any.
       getter list_of_later_segments = [] of ModuleInfo
 
+      # The segment each function of the type was generated into, by
+      # `StableNumbering.function_digest`, and what the build before kept of
+      # the type's segments. Only the type's first module has them, in an
+      # incremental build.
+      getter segment_index_by_function_digest = {} of String => Int32
+      property kept_segments : StableNumbering::Segments?
+
       def initialize(@name : String, @mod : LLVM::Module, @typer : LLVMTyper)
       end
 
@@ -297,17 +304,70 @@ module Crystal
     # The module the next function of the type of *first_module_info* is
     # generated into: the type's newest segment, or a new one when that
     # reached the size limit.
-    private def segment_for_next_fun(first_module_info : ModuleInfo) : ModuleInfo
+    #
+    # In an incremental build the function named *mangled_name* goes to the
+    # segment it was in in the build before (see `StableNumbering`), and a
+    # function that is new goes to the type's last segment. A function added
+    # to a type then changes one segment, where filling the segments in the
+    # order the functions are generated would move every later function to
+    # another segment.
+    private def segment_for_next_fun(first_module_info : ModuleInfo, mangled_name : String? = nil) : ModuleInfo
       latest_segment = first_module_info.latest_segment
       return latest_segment if @module_segment_instructions <= 0 || first_module_info.same?(@main_module_info)
-      return latest_segment if latest_segment.generated_instruction_count < @module_segment_instructions
 
+      stable_numbering = @program.stable_numbering
+      unless stable_numbering && mangled_name
+        return latest_segment if latest_segment.generated_instruction_count < @module_segment_instructions
+
+        return add_segment(first_module_info)
+      end
+
+      function_digest = StableNumbering.function_digest(mangled_name)
+      kept_segments = first_module_info.kept_segments ||= stable_numbering.segments_by_module_name[first_module_info.name]? || StableNumbering::Segments.new
+      segment_index = kept_segments.segment_index_by_function_digest[function_digest]?
+      unless segment_index
+        # A new function: the last segment the type has or had, or one more
+        # when that one is full, counting what it held in the build before.
+        segment_index = Math.max(first_module_info.list_of_later_segments.size, kept_segments.list_of_instruction_counts.size - 1)
+        last_segment = segment_at(first_module_info, segment_index)
+        kept_instruction_count = kept_segments.list_of_instruction_counts[segment_index]? || 0_i64
+        if Math.max(last_segment.generated_instruction_count, kept_instruction_count) >= @module_segment_instructions
+          segment_index += 1
+        end
+      end
+      first_module_info.segment_index_by_function_digest[function_digest] = segment_index
+      segment_at(first_module_info, segment_index)
+    end
+
+    # Segment *segment_index* of the type of *first_module_info* (0 is the
+    # first module), created with every segment before it if need be.
+    private def segment_at(first_module_info : ModuleInfo, segment_index : Int32) : ModuleInfo
+      return first_module_info if segment_index <= 0
+
+      while first_module_info.list_of_later_segments.size < segment_index
+        add_segment(first_module_info)
+      end
+      first_module_info.list_of_later_segments[segment_index - 1]
+    end
+
+    private def add_segment(first_module_info : ModuleInfo) : ModuleInfo
       list_of_later_segments = first_module_info.list_of_later_segments
       segment_name = CodeGenVisitor.segment_module_name(first_module_info.name, list_of_later_segments.size + 1)
       segment = new_module_info(segment_name)
       @modules[segment_name] = segment
       list_of_later_segments << segment
       segment
+    end
+
+    # What the next incremental build keeps of the segments of the type of
+    # *first_module_info*, or `nil` for a type with one module.
+    def self.segments_to_keep(first_module_info : ModuleInfo) : StableNumbering::Segments?
+      return nil if first_module_info.list_of_later_segments.empty?
+
+      segments = StableNumbering::Segments.new
+      segments.segment_index_by_function_digest = first_module_info.segment_index_by_function_digest
+      segments.list_of_instruction_counts = [first_module_info.generated_instruction_count] + first_module_info.list_of_later_segments.map(&.generated_instruction_count)
+      segments
     end
 
     # The modules that are in memory, except the main one (it always is).
@@ -511,7 +571,12 @@ module Crystal
     # memory are a little below both limits. Modules in use stay, however
     # large they are.
     private def spill_idle_modules(spill : ModuleSpill, keeping : ModuleInfo) : Nil
-      list_of_idle_modules = @resident_modules.select { |module_info| module_info.idle? && !module_info.same?(keeping) }
+      # A module that has no function yet is about to get one (a segment
+      # made ahead of the functions it keeps): writing it would only add an
+      # empty part.
+      list_of_idle_modules = @resident_modules.select do |module_info|
+        module_info.idle? && !module_info.same?(keeping) && !module_info.list_of_generated_fun_names.empty?
+      end
       # A module that follows a plan is cut where the plan says for as long
       # as memory allows: the modules without one go first.
       list_of_idle_modules.sort_by! do |module_info|

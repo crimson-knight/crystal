@@ -795,6 +795,13 @@ module Crystal
           list_of_part_fun_counts_by_module_name[type_name] = info.list_of_part_fun_counts unless info.list_of_part_fun_counts.empty?
         end
         stable_numbering.list_of_part_fun_counts_by_module_name = list_of_part_fun_counts_by_module_name
+        segments_by_module_name = {} of String => StableNumbering::Segments
+        llvm_modules.each do |type_name, info|
+          if segments = CodeGenVisitor.segments_to_keep(info)
+            segments_by_module_name[type_name] = segments
+          end
+        end
+        stable_numbering.segments_by_module_name = segments_by_module_name
         stable_numbering.save(output_dir)
       end
       list_of_segment_counts = llvm_modules.each_value.map { |info| info.list_of_later_segments.size + 1 }.select { |count| count > 1 }.to_a

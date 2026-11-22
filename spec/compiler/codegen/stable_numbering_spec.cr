@@ -116,7 +116,21 @@ private STABLE_PROGRAM = <<-CRYSTAL
   puts ledger.report, Sizes.largest(list_of_shapes), Sizes.count_of_squares(list_of_shapes)
   CRYSTAL
 
-private def build_stable_program(directory : String, code : String, build_index : Int32) : {String, Crystal::Compiler}
+# A type with *count* functions of its own, each called once, in order.
+private def tally_program(count : Int32, called_first : String = "") : String
+  String.build do |io|
+    io << %(require "prelude"\n\nmodule Tally\n)
+    io << "  def self.extra(number : Int32) : Int32\n    number &* 7 &+ ARGV.size\n  end\n\n" unless called_first.empty?
+    count.times do |index|
+      io << "  def self.step#{index}(number : Int32) : Int32\n    (number &+ #{index}) &* (ARGV.size &+ 2) &- #{index}\n  end\n\n"
+    end
+    io << "end\n\ntotal = 0\n" << called_first
+    count.times { |index| io << "total &+= Tally.step#{index}(#{index})\n" }
+    io << "puts total\n"
+  end
+end
+
+private def build_stable_program(directory : String, code : String, build_index : Int32, module_segment_instructions : Int32 = 0) : {String, Crystal::Compiler}
   program = File.join(directory, "program.cr")
   File.write(program, code)
   # The cache tells an edited file by its time and size.
@@ -129,6 +143,7 @@ private def build_stable_program(directory : String, code : String, build_index 
   compiler.resident_modules = 2
   # Line numbers in debug info move with every line added above them.
   compiler.debug = Crystal::Debug::None
+  compiler.module_segment_instructions = module_segment_instructions
   ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
   compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
   {Process.capture(executable), compiler}
@@ -302,6 +317,24 @@ describe "Code generation: stable numbering" do
         output.should eq("0:Square 9,1:Strip 5\n9\n1\n")
         rebuild.last_list_of_rebuilt_module_names.should be_empty
         rebuild.@last_modules_total.should be > 100
+      end
+    end
+
+    it "puts a new function into the last segment of a type that has several" do
+      with_tempfile("stable_program_segments") do |directory|
+        Dir.mkdir_p(directory)
+        output, first_build = build_stable_program(directory, tally_program(40), 1, module_segment_instructions: 30)
+        output.should eq("#{(0...40).sum { |index| index &* 2 &* 2 &- index }}\n")
+        list_of_tally_segments = first_build.last_list_of_rebuilt_module_names.select(&.starts_with?("Tally"))
+        list_of_tally_segments.size.should be > 5
+
+        # The new function is generated before every other one of the type.
+        output, rebuild = build_stable_program(directory, tally_program(40, called_first: "total &+= Tally.extra(1)\n"), 2, module_segment_instructions: 30)
+        output.should eq("#{7 + (0...40).sum { |index| index &* 2 &* 2 &- index }}\n")
+        list_of_rebuilt_tally_segments = rebuild.last_list_of_rebuilt_module_names.select(&.starts_with?("Tally"))
+        list_of_rebuilt_tally_segments.size.should be <= 2
+        list_of_rebuilt_tally_segments.should_not contain("Tally")
+        list_of_rebuilt_tally_segments.should_not contain("Tally#2")
       end
     end
 

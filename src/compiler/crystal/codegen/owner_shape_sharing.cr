@@ -245,21 +245,35 @@ module Crystal
     #
     # The first def found stands for its group, and which one is found first
     # depends on the order the program uses its types in. An incremental
-    # build keeps type ids (see `LLVMId`), and there the def whose owner has
-    # the smallest id stands for the group: a type added to the program has
-    # the largest id, so it never takes a group over, and the function the
-    # group shares keeps its name.
+    # build keeps type ids (see `LLVMId`), and there the def whose owner and
+    # argument types have the smallest ids stands for the group: a type
+    # added to the program has the largest id, so a def that names it never
+    # takes a group over, and the function the group shares keeps its name.
     private def stands_before?(typed_def : Def, representative : Def) : Bool
       return false unless @program.stable_numbering
 
-      owner_rank(typed_def) < owner_rank(representative)
+      (list_of_type_ranks(typed_def) <=> list_of_type_ranks(representative)) < 0
     end
 
-    private def owner_rank(typed_def : Def) : Int32
-      owner = typed_def.owner.devirtualize
-      return Int32::MAX if owner.is_a?(VirtualType) || owner.is_a?(VirtualMetaclassType)
+    # The kept ids of the types that the name of the function of *typed_def*
+    # is made of: its owner, then its argument types.
+    private def list_of_type_ranks(typed_def : Def) : Array(Int32)
+      @type_ranks_by_def[typed_def.object_id] ||= begin
+        list_of_ranks = [type_rank(typed_def.owner)]
+        typed_def.args.each { |arg| list_of_ranks << type_rank(arg.type?) }
+        list_of_ranks
+      end
+    end
 
-      @program.llvm_id.type_id(owner)
+    @type_ranks_by_def = {} of UInt64 => Array(Int32)
+
+    private def type_rank(type : Type?) : Int32
+      return Int32::MAX unless type
+
+      type = type.devirtualize
+      return Int32::MAX if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+
+      @program.llvm_id.type_id(type)
     end
 
     private def count_groups : Int32

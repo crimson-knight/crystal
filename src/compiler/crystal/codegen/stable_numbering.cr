@@ -1,4 +1,5 @@
 require "json"
+require "crystal/digest/md5"
 
 module Crystal
   # The numbers an incremental build keeps from the build before it, so that
@@ -25,6 +26,31 @@ module Crystal
 
     # The number of functions in each part of a spilled module, by module name.
     property list_of_part_fun_counts_by_module_name : Hash(String, Array(Int32)) = {} of String => Array(Int32)
+
+    # The segments of a type that is compiled as several object files (see
+    # `CodeGenVisitor#module_segment_instructions`).
+    class Segments
+      include JSON::Serializable
+
+      # The segment (0 is the type's first module) of each function, by
+      # `StableNumbering.function_digest`.
+      property segment_index_by_function_digest : Hash(String, Int32) = {} of String => Int32
+
+      # How many instructions each segment holds.
+      property list_of_instruction_counts : Array(Int64) = [] of Int64
+
+      def initialize
+      end
+    end
+
+    # The segments of every type that has more than one, by module name.
+    property segments_by_module_name : Hash(String, Segments) = {} of String => Segments
+
+    # A short name for the function named *mangled_name* (names are long).
+    # Two functions with one digest only share a segment.
+    def self.function_digest(mangled_name : String) : String
+      Crystal::Digest::MD5.hexdigest(mangled_name)[0, 16]
+    end
 
     def initialize
     end
