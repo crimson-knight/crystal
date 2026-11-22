@@ -30,7 +30,7 @@ module Crystal
   # function unkeyable (generated every time) rather than reused.
   module IrSkip
     FILENAME = "ir_skip_manifest.bin"
-    MAGIC    = "CRIRSKP2"
+    MAGIC    = "CRIRSKP3"
 
     # The hash of the running compiler's executable: two builds of the
     # compiler from different code never share keys, even when they carry
@@ -134,11 +134,19 @@ module Crystal
       getter name : String
       getter code_key : Digest
       getter line_key : Digest
+      # The line key without columns: tells a column change from a line
+      # move when a function's positions do not map (see `LinePatch`).
+      getter line_key_without_columns : Digest
       # Set when the function was generated to the end: its trace is complete.
       property? replayable : Bool
       getter list_of_trace_entries : Array(TraceEntry)
 
-      def initialize(@name, @code_key, @line_key, @replayable, @list_of_trace_entries)
+      def initialize(@name, @code_key, @line_key, @line_key_without_columns, @replayable, @list_of_trace_entries)
+      end
+
+      # The same function with the source positions of this build.
+      def with_line_keys(line_key : Digest, line_key_without_columns : Digest) : RecordedFun
+        RecordedFun.new(@name, @code_key, line_key, line_key_without_columns, @replayable, @list_of_trace_entries)
       end
     end
 
@@ -178,6 +186,10 @@ module Crystal
       getter salt : String
       getter units_by_name = {} of String => RecordedUnit
 
+      # The hash of each line of each source file of the build (see
+      # `LinePatch`), by file name.
+      property source_lines_by_filename = {} of String => Array(UInt64)
+
       def initialize(@salt)
       end
 
@@ -197,6 +209,12 @@ module Crystal
           unit = read_unit(io)
           manifest.units_by_name[unit.name] = unit
         end
+        read_int(io).times do
+          filename = read_string(io)
+          line_count = read_int(io)
+          raise ArgumentError.new("negative line count") if line_count < 0
+          manifest.source_lines_by_filename[filename] = Array(UInt64).new(line_count) { io.read_bytes(UInt64, IO::ByteFormat::LittleEndian) }
+        end
         manifest
       rescue IO::Error | ArgumentError
         # A manifest that cannot be read only costs this build its skips.
@@ -213,6 +231,12 @@ module Crystal
           write_string(file, @salt)
           write_int(file, @units_by_name.size)
           @units_by_name.each_value { |unit| write_unit(file, unit) }
+          write_int(file, @source_lines_by_filename.size)
+          @source_lines_by_filename.each do |filename, list_of_line_hashes|
+            write_string(file, filename)
+            write_int(file, list_of_line_hashes.size)
+            list_of_line_hashes.each { |line_hash| file.write_bytes(line_hash, IO::ByteFormat::LittleEndian) }
+          end
         end
         File.rename(pending_path, path)
       rescue IO::Error
@@ -230,7 +254,7 @@ module Crystal
         write_int(io, unit.list_of_funs.size)
         unit.list_of_funs.each do |recorded_fun|
           write_string(io, recorded_fun.name)
-          {recorded_fun.code_key, recorded_fun.line_key}.each do |digest|
+          {recorded_fun.code_key, recorded_fun.line_key, recorded_fun.line_key_without_columns}.each do |digest|
             io.write_bytes(digest.first, IO::ByteFormat::LittleEndian)
             io.write_bytes(digest.second, IO::ByteFormat::LittleEndian)
           end
@@ -260,6 +284,7 @@ module Crystal
           fun_name = read_string(io)
           code_key = read_digest(io)
           line_key = read_digest(io)
+          line_key_without_columns = read_digest(io)
           replayable = read_byte(io) == 1_u8
           list_of_trace_entries = Array(TraceEntry).new(read_int(io)) do
             kind = TraceKind.from_value(read_byte(io))
@@ -268,7 +293,7 @@ module Crystal
             text = read_byte(io) == 1_u8 ? read_string(io) : nil
             TraceEntry.new(kind, subject_index, detail, text)
           end
-          RecordedFun.new(fun_name, code_key, line_key, replayable, list_of_trace_entries)
+          RecordedFun.new(fun_name, code_key, line_key, line_key_without_columns, replayable, list_of_trace_entries)
         end
         RecordedUnit.new(name, list_of_funs, list_of_part_hashes, list_of_part_fun_counts, instruction_count, late_generated)
       end
@@ -336,7 +361,40 @@ module Crystal
       # since still has the code key the manifest has at its position.
       property? source_position_only = false
 
+      # The functions that matched only once their source positions were
+      # mapped through the line maps (see `LinePatch`): their position in
+      # the module and their line keys in this build.
+      getter shifted_line_keys_by_position = {} of Int32 => {Digest, Digest}
+
+      # The patched object of a module whose functions matched with moved
+      # lines, once `LinePatch::UnitPatcher` made it.
+      property line_patch : LinePatch::PatchedObject?
+
       def initialize(@recorded)
+      end
+
+      # Why the patcher refused this module's object, if it did.
+      getter line_patch_refusal : String?
+
+      def refuse_line_patch(cause : String) : Nil
+        @line_patch_refusal = cause
+        @reason_detail = cause
+      end
+
+      # Whether some function matched only with moved lines.
+      def shifted? : Bool
+        !@shifted_line_keys_by_position.empty?
+      end
+
+      # The functions of the module with the line keys of this build.
+      def list_of_funs_with_new_lines : Array(RecordedFun)
+        @recorded.list_of_funs.map_with_index do |recorded_fun, position|
+          if line_keys = @shifted_line_keys_by_position[position]?
+            recorded_fun.with_line_keys(line_keys[0], line_keys[1])
+          else
+            recorded_fun
+          end
+        end
       end
 
       def invalidated? : Bool
@@ -386,6 +444,26 @@ module Crystal
       property first_unkeyable_causes = {} of String => Int32
       property first_unreplayable_causes = {} of String => Int32
 
+      # Line patching (see `LinePatch`).
+      property? line_patch = false
+      property source_files_changed = 0
+      property source_files_without_map = 0
+      property line_map_seconds = 0.0
+      # Functions that matched only once their positions were mapped.
+      property shifted_functions = 0
+      # Functions whose code key matched and whose positions did not map,
+      # by why not.
+      property unshifted_functions_by_cause = {} of String => Int32
+      # Modules whose functions all matched, some with moved lines.
+      property units_with_moved_lines = 0
+      property units_patched = 0
+      property patch_refusals_by_cause = {} of String => Int32
+      property patch_seconds = 0.0
+      property list_of_patched_units = [] of String
+      # Verification of patched objects against fresh ones.
+      property line_patch_verified_units = 0
+      property list_of_line_patch_verification_failures = [] of String
+
       def initialize
       end
 
@@ -413,8 +491,23 @@ module Crystal
       # Why the build before left no candidates at all, if so.
       property no_candidates_cause : String?
 
+      # How the lines of each source file moved since the build before, when
+      # modules whose lines moved are patched instead of generated (see
+      # `LinePatch`).
+      property line_maps : LinePatch::Maps?
+
+      # Makes the patched objects; set together with `#line_maps`.
+      property line_patcher : LinePatch::UnitPatcher?
+
+      # The line hashes of this build's source files, for the next build.
+      property source_lines_by_filename = {} of String => Array(UInt64)
+
       def initialize(@mode, @salt, @previous)
         @stats.mode = @mode.to_s.downcase
+      end
+
+      def line_patch? : Bool
+        !@line_maps.nil?
       end
 
       def verify? : Bool
@@ -647,13 +740,22 @@ module Crystal
     class Walk
       getter code_key : Digest
       getter line_key : Digest
+      getter line_key_without_columns : Digest
+      # The line key of the positions mapped back through the line maps of
+      # the build (see `LinePatch`): the line key the build before recorded
+      # when every position moved with the lines around it. `nil` without
+      # line maps, or when some position is on an edited line.
+      property mapped_line_key : Digest?
+      property mapped_line_key_without_columns : Digest?
+      # Why the positions did not map, if so.
+      property mapping_failure : String?
       getter blocker : String?
       getter list_of_types : Array(Type)
       getter list_of_callees : Array({Def, Type})
       getter list_of_consts : Array(Const)
       getter list_of_class_vars : Array(MetaTypeVar)
 
-      def initialize(@code_key, @line_key, @blocker, @list_of_types, @list_of_callees, @list_of_consts, @list_of_class_vars)
+      def initialize(@code_key, @line_key, @line_key_without_columns, @blocker, @list_of_types, @list_of_callees, @list_of_consts, @list_of_class_vars)
       end
 
       def keyable? : Bool
@@ -741,6 +843,11 @@ module Crystal
 
       @code = Hasher.new
       @lines = Hasher.new
+      @lines_without_columns = Hasher.new
+      # The positions mapped back to the lines of the build before (see `LinePatch`).
+      @mapped_lines = Hasher.new
+      @mapped_lines_without_columns = Hasher.new
+      @mapping_failure : String?
       @blocker : String?
       @types = [] of Type
       @type_indexes = {} of UInt64 => Int32
@@ -753,19 +860,36 @@ module Crystal
       # These caches are keyed by the objects themselves (or a file name by
       # its text), never by object id: code generation releases typed bodies,
       # and a collected object's id can come back as another object's.
-      @filename_digests = {} of String => Digest
-      @virtual_file_digests = Hash(VirtualFile, Digest).new.compare_by_identity
+      @file_entries = {} of String => FileEntry
+      @virtual_file_entries = Hash(VirtualFile, VirtualFileEntry).new.compare_by_identity
       @symbol_digests = Hash(Def, Hash(Type, Digest)).new.compare_by_identity
 
       getter descriptors : TypeDescriptors
 
+      # What a position in a source file mixes: the digest of the file's
+      # name, and how the file's lines moved since the build before (only
+      # with line maps: `changed` is set for a file that changed, and `map`
+      # is `nil` for one whose lines moved in unknown ways).
+      record FileEntry, digest : Digest, changed : Bool, map : LinePatch::LineMap?
+
+      # What a position in a macro expansion mixes: the position the
+      # expansion points debug info to (the outermost macro call), as a
+      # digest with and without its column, and the same with the line
+      # mapped back (`nil` when it does not map).
+      record VirtualFileEntry, digest : Digest, digest_without_columns : Digest,
+        mapped_digest : Digest?, mapped_digest_without_columns : Digest?, mapping_failure : String?
+
       def initialize(@program : Program, @descriptors : TypeDescriptors, @sharing : OwnerShapeSharing?,
-                     @keeps_local_names : Bool)
+                     @keeps_local_names : Bool, @line_maps : LinePatch::Maps? = nil)
       end
 
       def walk(mangled_name : String, typed_def : Def, self_type : Type) : Walk
         @code = Hasher.new
         @lines = Hasher.new
+        @lines_without_columns = Hasher.new
+        @mapped_lines = Hasher.new
+        @mapped_lines_without_columns = Hasher.new
+        @mapping_failure = nil
         @blocker = nil
         @types = [] of Type
         @type_indexes.clear
@@ -791,7 +915,16 @@ module Crystal
           block("a node with an unset property: #{error.message}")
         end
 
-        Walk.new(@code.digest, @lines.digest, @blocker, @types, @callees, @consts, @class_vars)
+        walk = Walk.new(@code.digest, @lines.digest, @lines_without_columns.digest, @blocker, @types, @callees, @consts, @class_vars)
+        if @line_maps
+          if failure = @mapping_failure
+            walk.mapping_failure = failure
+          else
+            walk.mapped_line_key = @mapped_lines.digest
+            walk.mapped_line_key_without_columns = @mapped_lines_without_columns.digest
+          end
+        end
+        walk
       end
 
       private def block(reason : String) : Nil
@@ -804,30 +937,126 @@ module Crystal
 
       private def mix_location(location : Location?) : Nil
         unless location
-          @lines.mix(0_u64)
+          mix_position_word(0_u64)
           return
         end
-        @lines.mix(location.line_number)
-        @lines.mix(location.column_number)
+        line = location.line_number
+        column = location.column_number
         filename = location.filename
         case filename
         when String
-          @lines.mix(@filename_digests[filename] ||= Hasher.digest_of(filename))
+          entry = file_entry(filename)
+          @lines.mix(line)
+          @lines.mix(column)
+          @lines.mix(entry.digest)
+          @lines_without_columns.mix(line)
+          @lines_without_columns.mix(entry.digest)
+          return unless @line_maps
+
+          mapped_line = entry.changed ? entry.map.try(&.unmap?(line)) : line
+          if mapped_line
+            @mapped_lines.mix(mapped_line)
+            @mapped_lines.mix(column)
+            @mapped_lines.mix(entry.digest)
+            @mapped_lines_without_columns.mix(mapped_line)
+            @mapped_lines_without_columns.mix(entry.digest)
+          else
+            @mapping_failure ||= entry.map ? "a position on an edited line" : "a position in a file whose lines moved in unknown ways"
+          end
         when VirtualFile
-          @lines.mix(@virtual_file_digests[filename] ||= begin
-            hasher = Hasher.new
-            expanded = location.expanded_location
-            if expanded
-              hasher.mix(expanded.line_number)
-              hasher.mix(expanded.column_number)
-              hasher.mix(expanded.filename.as?(String) || "")
-            end
-            hasher.mix(location.original_filename || "")
-            hasher.digest
-          end)
+          # The position inside the expansion is not a line of a file; debug
+          # info points to the macro call, which moves with its file.
+          entry = virtual_file_entry(filename)
+          @lines.mix(line)
+          @lines.mix(column)
+          @lines.mix(entry.digest)
+          @lines_without_columns.mix(line)
+          @lines_without_columns.mix(entry.digest_without_columns)
+          return unless @line_maps
+
+          mapped_digest = entry.mapped_digest
+          mapped_digest_without_columns = entry.mapped_digest_without_columns
+          if mapped_digest && mapped_digest_without_columns
+            @mapped_lines.mix(line)
+            @mapped_lines.mix(column)
+            @mapped_lines.mix(mapped_digest)
+            @mapped_lines_without_columns.mix(line)
+            @mapped_lines_without_columns.mix(mapped_digest_without_columns)
+          else
+            @mapping_failure ||= entry.mapping_failure
+          end
         else
-          @lines.mix(1_u64)
+          mix_position_word(1_u64)
         end
+      end
+
+      private def mix_position_word(word : UInt64) : Nil
+        @lines.mix(word)
+        @lines_without_columns.mix(word)
+        @mapped_lines.mix(word)
+        @mapped_lines_without_columns.mix(word)
+      end
+
+      private def file_entry(filename : String) : FileEntry
+        @file_entries[filename] ||= begin
+          digest = Hasher.digest_of(filename)
+          if (line_maps = @line_maps) && line_maps.changed?(filename)
+            FileEntry.new(digest, true, line_maps.map_of?(filename))
+          else
+            FileEntry.new(digest, false, nil)
+          end
+        end
+      end
+
+      private def virtual_file_entry(filename : VirtualFile) : VirtualFileEntry
+        @virtual_file_entries[filename] ||= begin
+          expanded = filename.expanded_location.try(&.expanded_location)
+          original_filename = expanded.try(&.filename.as?(String)) || ""
+          expanded_filename = expanded.try(&.filename.as?(String))
+          expanded_line = expanded.try(&.line_number)
+          mapped_line = expanded_line
+          failure = nil
+          if expanded_filename && expanded_line
+            entry = file_entry(expanded_filename)
+            if entry.changed
+              mapped_line = entry.map.try(&.unmap?(expanded_line))
+              failure = entry.map ? "a macro call on an edited line" : "a macro call in a file whose lines moved in unknown ways" unless mapped_line
+            end
+          end
+          digest = virtual_digest(expanded, expanded_line, true, original_filename)
+          digest_without_columns = virtual_digest(expanded, expanded_line, false, original_filename)
+          if mapped_line
+            mapped_digest = virtual_digest(expanded, mapped_line, true, original_filename)
+            mapped_digest_without_columns = virtual_digest(expanded, mapped_line, false, original_filename)
+          end
+          VirtualFileEntry.new(digest, digest_without_columns, mapped_digest, mapped_digest_without_columns, failure)
+        end
+      end
+
+      private def virtual_digest(expanded : Location?, line : Int32?, with_column : Bool, original_filename : String) : Digest
+        hasher = Hasher.new
+        if expanded && line
+          hasher.mix(line)
+          hasher.mix(expanded.column_number) if with_column
+          hasher.mix(expanded.filename.as?(String) || "")
+        end
+        hasher.mix(original_filename)
+        hasher.digest
+      end
+
+      # A position whose text reaches the code itself, not only debug info:
+      # the message of a failed cast (`file:line:column`) and magic constant
+      # arguments (`__LINE__`, `__FILE__`, `__DIR__`). It is part of the code
+      # key, so a function that holds one is generated again when it moves.
+      private def mix_code_location(location : Location?) : Nil
+        unless location
+          mix(0_u64)
+          return
+        end
+        mix(location.line_number)
+        mix(location.column_number)
+        mix(location.expanded_location.try(&.to_s) || "")
+        mix(location.original_filename || "")
       end
 
       private def mix_local_name(name : String?) : Nil
@@ -1157,6 +1386,7 @@ module Crystal
 
       def visit(node : Cast | NilableCast) : Bool
         enter(node)
+        mix_code_location(node.location) if node.is_a?(Cast)
         mix_type(node.obj.type?)
         to_type = node.to.type?
         mix_type(to_type)
@@ -1255,14 +1485,11 @@ module Crystal
 
         if node.args.size < target_def.args.size
           # Magic constant arguments take their value from the call's place.
-          mix_location(node.location)
-          mix_location(node.end_location)
+          mix_code_location(node.location)
+          mix_code_location(node.end_location)
           node.args.size.upto(target_def.args.size - 1) do |index|
             default_value = target_def.args[index].default_value
             mix(default_value.is_a?(MagicConstant) ? default_value.name.value : -1)
-            if (location = node.location) && default_value.is_a?(MagicConstant)
-              @lines.mix(location.original_filename || "")
-            end
           end
         end
 

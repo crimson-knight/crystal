@@ -32,7 +32,7 @@ class Crystal::CodeGenVisitor
     end
 
     walker = @ir_skip_walker ||= IrSkip::KeyWalker.new(@program, IrSkip::TypeDescriptors.new(@program),
-      @owner_shape_sharing, keeps_local_names: @debug.variables?)
+      @owner_shape_sharing, keeps_local_names: @debug.variables?, line_maps: ir_skip_session.try(&.line_maps))
     started_at = Time.instant
     walk = walker.walk(mangled_name, target_def, self_type)
     if session = ir_skip_session
@@ -58,7 +58,7 @@ class Crystal::CodeGenVisitor
     # The functions of a module are kept in the order they are asked for,
     # which is the order the next build asks for them in: a function that
     # this one asks for comes after it.
-    recorded_fun = IrSkip::RecordedFun.new(mangled_name, walk.code_key, walk.line_key, false, frame.list_of_trace_entries)
+    recorded_fun = IrSkip::RecordedFun.new(mangled_name, walk.code_key, walk.line_key, walk.line_key_without_columns, false, frame.list_of_trace_entries)
     fun_module_info.list_of_recorded_funs << recorded_fun
     frame.recorded_fun = recorded_fun
     if plan = fun_module_info.ir_skip_plan
@@ -116,6 +116,8 @@ class Crystal::CodeGenVisitor
     end
     return unless previous_fun
 
+    note_line_shift(session, plan, plan.position - 1, previous_fun, walk)
+
     if previous_fun.list_of_trace_entries != recorded_fun.list_of_trace_entries
       session.stats.list_of_verification_failures << "#{fun_module_info.name}: the key of #{recorded_fun.name} matched, but its trace differs from the recorded one"
     end
@@ -134,9 +136,45 @@ class Crystal::CodeGenVisitor
       {IrSkip::RegenerationReason::Unkeyable, "#{mangled_name}: #{blocker}"}
     elsif previous_fun.code_key != walk.code_key
       {IrSkip::RegenerationReason::Code, mangled_name}
-    elsif previous_fun.line_key != walk.line_key
-      {IrSkip::RegenerationReason::SourcePosition, mangled_name}
+    elsif previous_fun.line_key != walk.line_key && !moved_with_its_lines?(previous_fun, walk)
+      {IrSkip::RegenerationReason::SourcePosition, "#{mangled_name}: #{unshifted_cause(previous_fun, walk)}"}
     end
+  end
+
+  # Whether the positions of the function of *walk* are those of
+  # *previous_fun* moved with the lines around them (see `LinePatch`).
+  private def moved_with_its_lines?(previous_fun : IrSkip::RecordedFun, walk : IrSkip::Walk) : Bool
+    mapped_line_key = walk.mapped_line_key
+    !mapped_line_key.nil? && mapped_line_key == previous_fun.line_key
+  end
+
+  # Why a function whose code key matched cannot keep its object with
+  # patched lines.
+  private def unshifted_cause(previous_fun : IrSkip::RecordedFun, walk : IrSkip::Walk) : String
+    cause =
+      if !ir_skip_session.try(&.line_patch?)
+        "source positions moved (line patching is off)"
+      elsif failure = walk.mapping_failure
+        failure
+      elsif walk.mapped_line_key_without_columns == previous_fun.line_key_without_columns
+        "a column changed"
+      else
+        "lines moved relative to each other"
+      end
+    if session = ir_skip_session
+      session.stats.count_cause(session.stats.unshifted_functions_by_cause, cause)
+    end
+    cause
+  end
+
+  # Notes that the function at *position* of the module of *plan* matched
+  # only with its lines moved, and keeps its new line keys for the manifest.
+  private def note_line_shift(session : IrSkip::Session, plan : IrSkip::UnitPlan, position : Int32,
+                              previous_fun : IrSkip::RecordedFun, walk : IrSkip::Walk) : Nil
+    return if previous_fun.line_key == walk.line_key
+
+    plan.shifted_line_keys_by_position[position] = {walk.line_key, walk.line_key_without_columns}
+    session.stats.shifted_functions += 1
   end
 
   # Matches the function named *mangled_name*, which *module_info* is asked
@@ -160,6 +198,7 @@ class Crystal::CodeGenVisitor
     return nil unless previous_fun
 
     signature = declare_fun_signature_only(mangled_name, target_def, self_type)
+    note_line_shift(session, plan, plan.list_of_accepted.size, previous_fun, walk)
     plan.list_of_accepted << IrSkip::AcceptedFun.new(mangled_name, target_def, self_type, previous_fun)
     plan.position += 1
 
@@ -321,13 +360,44 @@ class Crystal::CodeGenVisitor
   # generated after all.
   private def finish_ir_skip : Nil
     return unless session = ir_skip_session
-    return if session.verify?
+
+    if session.verify?
+      # Every module was generated. A module that would have been patched
+      # gets its patched object anyway, for `LinePatch::Verification` to
+      # compare with the object built from its new bitcode.
+      @modules.each_value do |module_info|
+        plan = module_info.ir_skip_plan
+        next unless plan && !plan.invalidated? && plan.shifted? && plan.position == plan.recorded.list_of_funs.size
+
+        patch_moved_lines(session, module_info, plan)
+      end
+      return
+    end
 
     loop do
       list_of_incomplete = @modules.values.select do |module_info|
         (plan = module_info.ir_skip_plan) && !plan.invalidated? && !plan.complete?
       end
-      break if list_of_incomplete.empty?
+      if list_of_incomplete.empty?
+        # Every module whose functions all matched, some with moved lines,
+        # keeps its object with patched lines; one the patcher refuses is
+        # generated after all, which can ask other modules for more.
+        list_of_moved = @modules.values.select do |module_info|
+          (plan = module_info.ir_skip_plan) && plan.complete? && plan.shifted? && plan.line_patch.nil?
+        end
+        break if list_of_moved.empty?
+
+        list_of_moved.each do |module_info|
+          plan = module_info.ir_skip_plan
+          next unless plan && plan.complete? && plan.line_patch.nil?
+
+          unless patch_moved_lines(session, module_info, plan)
+            invalidate_ir_skip_plan(module_info, plan, IrSkip::RegenerationReason::SourcePosition,
+              "the patcher refused its object: #{plan.reason_detail}")
+          end
+        end
+        next
+      end
 
       list_of_incomplete.each do |module_info|
         plan = module_info.ir_skip_plan
@@ -337,6 +407,33 @@ class Crystal::CodeGenVisitor
         invalidate_ir_skip_plan(module_info, plan, IrSkip::RegenerationReason::FunctionList,
           "#{missing_count} functions are no longer asked for")
       end
+    end
+  end
+
+  # Makes the patched object of a module whose functions all matched, some
+  # with moved lines. Returns whether it could; the patcher's refusal is
+  # left in the plan's detail.
+  private def patch_moved_lines(session : IrSkip::Session, module_info : ModuleInfo, plan : IrSkip::UnitPlan) : Bool
+    stats = session.stats
+    stats.units_with_moved_lines += 1
+    patcher = session.line_patcher
+    unless patcher
+      plan.refuse_line_patch("line patching is off")
+      return false
+    end
+
+    started_at = Time.instant
+    result = patcher.patch(module_info.name, plan.recorded)
+    stats.patch_seconds += (Time.instant - started_at).total_seconds
+    if result.is_a?(LinePatch::PatchedObject)
+      plan.line_patch = result
+      stats.units_patched += 1
+      stats.list_of_patched_units << module_info.name if stats.list_of_patched_units.size < 2000
+      true
+    else
+      stats.count_cause(stats.patch_refusals_by_cause, result)
+      plan.refuse_line_patch(result)
+      false
     end
   end
 
