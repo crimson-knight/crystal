@@ -64,8 +64,7 @@ class Crystal::CodeGenVisitor
     # in memory for the functions it is about to get, not for the ones it has.
     first_module_info = @single_module ? @main_module_info : type_module_info(self_type)
     if func = typed_fun_in_segments?(first_module_info, mangled_name)
-      # It is not in the current module (checked above), so it is declared.
-      return declares_in_current_module ? declare_fun(mangled_name, func) : nil
+      return declares_in_current_module ? declare_in_current_module(mangled_name, func) : nil
     end
     self_type_module_info = segment_for_next_fun(first_module_info, mangled_name)
 
@@ -73,7 +72,7 @@ class Crystal::CodeGenVisitor
     # declared and its trace replayed.
     invalidation_count = @ir_skip_invalidation_count
     if skipped_fun = skip_ir_generation_of(self_type_module_info, mangled_name, target_def, self_type)
-      return declares_in_current_module ? declare_fun(mangled_name, skipped_fun) : nil
+      return declares_in_current_module ? declare_in_current_module(mangled_name, skipped_fun) : nil
     end
     if invalidation_count != @ir_skip_invalidation_count
       # Modules were generated after all in the meantime, and this function
@@ -82,7 +81,7 @@ class Crystal::CodeGenVisitor
         return existing_declaration[0]
       end
       if func = typed_fun_in_segments?(first_module_info, mangled_name)
-        return declares_in_current_module ? declare_fun(mangled_name, func) : nil
+        return declares_in_current_module ? declare_in_current_module(mangled_name, func) : nil
       end
     end
 
@@ -95,6 +94,14 @@ class Crystal::CodeGenVisitor
     declared_fun = declares_in_current_module ? check_mod_fun(self_type_module_info, mangled_name, func) : nil
     unpin_module(self_type_module_info)
     declared_fun
+  end
+
+  # Declares *func* in the module code is being generated into, unless that
+  # module has it already. Replaying a trace (see `IrSkip`) can generate
+  # code into the current module late, and that code may have declared the
+  # function in the meantime; a second declaration would get another name.
+  private def declare_in_current_module(mangled_name : String, func : LLVMTypedFunction) : LLVMTypedFunction
+    typed_fun?(@module_info, mangled_name) || declare_fun(mangled_name, func)
   end
 
   # The function named *mangled_name* when it needs no generating: it is in
@@ -183,7 +190,11 @@ class Crystal::CodeGenVisitor
     # Proc literals and closures are numbered within their function.
     @proc_counts.delete(mangled_name)
     @closure_counts.delete(mangled_name)
-    ir_trace_frame = begin_ir_trace_frame(mangled_name, target_def, self_type, fun_module_info,
+    # The function of a proc literal that is generated into the module of the
+    # function that holds the literal belongs to that function: what it asks
+    # of the rest of the program goes into that function's trace.
+    inherits_ir_trace_frame = (is_fun_literal || is_closure) && !fun_module_info.same?(@main_module_info)
+    ir_trace_frame = inherits_ir_trace_frame ? nil : begin_ir_trace_frame(mangled_name, target_def, self_type, fun_module_info,
       records: !(is_fun_literal || is_closure || is_exported_fun))
 
     typed_function = with_cloned_context do |old_context|
@@ -349,7 +360,7 @@ class Crystal::CodeGenVisitor
       LLVMTypedFunction.new(context.fun_type, context.fun)
     end
 
-    end_ir_trace_frame(ir_trace_frame, mangled_name, fun_module_info)
+    end_ir_trace_frame(ir_trace_frame, mangled_name, fun_module_info) unless inherits_ir_trace_frame
     unpin_module(fun_module_info)
 
     # Proc literals can be generated more than once (a block inlined at

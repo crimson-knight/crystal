@@ -30,7 +30,7 @@ module Crystal
   # function unkeyable (generated every time) rather than reused.
   module IrSkip
     FILENAME = "ir_skip_manifest.bin"
-    MAGIC    = "CRIRSKP1"
+    MAGIC    = "CRIRSKP2"
 
     # The hash of the running compiler's executable: two builds of the
     # compiler from different code never share keys, even when they carry
@@ -123,10 +123,6 @@ module Crystal
       ClassNameMap
       CMalloc
       CRealloc
-      # Generates the function of a proc literal that captures nothing
-      # (index into `Walk#list_of_proc_literals`, *detail* a type reference to the self
-      # type, *text* the function's name).
-      ProcLiteral
     end
 
     # A type is referred to by its index in `Walk#list_of_types`, or, for a type the
@@ -648,9 +644,8 @@ module Crystal
       getter list_of_callees : Array({Def, Type})
       getter list_of_consts : Array(Const)
       getter list_of_class_vars : Array(MetaTypeVar)
-      getter list_of_proc_literals : Array(ProcLiteral)
 
-      def initialize(@code_key, @line_key, @blocker, @list_of_types, @list_of_callees, @list_of_consts, @list_of_class_vars, @list_of_proc_literals)
+      def initialize(@code_key, @line_key, @blocker, @list_of_types, @list_of_callees, @list_of_consts, @list_of_class_vars)
       end
 
       def keyable? : Bool
@@ -745,7 +740,6 @@ module Crystal
       @callee_indexes = {} of {UInt64, UInt64} => Int32
       @consts = [] of Const
       @class_vars = [] of MetaTypeVar
-      @proc_literals = [] of ProcLiteral
       @made_up_names = [] of String
       @inline_depth = 0
       @filename_digests = {} of UInt64 => Digest
@@ -767,19 +761,25 @@ module Crystal
         @callee_indexes.clear
         @consts = [] of Const
         @class_vars = [] of MetaTypeVar
-        @proc_literals = [] of ProcLiteral
         @made_up_names.clear
         @inline_depth = 0
 
         @code.mix(mangled_name)
         mix_type(self_type)
-        if typed_def.is_a?(External)
-          mix_external(typed_def)
-        else
-          mix_def(typed_def)
+        begin
+          if typed_def.is_a?(External)
+            mix_external(typed_def)
+          else
+            mix_def(typed_def)
+          end
+        rescue error : NilAssertionError
+          # The walk reads parts of the tree code generation may never reach
+          # (code after a `NoReturn` call, unused initializers), where cleanup
+          # left properties unset. Such a def is generated in every build.
+          block("a node with an unset property: #{error.message}")
         end
 
-        Walk.new(@code.digest, @lines.digest, @blocker, @types, @callees, @consts, @class_vars, @proc_literals)
+        Walk.new(@code.digest, @lines.digest, @blocker, @types, @callees, @consts, @class_vars)
       end
 
       private def block(reason : String) : Nil
@@ -1158,15 +1158,22 @@ module Crystal
         enter(node)
         mix(node.force_nil?)
         mix_type(node.force_nil? ? nil : node.return_type)
-        @proc_literals << node unless @proc_literals.any?(&.same?(node))
         mix_def(node.def)
         false
       end
 
       def visit(node : ProcPointer) : Bool
         enter(node)
+        if expanded = node.expanded
+          expanded.accept(self)
+          return false
+        end
+        call = node.call?
+        unless call
+          block("a proc pointer without a call")
+          return false
+        end
         node.obj.try &.accept(self)
-        call = node.call
         if target_def = call.target_defs.try(&.first?)
           mix_callee(target_def, target_def.owner)
         else

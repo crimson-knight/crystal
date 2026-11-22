@@ -1727,7 +1727,7 @@ module Crystal
       puts " - modules without new IR: #{stats.skipped_units}; modules generated: #{stats.generated_units} (#{stats.candidate_units} started as candidates)"
       puts " - functions matched and replayed: #{stats.replayed_functions}; generated: #{stats.generated_functions} (#{stats.late_generated_functions} of them after they had matched)"
       puts " - functions without a key: #{stats.unkeyable_functions}; with a trace that cannot be replayed: #{stats.unreplayable_functions}"
-      puts " - computing keys: #{stats.key_seconds.round(1)} s; replaying traces: #{stats.replay_seconds.round(1)} s"
+      puts " - computing keys: #{stats.key_seconds.round(1)} s; replaying traces, with the code generation they set off: #{stats.replay_seconds.round(1)} s"
       stats.regenerated_units_by_reason.each do |reason, count|
         puts " - candidate modules generated after all, #{reason}: #{count}"
       end

@@ -18,6 +18,7 @@ class Crystal::CodeGenVisitor
   @ir_skip_invalidation_count = 0
 
   @ir_skip_walker : IrSkip::KeyWalker?
+  @ir_skip_replay_depth = 0
   @ir_skip_last_walk : {String, IrSkip::Walk}?
 
   private def ir_skip_session : IrSkip::Session?
@@ -162,9 +163,18 @@ class Crystal::CodeGenVisitor
     plan.list_of_accepted << IrSkip::AcceptedFun.new(mangled_name, target_def, self_type, previous_fun)
     plan.position += 1
 
-    started_at = Time.instant
-    failure = replay_ir_trace(previous_fun, walk)
-    session.stats.replay_seconds += (Time.instant - started_at).total_seconds
+    # Only the outermost replay is timed: it includes the replays and the code
+    # generation it set off.
+    started_at = Time.instant if @ir_skip_replay_depth == 0
+    @ir_skip_replay_depth += 1
+    failure = begin
+      replay_ir_trace(previous_fun, walk)
+    ensure
+      @ir_skip_replay_depth -= 1
+    end
+    if started_at
+      session.stats.replay_seconds += (Time.instant - started_at).total_seconds
+    end
     if failure
       invalidate_ir_skip_plan(module_info, plan, IrSkip::RegenerationReason::Replay, "#{mangled_name}: #{failure}") unless plan.invalidated?
       return nil
@@ -258,19 +268,6 @@ class Crystal::CodeGenVisitor
       in .c_realloc?
         fetch_typed_fun(@main_mod, "realloc") do
           LLVM::Type.function([@main_llvm_context.void_pointer, main_llvm_context_size_t], @main_llvm_context.void_pointer)
-        end
-      in .proc_literal?
-        proc_literal = walk.list_of_proc_literals[entry.subject_index]?
-        proc_self_type = walk.list_of_types[entry.detail]?
-        fun_literal_name = entry.text
-        return "a proc literal of the trace is not among the proc literals of the def" unless proc_literal && proc_self_type && fun_literal_name
-
-        unless typed_fun?(@main_mod, fun_literal_name)
-          set_proc_literal_def_type(proc_literal)
-          with_cloned_context do
-            context.type = proc_self_type
-            codegen_fun fun_literal_name, proc_literal.def, proc_self_type, fun_module_info: @main_module_info, is_fun_literal: true, is_closure: false
-          end
         end
       end
     end
@@ -392,22 +389,6 @@ class Crystal::CodeGenVisitor
       frame.add(IrSkip::TraceKind::ClassVarPointer, class_var_index, ir_class_var_state(class_var))
     else
       frame.unreplayable("a read of the class variable #{class_var.name} that the walk of the def did not list")
-    end
-  end
-
-  private def record_ir_proc_literal(node : ProcLiteral, fun_literal_name : String, is_closure : Bool) : Nil
-    return unless frame = current_ir_trace_frame
-
-    if is_closure
-      frame.unreplayable("a closure")
-      return
-    end
-    proc_literal_index = frame.walk.list_of_proc_literals.index(&.same?(node))
-    self_type_index = frame.type_index?(context.type)
-    if proc_literal_index && self_type_index
-      frame.add(IrSkip::TraceKind::ProcLiteral, proc_literal_index, self_type_index, fun_literal_name)
-    else
-      frame.unreplayable("a proc literal that the walk of the def did not list")
     end
   end
 

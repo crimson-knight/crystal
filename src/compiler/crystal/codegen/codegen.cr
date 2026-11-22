@@ -881,12 +881,9 @@ module Crystal
 
       set_proc_literal_def_type(node)
 
-      record_ir_proc_literal(node, fun_literal_name, is_closure)
-      # A literal that captures nothing may have been generated already,
-      # when the trace of this function was replayed (see `IrSkip`).
-      the_fun = is_closure ? nil : typed_fun?(@main_mod, fun_literal_name)
-      the_fun ||= codegen_fun fun_literal_name, node.def, context.type, fun_module_info: @main_module_info, is_fun_literal: true, is_closure: is_closure
-      the_fun = check_main_fun fun_literal_name, the_fun
+      literal_module_info = proc_literal_module_info
+      the_fun = codegen_fun fun_literal_name, node.def, context.type, fun_module_info: literal_module_info, is_fun_literal: true, is_closure: is_closure
+      the_fun = check_mod_fun literal_module_info, fun_literal_name, the_fun
 
       set_current_debug_location(node) if @debug.line_numbers?
       fun_ptr = cast_to_void_pointer(the_fun.func)
@@ -898,6 +895,15 @@ module Crystal
       @last = make_fun node.type, fun_ptr, ctx_ptr
 
       false
+    end
+
+    # The module the function of a proc literal is generated into. In a build
+    # that skips IR generation for unchanged modules (see `IrSkip`) it is the
+    # module of the function that holds the literal, so a module that gets no
+    # code keeps the functions of its literals in its cached object file;
+    # otherwise it is the main module.
+    private def proc_literal_module_info : ModuleInfo
+      ir_skip_session ? @module_info : @main_module_info
     end
 
     # If we don't care about a proc literal's return type then we mark the associated
