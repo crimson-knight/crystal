@@ -83,44 +83,88 @@ class Crystal::Doc::MarkdDocRenderer < Markd::HTMLRenderer
     end
 
     # Check Type#method(...) or Type or #method(...)
-    text.gsub %r(
-      ((?:\B::)?\b[A-Z]\w*(?:\:\:[A-Z]\w*)*|\B|(?<=\bself))(?<!\.)([#.])([\w<=>+\-*\/\[\]&|?!^~]+[?!]?)(?:\((.*?)\))?
-        |
-      ((?:\B::)?\b[A-Z]\w*(?:\:\:[A-Z]\w*)*)
-      )x do |match_text|
-      if $5?
-        # Type
-        another_type = @type.lookup_path(match_text)
-        if another_type && another_type.must_be_included?
-          next type_link another_type, match_text
+    String.build do |io|
+      copied = 0
+      search_from = 0
+      while match = CODE_LINK.match_at_byte_index(text, search_from)
+        unless code_link_start?(text, match)
+          # Not a link here: search again from the next character.
+          search_from = match.byte_begin + 1
+          next
         end
-        next match_text
+
+        io.write text.to_slice[copied, match.byte_begin - copied]
+        io << code_link(match)
+        copied = search_from = match.byte_end
       end
-
-      type_name = $1.presence
-      instance_methods_first = $2 == "#"
-      method_name = $3
-      method_args = $4? || ""
-
-      if type_name
-        # Type#method(...)
-        another_type = @type.lookup_path(type_name)
-        if another_type && @type.must_be_included?
-          method = lookup_method another_type, method_name, method_args, instance_methods_first
-          if method
-            next method_link method, match_text
-          end
-        end
-      else
-        # #method(...)
-        method = lookup_method @type, method_name, method_args, instance_methods_first
-        if method && method.must_be_included?
-          next method_link method, match_text
-        end
-      end
-
-      match_text
+      io.write text.to_slice[copied..]
     end
+  end
+
+  # Type#method(...), #method(...), self.method(...) or Type. A link with no
+  # type before its `#` or `.` must also pass `code_link_start?`, which
+  # checks the text before it (the checks are in Crystal, not lookbehind, so
+  # this runs on every Regex engine).
+  CODE_LINK = %r(
+    ((?:\B::)?\b[A-Z]\w*(?:\:\:[A-Z]\w*)*)?([#.])([\w<=>+\-*\/\[\]&|?!^~]+[?!]?)(?:\((.*?)\))?
+      |
+    ((?:\B::)?\b[A-Z]\w*(?:\:\:[A-Z]\w*)*)
+    )x
+
+  # A `#method` or `.method` with no type before it starts a link only
+  # after a non-word character (or at the start of the text), or right
+  # after the word `self`; never after a `.`.
+  private def code_link_start?(text : String, match : Regex::MatchData) : Bool
+    return true if match[1]? || match[5]?
+
+    before = text.byte_slice(0, match.byte_begin)
+    previous = before[-1]?
+    return true if previous.nil?
+    return false if previous == '.'
+    return true unless word_char?(previous)
+
+    before.ends_with?("self") && !word_char?(before[-5]? || ' ')
+  end
+
+  private def word_char?(char : Char) : Bool
+    char.alphanumeric? || char.mark? || char == '_'
+  end
+
+  private def code_link(match : Regex::MatchData) : String
+    match_text = match[0]
+
+    if match[5]?
+      # Type
+      another_type = @type.lookup_path(match_text)
+      if another_type && another_type.must_be_included?
+        return type_link another_type, match_text
+      end
+      return match_text
+    end
+
+    type_name = match[1]?.presence
+    instance_methods_first = match[2] == "#"
+    method_name = match[3]
+    method_args = match[4]? || ""
+
+    if type_name
+      # Type#method(...)
+      another_type = @type.lookup_path(type_name)
+      if another_type && @type.must_be_included?
+        method = lookup_method another_type, method_name, method_args, instance_methods_first
+        if method
+          return method_link method, match_text
+        end
+      end
+    else
+      # #method(...)
+      method = lookup_method @type, method_name, method_args, instance_methods_first
+      if method && method.must_be_included?
+        return method_link method, match_text
+      end
+    end
+
+    match_text
   end
 
   def code_block_language(languages)
