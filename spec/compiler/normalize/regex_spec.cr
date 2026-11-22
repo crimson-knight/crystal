@@ -58,4 +58,32 @@ describe "Normalize: regex literal" do
       CRYSTAL
     end
   end
+  describe "with -Duse_mica" do
+    it "expands a literal inside the Mica dialect" do
+      assert_expand_regex_const %q(/(?<year>\d{4})-(?:a|b)+/i), <<-'CRYSTAL', flags: "use_mica"
+      ::Regex.new("(?<year>\\d{4})-(?:a|b)+", ::Regex::Options.new(1))
+      CRYSTAL
+    end
+
+    it "rejects a literal the Mica engine leaves out" do
+      expect_raises(Crystal::TypeException, "invalid regex for -Duse_mica: lookahead (at 1) is not supported by the Mica regex engine") do
+        assert_expand(Parser.parse(%q(/a(?=b)/)), flags: "use_mica") { }
+      end
+      expect_raises(Crystal::TypeException, "invalid regex for -Duse_mica: a backreference (at 3)") do
+        assert_expand(Parser.parse(%q(/(a)\1/)), flags: "use_mica") { }
+      end
+    end
+
+    it "reads the literal options" do
+      expect_raises(Crystal::TypeException, "invalid regex for -Duse_mica") do
+        assert_expand(Parser.parse(%q(/a (?=b)/x)), flags: "use_mica") { }
+      end
+    end
+
+    it "leaves the literal to the PCRE2 engine without the flag" do
+      assert_expand_regex_const %q(/a(?=b)/), <<-'CRYSTAL'
+      ::Regex.new("a(?=b)", ::Regex::Options.new(0))
+      CRYSTAL
+    end
+  end
 end

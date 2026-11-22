@@ -1493,9 +1493,15 @@ describe "String" do
       it { "foo,bar,baz,qux".split(/,/, 30).should eq(["foo", "bar", "baz", "qux"]) }
       it { "a b c".split(Regex.new(" "), 2).should eq(["a", "b c"]) }
       it { "日本ん語日本ん語".split(/ん/).should eq(["日本", "語日本", "語"]) }
-      it { "九十九十九".split(/(?=十)/).should eq(["九", "十九", "十九"]) }
+      {% unless Regex::Engine.resolve.name == "Regex::MicaEngine" %}
+        # lookahead is outside the Mica dialect
+        it { "九十九十九".split(/(?=十)/).should eq(["九", "十九", "十九"]) }
+      {% end %}
       it { "hello world".split(/\b/).should eq(["hello", " ", "world", ""]) }
-      it { "hello world".split(/\w+|(?= )/).should eq(["", " ", ""]) }
+      {% unless Regex::Engine.resolve.name == "Regex::MicaEngine" %}
+        # lookahead is outside the Mica dialect
+        it { "hello world".split(/\w+|(?= )/).should eq(["", " ", ""]) }
+      {% end %}
       it { "abc".split(//).should eq(["a", "b", "c"]) }
       it { "hello".split(/\w+/).should eq(["", ""]) }
       it { "foo".split(/o/).should eq(["f", "", ""]) }
@@ -2401,12 +2407,18 @@ describe "String" do
     it "works when match is empty" do
       r = %r([\s,]*(~@|[\[\]{}()'`~^@]|"(?:\\.|[^\\"])*"|;.*|[^\s\[\]{}('"`,;)]*))
       "hello".scan(r).map(&.[0]).should eq(["hello", ""])
-      "hello world".scan(/\w+|(?= )/).map(&.[0]).should eq(["hello", "", "world"])
+      {% unless Regex::Engine.resolve.name == "Regex::MicaEngine" %}
+        # lookahead is outside the Mica dialect
+        "hello world".scan(/\w+|(?= )/).map(&.[0]).should eq(["hello", "", "world"])
+      {% end %}
     end
 
     it "works when match is empty, multibyte char" do
       "\u{80}\u{800}\u{10000}".scan(/()/).map(&.begin).should eq([0, 1, 2, 3])
-      " Äa".scan(/(?=(\S))/).map(&.[1]).should eq(["Ä", "a"])
+      {% unless Regex::Engine.resolve.name == "Regex::MicaEngine" %}
+        # lookahead is outside the Mica dialect
+        " Äa".scan(/(?=(\S))/).map(&.[1]).should eq(["Ä", "a"])
+      {% end %}
     end
 
     it "works with strings with block" do

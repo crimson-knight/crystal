@@ -2,20 +2,24 @@ module Markd::Rule
   struct CodeBlock
     include Rule
 
-    CODE_FENCE         = /^`{3,}(?!.*`)|^~{3,}/
-    CLOSING_CODE_FENCE = /^(?:`{3,}|~{3,})(?= *$)/
+    # A backtick fence may not be followed by another backtick on its line.
+    # Written without lookahead so it runs on every Regex engine (the fence
+    # itself is group 1 or 2).
+    CODE_FENCE         = /^(`{3,})[^`\n]*$|^(~{3,})/
+    CLOSING_CODE_FENCE = /^(`{3,}|~{3,}) *$/
 
     def match(parser : Parser, container : Node) : MatchValue
       if !parser.indented &&
          (match = parser.line[parser.next_nonspace..-1].match(CODE_FENCE))
         # fenced
-        fence_length = match[0].size
+        fence = match[1]? || match[2]
+        fence_length = fence.size
 
         parser.close_unmatched_blocks
         node = parser.add_child(Node::Type::CodeBlock, parser.next_nonspace)
         node.fenced = true
         node.fence_length = fence_length
-        node.fence_char = match[0][0].to_s
+        node.fence_char = fence[0].to_s
         node.fence_offset = parser.indent
 
         parser.advance_next_nonspace
@@ -44,7 +48,7 @@ module Markd::Rule
                 line[parser.next_nonspace]? == container.fence_char[0] &&
                 line[parser.next_nonspace..-1].match(CLOSING_CODE_FENCE)
 
-        if match && match.as(Regex::MatchData)[0].size >= container.fence_length
+        if match && match.as(Regex::MatchData)[1].size >= container.fence_length
           # closing fence - we're at end of line, so we can return
           parser.token(container, parser.current_line)
           return ContinueStatus::Return
