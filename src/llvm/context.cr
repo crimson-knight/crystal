@@ -25,6 +25,14 @@ class LLVM::Context
     @builders = [] of LLVM::Builder
   end
 
+  # Whether values that are not global (instructions, arguments, basic
+  # blocks) keep the names they are given. Set it before the context gets
+  # its first value.
+  def discard_value_names=(discard : Bool) : Bool
+    LibLLVM.context_set_discard_value_names(self, discard ? 1 : 0)
+    discard
+  end
+
   def new_module(name : String) : Module
     Module.new(LibLLVM.module_create_with_name_in_context(name, self), self)
   end

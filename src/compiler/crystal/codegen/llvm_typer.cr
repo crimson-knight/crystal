@@ -10,15 +10,6 @@ module Crystal
     @layout : LLVM::TargetData
     @landing_pad_type : LLVM::Type
 
-    @@closure_counter = 0
-
-    # Starts the numbering of closure structs over. Each code generation
-    # does, so that a program gets the same struct names (and the same
-    # bitcode) whatever was compiled before it in this process.
-    def self.reset_closure_counter : Nil
-      @@closure_counter = 0
-    end
-
     # *data_layout* computes sizes and offsets. LLVM caches the layout of a
     # struct in the data layout object, by the address of the struct type,
     # and never forgets one. A typer whose context can be disposed while
@@ -508,10 +499,9 @@ module Crystal
       LLVM::Type.function(arg_types, llvm_type(type.return_type))
     end
 
-    def closure_context_type(vars, parent_llvm_type, self_type)
-      @@closure_counter += 1
-      llvm_name = "closure_#{@@closure_counter}"
-
+    # The type of a closure's context. *llvm_name* names it in every module:
+    # no other closure type of the program may have that name.
+    def closure_context_type(llvm_name : String, vars, parent_llvm_type, self_type)
       has_inner_pointers = !parent_llvm_type.nil?
       closure_type = @llvm_context.struct(llvm_name) do |a_struct|
         @structs[llvm_name] = a_struct

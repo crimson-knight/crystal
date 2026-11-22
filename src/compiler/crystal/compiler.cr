@@ -343,6 +343,10 @@ module Crystal
     # Total number of modules in the last compilation.
     @last_modules_total : Int32 = 0
 
+    # The modules of the last compilation whose object file was built
+    # rather than reused from the build before.
+    getter last_list_of_rebuilt_module_names = [] of String
+
     # Phase 6: Signature tracking results from the last compilation.
     @last_body_only_count : Int32 = 0
     @last_structural_count : Int32 = 0
@@ -466,7 +470,10 @@ module Crystal
 
       @progress_tracker.clear
       print_macro_run_stats(program)
-      print_codegen_stats(units.map(&.summary)) if units
+      if units
+        @last_list_of_rebuilt_module_names = units.reject(&.reused_previous_compilation?).map(&.original_name)
+        print_codegen_stats(units.map(&.summary))
+      end
       print_parse_cache_stats
       print_signature_stats
       print_compilation_skip_stats if compilation_skipped
@@ -768,6 +775,11 @@ module Crystal
       output_dir = CacheDir.instance.directory_for(sources)
       @cached_part_bitcode_filenames = nil
       module_spill = @last_module_spill = module_spill_for(output_dir, is_single_module)
+      # An incremental build numbers what the build before it numbered the
+      # same way. Emitted LLVM IR keeps the names of local values, which
+      # such a build drops.
+      stable_numbering = @incremental && !@no_cache && @emit_targets.none? ? StableNumbering.load(output_dir) : nil
+      program.stable_numbering = stable_numbering
 
       llvm_modules = @progress_tracker.stage("Codegen (crystal)") do
         GCTuning.with_ir_generation_divisor do
@@ -775,6 +787,15 @@ module Crystal
             single_module: is_single_module, release_typed_bodies: true,
             module_spill: module_spill, module_segment_instructions: @module_segment_instructions.to_i64
         end
+      end
+      if stable_numbering
+        stable_numbering.type_ids_by_stable_key = program.llvm_id.type_ids_in_use_by_stable_key
+        list_of_part_fun_counts_by_module_name = {} of String => Array(Int32)
+        llvm_modules.each do |type_name, info|
+          list_of_part_fun_counts_by_module_name[type_name] = info.list_of_part_fun_counts unless info.list_of_part_fun_counts.empty?
+        end
+        stable_numbering.list_of_part_fun_counts_by_module_name = list_of_part_fun_counts_by_module_name
+        stable_numbering.save(output_dir)
       end
       list_of_segment_counts = llvm_modules.each_value.map { |info| info.list_of_later_segments.size + 1 }.select { |count| count > 1 }.to_a
       @last_segmented_type_count = list_of_segment_counts.size
