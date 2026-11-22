@@ -1,4 +1,5 @@
 require "./codegen"
+require "./cached_object_record"
 
 module Crystal
   # Settings and counters for keeping only a bounded amount of LLVM IR in
@@ -54,10 +55,13 @@ module Crystal
     getter built_instruction_count = 0_i64
 
     # How many module parts were written to disk, their size and the time
-    # it took.
+    # it took: turning the modules into bitcode, hashing the bitcode, and
+    # putting it in files.
     getter spill_count = 0
     getter written_bitcode_bytes = 0_i64
     getter write_time = Time::Span.zero
+    getter bitcode_time = Time::Span.zero
+    getter hash_time = Time::Span.zero
 
     # How many types have a module of more than one part.
     getter multi_part_module_count = 0
@@ -97,10 +101,13 @@ module Crystal
       @resident_ir_bytes - @resident_ir_bytes // 8
     end
 
-    def record_spill(bitcode_bytes : Int64, time : Time::Span, part_index : Int32) : Nil
+    def record_spill(bitcode_bytes : Int64, bitcode_time : Time::Span, hash_time : Time::Span,
+                     write_time : Time::Span, part_index : Int32) : Nil
       @spill_count += 1
       @written_bitcode_bytes += bitcode_bytes
-      @write_time += time
+      @bitcode_time += bitcode_time
+      @hash_time += hash_time
+      @write_time += write_time
       @multi_part_module_count += 1 if part_index == 1
     end
 
@@ -156,6 +163,10 @@ module Crystal
       # The bitcode files of the parts of this module that were spilled, in
       # the order they were written.
       getter list_of_spill_paths = [] of String
+
+      # The hash of the bitcode in each of those files (`BitcodeHash.of_part`).
+      # Empty when there is no hash function.
+      getter list_of_spill_part_hashes = [] of String
 
       # How many functions each spilled part holds, in the same order.
       getter list_of_part_fun_counts = [] of Int32
@@ -611,14 +622,22 @@ module Crystal
       mod.target = spill.target_triple
       part_index = module_info.list_of_spill_paths.size
       path = spill.bitcode_path(module_info.name, part_index)
-      write_time = Time.measure do
-        unless mod.write_bitcode_to_file(path) == 0
-          raise "BUG: failed to write the LLVM bitcode of #{module_info.name.inspect} to #{path}"
-        end
+      bitcode_started_at = Time.instant
+      bitcode = mod.write_bitcode_to_memory_buffer
+      begin
+        bitcode_bytes = bitcode.to_slice
+        hash_started_at = Time.instant
+        part_hash = BitcodeHash.of_part(bitcode_bytes)
+        write_started_at = Time.instant
+        File.write(path, bitcode_bytes)
+        module_info.list_of_spill_paths << path
+        module_info.list_of_spill_part_hashes << part_hash if part_hash
+        spill.record_spill(bitcode_bytes.size.to_i64, hash_started_at - bitcode_started_at,
+          write_started_at - hash_started_at, Time.instant - write_started_at, part_index)
+      ensure
+        bitcode.dispose
       end
-      module_info.list_of_spill_paths << path
       module_info.list_of_part_fun_counts << module_info.list_of_generated_fun_names.size
-      spill.record_spill(File.size(path), write_time, part_index)
       spill.record_built_instructions(module_info.built_instruction_count)
 
       freed_ir_bytes = module_info.accounted_ir_bytes

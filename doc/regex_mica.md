@@ -1,19 +1,46 @@
-# The Mica regex engine (`-Duse_mica`)
+# The Mica regex engine (the default)
 
-`Regex` can run on [Mica](https://github.com/amberframework/mica)'s regex
-engine instead of PCRE2. Mica is written in Crystal: every search runs in
-time linear in the haystack under a work allowance, and nothing links a C
-regex library. Existing code keeps working unchanged: `Regex`, regex
-literals, `$~`, `String#match`, `#gsub`, `#scan`, `#split` and
-`Regex::MatchData` keep their API.
+`Regex` runs on [Mica](https://github.com/amberframework/mica)'s regex
+engine. Mica is written in Crystal: every search runs in time linear in
+the haystack under a work allowance, and nothing links a C regex library.
+Existing code keeps working unchanged: `Regex`, regex literals, `$~`,
+`String#match`, `#gsub`, `#scan`, `#split` and `Regex::MatchData` keep
+their API.
 
 ```console
-$ crystal build -Duse_mica app.cr
+$ crystal build app.cr
 $ otool -L app      # or ldd: no libpcre2-8
 ```
 
-PCRE2 stays the default. `-Duse_pcre` (legacy PCRE) is unchanged, and
-`-Duse_mica` takes precedence over it when both are given.
+## Choosing the engine
+
+| Build | Engine |
+|---|---|
+| `crystal build app.cr` | Mica |
+| `crystal build -Duse_pcre2 app.cr` | PCRE2 (links `libpcre2-8`) |
+| `crystal build -Duse_pcre app.cr`, or the env var `USE_PCRE1` set | legacy PCRE (links `libpcre`) |
+| `crystal build -Duse_mica app.cr` | Mica; the flag is accepted so build scripts written while Mica was opt-in keep working |
+
+`-Duse_pcre2` wins over `-Duse_pcre`, and either one wins over
+`-Duse_mica`. `src/regex/engine.cr` makes the choice for the program, and
+`Crystal::Program#uses_mica_regex_engine?` makes the same choice in the
+compiler.
+
+YAML has its own default and opt-out (`-Duse_libyaml`, see
+`doc/yaml_mica.md`); the two choices are independent.
+
+Build with `-Duse_pcre2` when a program needs syntax Mica does not run
+(lookaround, backreferences and the others listed under "Syntax Mica does
+not run"), `MATCH_INVALID_UTF`, or PCRE2's exact behavior on a haystack
+with invalid UTF-8. The compiler itself is built on Mica and links no
+PCRE2; a program built with `-Duse_pcre2` needs the PCRE2 library where it
+is built and where it runs, as every program did before.
+
+Measured on a production Amber V2 app (the Scribe license server, six
+interleaved pairs per route): CPU time, memory and latency per request
+equal to PCRE2 within the 95% intervals on every route, 370 of 370 specs
+on both engines, and a release binary 1.21 times as large (5,018,672
+against 4,163,632 bytes).
 
 ## How Mica reaches the standard library
 
@@ -37,13 +64,13 @@ built with the standard library, so the engine is vendored:
   runs helper programs from `src/mica/regex/static/`; those are not
   vendored, so the stdlib engine compiles every pattern at run time, as
   PCRE2 does.
-- Nothing is vendored or compiled unless `-Duse_mica` is set, except the
-  syntax front half the compiler uses for the literal check described
-  below.
+- A program built with `-Duse_pcre2` or `-Duse_pcre` compiles none of the
+  vendored engine. The compiler always carries the syntax front half, for
+  the literal check described below.
 
 The engine itself is `Regex::MicaEngine` (`src/regex/mica_engine.cr`), the
 counterpart of `Regex::PCRE2`; `src/regex/engine.cr` aliases
-`Regex::Engine` to it under `-Duse_mica`.
+`Regex::Engine` to it unless `-Duse_pcre2` or `-Duse_pcre` is given.
 
 ## How the Regex API maps onto Mica
 
@@ -95,27 +122,31 @@ program, capped at 10^9 operations per call).
 
 ## Literals are checked when the program compiles
 
-A program built with `-Duse_mica` has every regex literal checked against
+A program that runs on Mica has every regex literal checked against
 Mica's dialect while the compiler expands it (`MicaRegexLiteral` in the
 compiler), so a literal Mica cannot run is a compile error, not an
-exception the first time it is used:
+exception the first time it is used. The error names the way out:
 
 ```console
-$ crystal build -Duse_mica app.cr
-Error: invalid regex for -Duse_mica: lookahead (at 1) is not supported by the Mica regex engine; see doc/regex_mica.md for rewrites
+$ crystal build app.cr
+Error: invalid regex for the Mica regex engine: lookahead (at 1) is not supported; build with -Duse_pcre2 to run this pattern on PCRE2, or see doc/regex_mica.md for rewrites
+$ crystal build -Duse_pcre2 app.cr
 ```
+
+Only literals the program reaches are checked: a literal in a method that
+is never called is never expanded.
 
 The compiler carries Mica's syntax front half for this check whatever
 engine it was built with. The parser's own literal check (`invalid regex`)
-uses the engine the compiler was built with; a compiler built with
-`-Duse_mica` accepts a literal Mica leaves out there, since it is valid
-PCRE2 and the program may be built for PCRE2. Patterns built at run time
+uses the engine the compiler was built with; a compiler built on Mica
+accepts a literal Mica leaves out there, since it is valid PCRE2 and the
+program may be built with `-Duse_pcre2`. Patterns built at run time
 (`Regex.new`, interpolated literals) raise `Regex::UnsupportedSyntaxError`
-when compiled.
+when compiled, and its message names `-Duse_pcre2` too.
 
-Macro code runs regexes on the engine the compiler was built with: a
-compiler built with `-Duse_mica` runs `StringLiteral#gsub(/.../)` and the
-other macro regex methods on Mica.
+Macro code runs regexes on the engine the compiler was built with: the
+compiler runs `StringLiteral#gsub(/.../)` and the other macro regex
+methods on Mica, whatever engine the program selects.
 
 ## Syntax Mica does not run
 
@@ -152,4 +183,5 @@ Other differences:
    `scripts/vendor_mica.cr` from `git rev-parse <tag>^{commit}` and
    `git rev-parse <tag>^{tree}`.
 3. `crystal run scripts/vendor_mica.cr -- path/to/mica`
-4. `crystal spec -Duse_mica spec/std/regex_spec.cr spec/std/regex spec/std/string_spec.cr`
+4. `crystal spec spec/std/regex_spec.cr spec/std/regex spec/std/string_spec.cr`,
+   and the same with `-Duse_pcre2`.

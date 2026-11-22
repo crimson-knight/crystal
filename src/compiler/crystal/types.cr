@@ -2705,7 +2705,10 @@ module Crystal
 
     def new_generic_instance(program, generic_type, type_vars)
       type_param = self.type_vars.first
-      t = type_vars[type_param].type
+      # A class that has subclasses arrives as its virtual type (`Foo+`). The
+      # storage is laid out for the class that was written, which is the one
+      # `Foo.unsafe_construct` builds in it.
+      t = type_vars[type_param].type.devirtualize
 
       unless t.is_a?(TypeParameter) || (t.class? && !t.struct?)
         raise TypeException.new "Can't instantiate ReferenceStorage(#{type_param}) with #{type_param} = #{t} (#{type_param} must be a reference type)"

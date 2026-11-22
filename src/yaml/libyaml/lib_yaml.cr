@@ -1,4 +1,4 @@
-require "./enums"
+require "../enums"
 
 # Supported library versions:
 #
