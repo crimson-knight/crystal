@@ -162,9 +162,16 @@ module YAML
   end
 
   # Returns the used version of `libyaml`.
+  #
+  # Under `-Duse_mica` no libyaml is linked: this is the libyaml version whose
+  # behavior the Mica engine reproduces.
   def self.libyaml_version : SemanticVersion
-    LibYAML.yaml_get_version(out major, out minor, out patch)
+    {% if flag?(:use_mica) %}
+      SemanticVersion.new(*YAML::MicaEngine::LIBYAML_VERSION)
+    {% else %}
+      LibYAML.yaml_get_version(out major, out minor, out patch)
 
-    SemanticVersion.new(major, minor, patch)
+      SemanticVersion.new(major, minor, patch)
+    {% end %}
   end
 end
