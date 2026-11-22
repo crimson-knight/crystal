@@ -121,7 +121,7 @@ module Crystal
       generic_owners.to_a.sort_by { |entry| -entry[1][1] }.first(25).each do |name, (copies, bytes, instances)|
         io.printf("generic  %-66s %9d copies %9.1f MB  %6d instances\n", name[0, 66], copies, bytes / 1e6, instances.size)
       end
-      io.printf("typeonce typed %d, reused %d\n", @program.type_once_typed, @program.type_once_reused)
+      io.printf("typeonce typed %d, reused %d, generic methods kept per instance %d\n", @program.type_once_typed, @program.type_once_reused, @program.generic_type_once_kept)
       io.flush
     end
 

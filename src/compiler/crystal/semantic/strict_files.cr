@@ -316,6 +316,7 @@ module Crystal
 
     private def inherits_def_named?(owner : ModuleType, name : String) : Bool
       owner.ancestors.any? do |ancestor|
+        ancestor = ancestor.generic_type if ancestor.is_a?(GenericInstanceType)
         ancestor.is_a?(ModuleType) && ancestor.defs.try(&.has_key?(name))
       end
     end
@@ -323,6 +324,8 @@ module Crystal
     private def inherited_def_with_same_signature(node : Def, owner : ModuleType) : Def?
       item = DefWithMetadata.new(node)
       owner.ancestors.each do |ancestor|
+        # A generic instance (`Box(Int32)`) keeps its defs in its generic type.
+        ancestor = ancestor.generic_type if ancestor.is_a?(GenericInstanceType)
         next unless ancestor.is_a?(ModuleType)
         list = ancestor.defs.try(&.[node.name]?) || next
         list.each do |existing|
