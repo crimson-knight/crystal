@@ -80,6 +80,23 @@ describe "Normalize: regex literal" do
       end
     end
 
+    # Grant shipped this pattern as `Grant::Query::JoinSupport::RAW_JOIN_TARGET`
+    # through 0.23.4. Every app that used Grant joins reached it, so on a
+    # compiler whose default engine is Mica the app's build stops here: the
+    # message has to name the construct, where it starts, and the way out.
+    it "rejects the lookahead in Grant's RAW_JOIN_TARGET and names -Duse_pcre2" do
+      grant_raw_join_target = %q(/\bJOIN\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+(?:AS\s+)?(?!ON\b|USING\b|INNER\b|LEFT\b|RIGHT\b|FULL\b|CROSS\b|NATURAL\b|JOIN\b)([A-Za-z_][A-Za-z0-9_]*))?/i)
+
+      error = expect_raises(Crystal::TypeException) do
+        assert_expand(Parser.parse(grant_raw_join_target)) { }
+      end
+      error.message.should eq("invalid regex for the Mica regex engine: lookahead (at 49) is not supported; build with -Duse_pcre2 to run this pattern on PCRE2, or see doc/regex_mica.md for rewrites")
+
+      assert_expand_regex_const grant_raw_join_target, <<-'CRYSTAL', flags: "use_pcre2"
+      ::Regex.new("\\bJOIN\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s+(?:AS\\s+)?(?!ON\\b|USING\\b|INNER\\b|LEFT\\b|RIGHT\\b|FULL\\b|CROSS\\b|NATURAL\\b|JOIN\\b)([A-Za-z_][A-Za-z0-9_]*))?", ::Regex::Options.new(1))
+      CRYSTAL
+    end
+
     it "accepts -Duse_mica as the default" do
       assert_expand_regex_const %q(/a+b/), <<-'CRYSTAL', flags: "use_mica"
       ::Regex.new("a+b", ::Regex::Options.new(0))
