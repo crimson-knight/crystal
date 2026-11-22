@@ -83,7 +83,7 @@ class HTTP::Server::RequestProcessor
           # the request body.
           case original_body
           when FixedLengthContent, ChunkedContent
-            original_body.skip_to_end
+            skip_request_body(original_body)
           when Nil
             # No request body
           else
@@ -127,5 +127,15 @@ class HTTP::Server::RequestProcessor
     rescue IO::Error
       # IO-related error, nothing to do
     end
+  end
+
+  # `IO#skip_to_end` reads into a 32 KiB buffer on the stack. Kept out of
+  # `#process`, that buffer is on the stack only during an upgrade; inlined
+  # into it, every connection's handlers would run 32 KiB further down the
+  # fiber stack, about 1 MiB more resident memory for a server with 32 open
+  # connections.
+  @[NoInline]
+  private def skip_request_body(body : IO) : Nil
+    body.skip_to_end
   end
 end
