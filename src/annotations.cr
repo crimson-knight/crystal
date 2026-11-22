@@ -133,3 +133,62 @@ end
 # instruction, and is undefined behaviour.
 annotation TargetFeature
 end
+
+# Types a method once, against the types its signature declares, instead of
+# once per combination of receiver and argument types that calls it.
+#
+# ```
+# abstract class Record
+#   @[TypeOnce]
+#   def touch(by : Record) : Bool
+#     # typed once, with `self` and `by` as `Record+`
+#     by.id != id
+#   end
+# end
+# ```
+#
+# Every parameter needs a type restriction and the method needs a return
+# type. The method can't have free variables (`forall`), a splat, a `yield`
+# or macro expressions in its body, and can't be `abstract` or `initialize`.
+# A parameter restricted to a class, to a class passed as a value
+# (`Record.class`) or to a union is typed as declared; `self` is typed as the
+# class that declares the method (or, for a method of a module, the topmost
+# class that includes it) and its subclasses. The body is checked against
+# those types and its calls dispatch at run time.
+#
+# A compiler without this feature builds the same code unchanged once the
+# annotation is declared: `annotation TypeOnce; end`.
+annotation TypeOnce
+end
+
+# Marks a `def` that is meant to replace an earlier definition of the same
+# method in the same type, or to override a method the type inherits.
+#
+# ```
+# class Greeter
+#   def greet
+#     "hello"
+#   end
+# end
+#
+# class Greeter
+#   @[Override]
+#   def greet
+#     "HELLO"
+#   end
+# end
+# ```
+#
+# A marked def that replaces and overrides nothing is an error. In a strict
+# file (first line `# crystal: strict`, or `require "strict"`), an unmarked
+# def with the name and argument types of an earlier definition in the same
+# type, or of an inherited method, is an error too. Every method follows
+# that rule, `initialize`, `to_s`, `==` and `hash` included. A def with the
+# same name and different argument types is a new overload and needs no
+# mark.
+#
+# A compiler without this feature builds the same code unchanged once the
+# annotation is declared: `annotation Override; end` (the `strict` shard
+# does it).
+annotation Override
+end

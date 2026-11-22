@@ -65,6 +65,11 @@ module Crystal
     # If `true`, doc comments are attached to types and methods.
     property? wants_doc = false
 
+    # The files of this program's macro expansions. Locations refer to a
+    # file by its index in a table that holds it weakly, so the program
+    # keeps the files alive for as long as it lives.
+    getter virtual_files = [] of VirtualFile
+
     # If `true`, error messages can be colorized
     property? color = true
 
@@ -171,6 +176,8 @@ module Crystal
 
     def initialize
       super(self, self, "main")
+
+      VirtualFile.current_program_files = @virtual_files
 
       # Every crystal program comes with some predefined types that we initialize here,
       # like Object, Value, Reference, etc.
@@ -294,6 +301,8 @@ module Crystal
       types["Deprecated"] = @deprecated_annotation = AnnotationType.new self, self, "Deprecated"
       types["Experimental"] = @experimental_annotation = AnnotationType.new self, self, "Experimental"
       types["TargetFeature"] = @target_feature_annotation = AnnotationType.new self, self, "TargetFeature"
+      types["TypeOnce"] = @type_once_annotation = AnnotationType.new self, self, "TypeOnce"
+      types["Override"] = @override_annotation = AnnotationType.new self, self, "Override"
 
       define_crystal_constants
 
@@ -580,7 +589,8 @@ module Crystal
                      packed_annotation thread_local_annotation no_inline_annotation target_feature_annotation
                      always_inline_annotation naked_annotation returns_twice_annotation
                      raises_annotation primitive_annotation call_convention_annotation
-                     flags_annotation link_annotation extern_annotation deprecated_annotation experimental_annotation) %}
+                     flags_annotation link_annotation extern_annotation deprecated_annotation experimental_annotation
+                     type_once_annotation override_annotation) %}
       def {{name.id}}
         @{{name.id}}.not_nil!
       end

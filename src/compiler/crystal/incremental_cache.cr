@@ -82,13 +82,6 @@ module Crystal
     getter prelude : String
     getter file_fingerprints : Hash(String, FileFingerprint)
 
-    # Maps LLVM module name => array of source filenames that contributed
-    # methods/defs to that module. Used by Phase 4 codegen caching to
-    # determine if a module can be skipped (all contributing files unchanged).
-    # Nil when not available (e.g. single-module mode, or old cache format).
-    @[JSON::Field(emit_null: false)]
-    getter module_file_mapping : Hash(String, Array(String))? = nil
-
     # Per-file top-level signatures extracted after the TopLevelVisitor pass.
     # Used by Phase 6 signature tracking to determine whether a changed file
     # has only body-level changes (signature identical) or structural changes
@@ -116,7 +109,6 @@ module Crystal
     def initialize(@compiler_version : String, @codegen_target : String,
                    @flags : Array(String), @prelude : String,
                    @file_fingerprints : Hash(String, FileFingerprint),
-                   @module_file_mapping : Hash(String, Array(String))? = nil,
                    @file_signatures : Hash(String, FileTopLevelSignature)? = nil,
                    @allocation_hints : AllocationHints? = nil,
                    @file_dependencies : Hash(String, Array(String))? = nil)
@@ -128,6 +120,10 @@ module Crystal
   # for storage location.
   module IncrementalCache
     CACHE_FILENAME = "incremental_cache.json"
+
+    # The name the cache is written under while the build that produced it
+    # is still linking in another process (see `Compiler::ObjectStage`).
+    PENDING_CACHE_FILENAME = "incremental_cache.pending.json"
 
     # Load cache data from disk. Returns nil if missing, corrupt, or
     # version/target/flags mismatch.
@@ -151,9 +147,9 @@ module Crystal
     end
 
     # Save cache data to disk as JSON.
-    def self.save(cache_dir : String, data : IncrementalCacheData) : Nil
+    def self.save(cache_dir : String, data : IncrementalCacheData, cache_filename : String = CACHE_FILENAME) : Nil
       Dir.mkdir_p(cache_dir)
-      path = File.join(cache_dir, CACHE_FILENAME)
+      path = File.join(cache_dir, cache_filename)
       File.write(path, data.to_json)
     rescue IO::Error
       # Best effort -- don't fail compilation if cache can't be written

@@ -4423,8 +4423,7 @@ module Crystal
 
       # If the name is a var and '+' or '-' follow, never treat the name as a call
       if is_var && next_comes_plus_or_minus?
-        var = Var.new(name)
-        var.doc = doc
+        var = doc ? DocumentedVar.new(name, doc) : Var.new(name)
         var.location = name_location
         var.end_location = end_location
         next_token
@@ -6219,13 +6218,13 @@ module Crystal
 
     def parse_c_struct_or_union_fields(exps)
       doc = @token.doc
-      vars = [Var.new(@token.value.to_s).at(@token.location).at_end(token_end_location)]
+      vars = [new_c_struct_or_union_field_var(@token.value.to_s, doc).at(@token.location).at_end(token_end_location)]
 
       next_token_skip_space_or_newline
 
       while @token.type.op_comma?
         next_token_skip_space_or_newline
-        vars << Var.new(check_ident).at(@token.location).at_end(token_end_location)
+        vars << new_c_struct_or_union_field_var(check_ident, doc).at(@token.location).at_end(token_end_location)
         next_token_skip_space_or_newline
       end
 
@@ -6237,9 +6236,12 @@ module Crystal
       skip_statement_end
 
       vars.each do |var|
-        var.doc = doc
         exps << TypeDeclaration.new(var, type).at(var).at_end(type)
       end
+    end
+
+    private def new_c_struct_or_union_field_var(name : String, doc : String?) : Var
+      doc ? DocumentedVar.new(name, doc) : Var.new(name)
     end
 
     def parse_enum_def

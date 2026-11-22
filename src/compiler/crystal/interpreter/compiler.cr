@@ -3250,6 +3250,10 @@ class Crystal::Repl::Compiler < Crystal::Visitor
     false
   end
 
+  def visit(node : ReleasedBody)
+    raise "BUG: reached a def body that was released after its function was generated"
+  end
+
   def visit(node : FileNode)
     file_module = @context.program.file_module(node.filename)
 

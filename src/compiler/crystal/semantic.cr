@@ -45,11 +45,13 @@ class Crystal::Program
     result = @progress_tracker.stage("Semantic (main)") do
       visit_main(node, process_finished_hooks: true, cleanup: cleanup, visitor: main_visitor)
     end
+    MemoryCensus.report(self, result, "Semantic (main)") if MemoryCensus.enabled?
 
     @progress_tracker.stage("Semantic (cleanup)") do
       cleanup_types
       cleanup_files
     end
+    MemoryCensus.report_owner_shapes(self, result) if MemoryCensus.enabled?
 
     @progress_tracker.stage("Semantic (recursive struct check)") do
       RecursiveStructChecker.new(self).run
@@ -75,6 +77,7 @@ class Crystal::Program
 
       node.accept visitor
       visitor.process_finished_hooks
+      StrictDefChecker.new(self).run
       visitor.new_expansions
     end
     @progress_tracker.stage("Semantic (new)") do

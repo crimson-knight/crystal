@@ -1,3 +1,20 @@
+module LLVM
+  # Tells the garbage collector that *object*, which has just disposed what
+  # it owned, needs no finalizer anymore.
+  #
+  # The collector counts the objects that wait for a finalizer, and once any
+  # has run it collects every time 500 more are waiting, however little was
+  # allocated. A compiler that creates and disposes thousands of contexts
+  # during IR generation would otherwise run full collections at that rate.
+  #
+  # :nodoc:
+  def self.forget_finalizer(object : Reference) : Nil
+    {% unless flag?(:gc_none) || flag?(:wasm32) || flag?(:interpreted) %}
+      LibGC.register_finalizer_ignore_self(object.as(Void*), nil, nil, nil, nil)
+    {% end %}
+  end
+end
+
 class LLVM::Context
   def self.new(*, dispose_on_finalize : Bool = true)
     new(LibLLVM.create_context, dispose_on_finalize)
@@ -166,6 +183,7 @@ class LLVM::Context
     @builders.each &.dispose
 
     LibLLVM.dispose_context(self)
+    LLVM.forget_finalizer(self)
   end
 
   def finalize

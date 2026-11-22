@@ -507,7 +507,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       node.raise "enums can't define an `initialize` method, try using `def self.new`"
     end
 
-    target_type.add_def node
+    replaced = target_type.add_def node
+    @program.record_declared_def(node, target_type, replaced)
 
     node.set_type @program.nil
 
@@ -1268,6 +1269,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
         node.no_inline = true
       when @program.always_inline_annotation
         node.always_inline = true
+      when @program.type_once_annotation
+        node.type_once = true
       when @program.naked_annotation
         node.naked = true
       when @program.returns_twice_annotation
@@ -1324,8 +1327,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
           file_module || current_type
         end
       else
-        prefix = path.clone
-        prefix.names.pop
+        prefix = Path.new(path.names[0...-1], path.global?).at(path)
         lookup_type_def_name_creating_modules prefix
       end
 

@@ -1,0 +1,16 @@
+name: strict
+version: 0.1.0
+
+authors:
+  - AgentC Consulting <agent_c@agentc.consulting>
+
+description: |
+  Declares the `@[Override]` and `@[TypeOnce]` annotations and the `strict`
+  and `strict/project` require paths, so a strict Crystal file builds on a
+  compiler without strict files.
+
+crystal: ">= 1.0.0"
+
+license: Apache-2.0
+
+repository: https://github.com/crimson-knight/crystal

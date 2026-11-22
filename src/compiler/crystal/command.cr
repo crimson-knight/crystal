@@ -70,17 +70,25 @@ class Crystal::Command
         --help, -h               show this help
     USAGE
 
-  def self.run(options = ARGV)
-    new(options).run
+  # Runs the command line in *options*.
+  #
+  # *codegen_worker_executable* is the compiler executable to start as
+  # object-file workers (see `Compiler#codegen_worker_executable`). Only the
+  # compiler's own main program passes it: a program that embeds the command
+  # is not a compiler executable and compiles objects in-process.
+  def self.run(options = ARGV, *, codegen_worker_executable : String? = nil)
+    GCTuning.configure_from_env
+    new(options, codegen_worker_executable).run
   end
 
   private getter options
   @compiler : Compiler?
 
-  def initialize(@options : Array(String))
+  def initialize(@options : Array(String), @codegen_worker_executable : String? = nil)
     @color = Colorize.default_enabled?(STDOUT, STDERR)
     @error_trace = false
     @progress_tracker = ProgressTracker.new
+    @object_stage_handoff = true
   end
 
   def run
@@ -138,6 +146,15 @@ class Crystal::Command
     when command == "clear_cache"
       options.shift
       clear_cache
+    when command == CodegenWorker::COMMAND
+      # Internal: started by the compiler itself to build object files.
+      CodegenWorker.new.perform
+    when command == Compiler::ObjectStage::COMMAND
+      # Internal: the compiler replaced itself with this to end a build.
+      options.shift
+      object_stage
+      report_warnings
+      exit 1 if warnings_fail_on_exit?
     when command == "watch"
       options.shift
       watch
@@ -269,7 +286,19 @@ class Crystal::Command
 
   private def build
     config = create_compiler "build"
+    config.compiler.object_stage_handoff = @object_stage_handoff
     config.compile
+  end
+
+  # Ends the build another compiler process handed over (see
+  # `Compiler::ObjectStage`): object files, link, reports.
+  private def object_stage
+    handoff_filename = options.first? || abort!("missing the object stage handoff file", :USAGE_ERROR)
+    handoff = Compiler::ObjectStage.read_handoff(handoff_filename)
+    @color = handoff.color?
+    compiler = handoff.to_compiler
+    @compiler = compiler
+    Compiler::ObjectStage.new(handoff, compiler, @progress_tracker).perform
   end
 
   private def hierarchy
@@ -283,6 +312,7 @@ class Crystal::Command
     config = create_compiler "run", run: true, single_file: single_file
     config.compiler.dsymutil = true if config.compiler.dsymutil.nil?
     if config.specified_output
+      config.compiler.object_stage_handoff = @object_stage_handoff
       config.compile
       report_warnings
       exit 1 if warnings_fail_on_exit?
@@ -604,6 +634,23 @@ class Crystal::Command
         opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
           compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
         end
+        opts.on("--object-memory-budget MEGABYTES", "Memory the object file workers may use together (default 512 per thread, at most a fifth of this machine's memory)") do |megabytes|
+          megabyte_count = megabytes.to_i64? || raise Error.new("Invalid object memory budget: #{megabytes}")
+          raise Error.new("Invalid object memory budget: #{megabytes}") if megabyte_count < 1
+          compiler.codegen_worker_memory_budget_bytes = megabyte_count * 1024 * 1024
+        end
+        opts.on("--no-object-stage-handoff", "Build object files and link from the compiler process that generated the code") do
+          @object_stage_handoff = false
+        end
+        opts.on("--resident-ir-mb NUM", "Keep at most about NUM megabytes of LLVM IR in memory during IR generation, spilling idle modules to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_IR_MEGABYTES}, 0 is no limit)") do |resident_ir_megabytes|
+          compiler.resident_ir_megabytes = resident_ir_megabytes.to_i? || raise Error.new("Invalid amount of resident IR: #{resident_ir_megabytes}")
+        end
+        opts.on("--resident-modules NUM", "Keep at most NUM idle LLVM modules in memory during IR generation, spilling the others to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_MODULES}, 0 is no limit)") do |resident_modules|
+          compiler.resident_modules = resident_modules.to_i? || raise Error.new("Invalid resident module count: #{resident_modules}")
+        end
+        opts.on("--module-segment-instructions NUM", "Compile a type whose functions hold more than NUM LLVM instructions as several object files (default #{Crystal::Compiler::DEFAULT_MODULE_SEGMENT_INSTRUCTIONS}, 0 is one object file per type)") do |module_segment_instructions|
+          compiler.module_segment_instructions = module_segment_instructions.to_i? || raise Error.new("Invalid number of instructions per module segment: #{module_segment_instructions}")
+        end
         unless run
           opts.on("--target TRIPLE", "Target triple") do |triple|
             compiler.codegen_target = Codegen::Target.new(triple)
@@ -696,6 +743,9 @@ class Crystal::Command
 
     abort! "maximum number of threads cannot be lower than 1", :USAGE_ERROR if compiler.n_threads < 1
     abort! "number of release units cannot be lower than 1", :USAGE_ERROR if compiler.release_units < 1
+    abort! "number of resident modules cannot be lower than 0", :USAGE_ERROR if compiler.resident_modules < 0
+    abort! "megabytes of resident IR cannot be lower than 0", :USAGE_ERROR if compiler.resident_ir_megabytes < 0
+    abort! "instructions per module segment cannot be lower than 0", :USAGE_ERROR if compiler.module_segment_instructions < 0
 
     if compiler.no_cache? && compiler.incremental?
       raise CompilerError.new("--no-cache and --incremental are mutually exclusive", :USAGE_ERROR)
@@ -761,6 +811,15 @@ class Crystal::Command
     end
     opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
       compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
+    end
+    opts.on("--resident-ir-mb NUM", "Keep at most about NUM megabytes of LLVM IR in memory during IR generation, spilling idle modules to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_IR_MEGABYTES}, 0 is no limit)") do |resident_ir_megabytes|
+      compiler.resident_ir_megabytes = resident_ir_megabytes.to_i? || raise Error.new("Invalid amount of resident IR: #{resident_ir_megabytes}")
+    end
+    opts.on("--resident-modules NUM", "Keep at most NUM idle LLVM modules in memory during IR generation, spilling the others to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_MODULES}, 0 is no limit)") do |resident_modules|
+      compiler.resident_modules = resident_modules.to_i? || raise Error.new("Invalid resident module count: #{resident_modules}")
+    end
+    opts.on("--module-segment-instructions NUM", "Compile a type whose functions hold more than NUM LLVM instructions as several object files (default #{Crystal::Compiler::DEFAULT_MODULE_SEGMENT_INSTRUCTIONS}, 0 is one object file per type)") do |module_segment_instructions|
+      compiler.module_segment_instructions = module_segment_instructions.to_i? || raise Error.new("Invalid number of instructions per module segment: #{module_segment_instructions}")
     end
     opts.on("-s", "--stats", "Enable statistics output") do
       compiler.progress_tracker.stats = true
@@ -915,6 +974,8 @@ class Crystal::Command
   end
 
   private def new_compiler
-    @compiler = Compiler.new
+    compiler = Compiler.new
+    compiler.codegen_worker_executable = @codegen_worker_executable
+    @compiler = compiler
   end
 end

@@ -2,62 +2,95 @@ module Crystal
   # Specialized container for ASTNodes to use for bindings tracking.
   #
   # The average number of elements in both dependencies and observers is below 2
-  # for ASTNodes. This struct inlines the first two elements saving up 4
-  # allocations per node (two arrays, with a header and buffer for each) but we
-  # need to pay a slight extra cost in memory upfront: a total of 6 pointers (48
-  # bytes) vs 2 pointers (16 bytes). The other downside is that since this is a
-  # struct, we need to be careful with mutation.
+  # for ASTNodes. This struct holds the first two elements inline, so a node
+  # with up to two dependencies or observers allocates nothing for them, and it
+  # costs two pointers (16 bytes) per list. The second slot holds either the
+  # second element or, from the third element on, an array with every element
+  # after the first. Since this is a struct, we need to be careful with mutation.
   struct SmallNodeList
     include Enumerable(ASTNode)
 
     @first : ASTNode?
-    @second : ASTNode?
-    @tail : Array(ASTNode)?
+    @rest : ASTNode | Array(ASTNode) | Nil
 
     def each(& : ASTNode ->)
       yield @first || return
-      yield @second || return
-      @tail.try(&.each { |node| yield node })
+      rest = @rest
+      if rest.is_a?(ASTNode)
+        yield rest
+        # The block may have pushed more elements: they now live in an array
+        # whose first element is the one just yielded.
+        rest = @rest
+        if rest.is_a?(Array(ASTNode))
+          index = 1
+          while index < rest.size
+            yield rest.unsafe_fetch(index)
+            index += 1
+          end
+        end
+      elsif rest.is_a?(Array(ASTNode))
+        rest.each { |node| yield node }
+      end
     end
 
     def size
       if @first.nil?
         0
-      elsif @second.nil?
-        1
-      elsif (tail = @tail).nil?
-        2
       else
-        2 + tail.size
+        rest = @rest
+        if rest.is_a?(Array(ASTNode))
+          1 + rest.size
+        elsif rest
+          2
+        else
+          1
+        end
       end
+    end
+
+    def empty? : Bool
+      @first.nil?
+    end
+
+    def first : ASTNode
+      @first || raise Enumerable::EmptyError.new
     end
 
     def push(node : ASTNode) : self
       if @first.nil?
         @first = node
-      elsif @second.nil?
-        @second = node
-      elsif (tail = @tail).nil?
-        @tail = [node] of ASTNode
       else
-        tail.push(node)
+        rest = @rest
+        if rest.is_a?(Array(ASTNode))
+          rest.push(node)
+        elsif rest
+          @rest = [rest, node] of ASTNode
+        else
+          @rest = node
+        end
       end
       self
     end
 
     def reject!(& : ASTNode ->) : self
-      if first = @first
-        if second = @second
-          if tail = @tail
-            tail.reject! { |node| yield node }
-          end
-          if yield second
-            @second = tail.try &.shift?
-          end
+      first = @first || return self
+      rest = @rest
+      if rest.is_a?(Array(ASTNode))
+        rest.reject! { |node| yield node }
+        if yield first
+          @first = rest.shift?
+        end
+        case rest.size
+        when 0 then @rest = nil
+        when 1 then @rest = rest.unsafe_fetch(0)
+        end
+      else
+        if rest && yield rest
+          @rest = rest = nil
         end
         if yield first
-          @first = @second
-          @second = tail.try &.shift?
+          @first = rest
+          @rest = nil
         end
       end
       self
@@ -67,14 +100,34 @@ module Crystal
       nodes.each { |node| self.push(node) }
       self
     end
+
+    # Puts *new* in the place of the first element that is *old*, keeping
+    # every other element where it is, and says whether it found one. An
+    # iteration that is under way stays valid.
+    def replace_first(old : ASTNode, new : ASTNode) : Bool
+      if @first.same?(old)
+        @first = new
+        return true
+      end
+      rest = @rest
+      if rest.is_a?(Array(ASTNode))
+        index = rest.index { |node| node.same?(old) }
+        return false unless index
+        rest[index] = new
+        true
+      elsif rest.same?(old)
+        @rest = new
+        true
+      else
+        false
+      end
+    end
   end
 
   class ASTNode
     getter dependencies : SmallNodeList = SmallNodeList.new
     @observers : SmallNodeList = SmallNodeList.new
     property enclosing_call : Call?
-
-    @dirty = false
 
     @type : Type?
 
@@ -243,6 +296,20 @@ module Crystal
       @observers.try &.reject! &.same?(observer)
     end
 
+    # Drops this node's type-inference edges and keeps its type.
+    #
+    # Codegen reads types, not edges, so once semantic analysis is over the
+    # edges only keep other nodes alive (a released def body stays reachable
+    # through the vars that observe it). When this node depends on
+    # *nil_marker*, that single dependency is kept: codegen checks local vars
+    # for it (`CodeGenVisitor#bound_to_mod_nil?`).
+    def release_bindings(nil_marker : ASTNode? = nil) : Nil
+      keeps_nil_marker = nil_marker && @dependencies.any?(&.same?(nil_marker))
+      @dependencies = SmallNodeList.new
+      @observers = SmallNodeList.new
+      @dependencies.push(nil_marker) if nil_marker && keeps_nil_marker
+    end
+
     def set_enclosing_call(enclosing_call)
       current_enclosing_call = @enclosing_call
       if current_enclosing_call
@@ -262,10 +329,75 @@ module Crystal
     end
 
     def notify_observers
+      was_notifying_observers = notifying_observers?
+      self.notifying_observers = true
       @observers.try &.each &.update self
       @enclosing_call.try &.recalculate
       @observers.try &.each &.propagate
       @enclosing_call.try &.propagate
+      self.notifying_observers = was_notifying_observers
+    end
+
+    # Is `notify_observers` walking this node's observers right now? Taking
+    # an observer out of the list would make that walk skip one, so whoever
+    # wants to take one out leaves it alone while this is true. (When an
+    # error unwinds the walk this stays true, which only keeps a node alive.)
+    def notifying_observers? : Bool
+      @flags & NOTIFYING_OBSERVERS_FLAG != 0
+    end
+
+    private def notifying_observers=(value : Bool)
+      if value
+        @flags |= NOTIFYING_OBSERVERS_FLAG
+      else
+        @flags &= ~NOTIFYING_OBSERVERS_FLAG
+      end
+    end
+
+    # Bit 7 of `@flags`; `flag_property?` users take the low bits.
+    private NOTIFYING_OBSERVERS_FLAG = 0x80_u8
+
+    # Makes this node depend on *new* where it depended on *old*. The two
+    # have the same type, so this node's type stays as it is.
+    def replace_dependency(old : ASTNode, new : ASTNode) : Nil
+      @dependencies.replace_first(old, new)
+    end
+
+    # Takes this node out of a chain `observers -> self -> dependency`: every
+    # observer now depends on the dependency directly, and nothing reaches
+    # this node through type-inference edges any more. The caller makes sure
+    # this node has exactly one dependency and the same type as it, so no
+    # type changes.
+    #
+    # Returns false, changing nothing, when the node has no observers and the
+    # dependency is notifying its observers (see `notifying_observers?`).
+    def splice_out_of_bindings : Bool
+      dependency = @dependencies.first
+      observers = @observers
+      if observers.empty?
+        return false if dependency.notifying_observers?
+        dependency.remove_observer(self)
+      else
+        # The first observer takes this node's place in the dependency's
+        # list, the others go to its end: nothing in the list moves.
+        first = true
+        observers.each do |observer|
+          observer.replace_dependency(self, dependency)
+          if first
+            first = false
+            dependency.replace_observer(self, observer)
+          else
+            dependency.add_observer(observer)
+          end
+        end
+      end
+      @observers = SmallNodeList.new
+      @dependencies = SmallNodeList.new
+      true
+    end
+
+    protected def replace_observer(old : ASTNode, new : ASTNode) : Nil
+      @observers.replace_first(old, new) || @observers.push(new)
     end
 
     def update(from = nil)

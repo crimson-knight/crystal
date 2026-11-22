@@ -47,6 +47,33 @@ class Crystal::CodeGenVisitor
     end
   end
 
+  # Converts a call's receiver or argument to the type the target def was
+  # typed with. A `@[TypeOnce]` def can declare a wider type than the
+  # call passes, which is an upcast; every other def gets the usual downcast.
+  private def type_once_cast(target_def : Def, value : LLVM::Value, to_type : Type, from_type : Type) : LLVM::Value
+    if target_def.type_once?
+      from = from_type.remove_indirection
+      to = to_type.remove_indirection
+      if from != to && !from.is_a?(VoidType) && type_once_upcast?(from, to)
+        return upcast(value, to_type, from_type)
+      end
+    end
+    downcast(value, to_type, from_type, true)
+  end
+
+  private def type_once_upcast?(from : Type, to : Type) : Bool
+    if from.is_a?(UnionType)
+      to.is_a?(UnionType) && from.union_types.all? { |member| to.union_types.includes?(member) || to.union_types.any? { |wide| type_once_upcast?(member, wide) } }
+    elsif to.is_a?(UnionType)
+      to.union_types.includes?(from) || to.union_types.any? { |wide| wide.is_a?(VirtualType) && type_once_upcast?(from, wide) }
+    elsif to.is_a?(VirtualType)
+      from = from.base_type if from.is_a?(VirtualType)
+      from.implements?(to.base_type)
+    else
+      false
+    end
+  end
+
   def prepare_call_args_non_external(node, target_def, owner)
     is_primitive = target_def.body.is_a?(Primitive)
 
@@ -76,10 +103,13 @@ class Crystal::CodeGenVisitor
         call_args << llvm_nil
       else
         if obj && obj.type.passed_as_self?
-          call_args << downcast(@last, target_def.owner, obj.type, true)
+          call_args << type_once_cast(target_def, @last, target_def.owner, obj.type)
         else
           if node.uses_with_scope? && (yield_scope = context.vars["%scope"]?)
             call_args << downcast(yield_scope.pointer, target_def.owner, node.with_scope.not_nil!, true)
+          elsif target_def.type_once? && (self_var = context.vars["self"]?)
+            # An implicit call on `self` from a subclass's own copy.
+            call_args << type_once_cast(target_def, self_var.pointer, owner, self_var.type)
           else
             call_args << llvm_self(owner)
           end
@@ -98,13 +128,17 @@ class Crystal::CodeGenVisitor
       else
         call_arg = @last
         call_arg = llvm_nil if arg.type.nil_type?
-        call_arg = downcast(call_arg, def_arg.type, arg.type, true)
+        call_arg = type_once_cast(target_def, call_arg, def_arg.type, arg.type)
       end
+
+      # A `@[TypeOnce]` parameter can be wider than the argument: the value is
+      # then passed in the parameter's representation.
+      passed_type = target_def.type_once? ? def_arg.type : arg.type
 
       # - C calling convention passing needs a separate handling of pass-by-value
       # - Primitives might need a separate handling (for example invoking a Proc)
-      if arg.type.passed_by_value? && !c_calling_convention && !is_primitive
-        call_arg = load(llvm_type(arg.type), call_arg)
+      if passed_type.passed_by_value? && !c_calling_convention && !is_primitive
+        call_arg = load(llvm_type(passed_type), call_arg)
       end
 
       call_args << call_arg
@@ -247,8 +281,8 @@ class Crystal::CodeGenVisitor
       final_value = alloca cast
       final_value_casted = cast_to_void_pointer final_value
       gep_call_arg = cast_to_void_pointer gep(llvm_type(call_arg_type), call_arg, 0, 0)
-      size = @abi.size(abi_arg_type.type)
-      align = @abi.align(abi_arg_type.type)
+      size = abi.size(abi_arg_type.type)
+      align = abi.align(abi_arg_type.type)
       memcpy(final_value_casted, gep_call_arg, size_t(size), align, int1(0))
       call_arg = load cast, final_value
     else
@@ -263,8 +297,8 @@ class Crystal::CodeGenVisitor
     final_value = alloca abi_arg_type.type
     final_value_casted = cast_to_void_pointer final_value
     call_arg_casted = cast_to_void_pointer call_arg
-    size = @abi.size(abi_arg_type.type)
-    align = @abi.align(abi_arg_type.type)
+    size = abi.size(abi_arg_type.type)
+    align = abi.align(abi_arg_type.type)
     memcpy(final_value_casted, call_arg_casted, size_t(size), align, int1(0))
     final_value
   end
@@ -547,8 +581,8 @@ class Crystal::CodeGenVisitor
             cast2 = cast_to_void_pointer(cast1)
             final_value = alloca abi_return.type
             final_value_casted = cast_to_void_pointer final_value
-            size = @abi.size(abi_return.type)
-            align = @abi.align(abi_return.type)
+            size = abi.size(abi_return.type)
+            align = abi.align(abi_return.type)
             memcpy(final_value_casted, cast2, size_t(size), align, int1(0))
             @last = final_value
           end

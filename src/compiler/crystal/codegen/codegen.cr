@@ -153,14 +153,24 @@ module Crystal
     end
 
     def codegen(node, single_module = false, debug = Debug::Default,
-                frame_pointers = FramePointers::Auto)
+                frame_pointers = FramePointers::Auto, release_typed_bodies = false,
+                module_spill : ModuleSpill? = nil, module_segment_instructions : Int64 = 0_i64)
+      LLVMTyper.reset_closure_counter
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
+      visitor.release_typed_bodies = release_typed_bodies
+      visitor.release_shared_bodies
+      # `DUMP` prints every module when code generation finishes, so they
+      # all stay in memory.
+      visitor.module_spill = module_spill unless single_module || ENV["DUMP"]?
+      visitor.module_segment_instructions = module_segment_instructions unless single_module
       visitor.accept node
       visitor.process_finished_hooks
       visitor.finish
+      visitor.run_peak_probe(node) if PeakProbe.enabled?
+      visitor.report_owner_shape_sharing
 
-      {visitor.modules, visitor.module_source_files}
+      visitor.modules
     end
 
     def llvm_id
@@ -221,6 +231,21 @@ module Crystal
     getter builder : CrystalLLVMBuilder
     getter main : LLVM::Function
     getter modules : Hash(String, ModuleInfo)
+
+    # When set, the body of each typed def is replaced by a `ReleasedBody`
+    # once its function is generated (see `ReleasedBody`).
+    property? release_typed_bodies = false
+    @released_body_count = 0
+
+    # Released bodies between two collections that return free heap pages
+    # to the OS (`CRYSTAL_RELEASED_BODIES_PER_UNMAP` overrides it for
+    # measuring; 0 turns these collections off).
+    @released_bodies_per_unmap : Int32 = ENV["CRYSTAL_RELEASED_BODIES_PER_UNMAP"]?.try(&.to_i?) || RELEASED_BODIES_PER_UNMAP
+
+    # The groups of typed defs that share one function, or `nil` when sharing
+    # is off (see `OwnerShapeSharing`).
+    getter owner_shape_sharing : OwnerShapeSharing?
+    getter generated_fun_count = 0
     getter context : Context
     getter llvm_typer : LLVMTyper
     getter alloca_block : LLVM::BasicBlock
@@ -250,8 +275,6 @@ module Crystal
     alias LLVMVars = Hash(String, LLVMVar)
 
     record Handler, node : ExceptionHandler, context : Context
-    record StringKey, mod : LLVM::Module, string : String
-    record ModuleInfo, mod : LLVM::Module, typer : LLVMTyper, builder : CrystalLLVMBuilder
 
     @abi : ABI
     @main_ret_type : Type
@@ -259,12 +282,13 @@ module Crystal
     @argv : LLVM::Value
     @rescue_block : LLVM::BasicBlock?
     @catch_pad : LLVM::Value?
-    @fun_types : Hash({LLVM::Module, String}, LLVM::Type)
     @sret_value : LLVM::Value?
     @cant_pass_closure_to_c_exception_call : Call?
     @main_llvm_context : LLVM::Context
     @main_llvm_typer : LLVMTyper
     @main_module_info : ModuleInfo
+    # The module code is being generated into (the one `@llvm_mod` belongs to).
+    @module_info : ModuleInfo
     @main_builder : CrystalLLVMBuilder
     @call_location : Location?
 
@@ -276,30 +300,31 @@ module Crystal
     @c_malloc_fun : LLVMTypedFunction?
     @c_realloc_fun : LLVMTypedFunction?
 
-    # Tracks which source files contribute methods/defs to each LLVM module.
-    # Module name => set of source filenames. Used for incremental compilation:
-    # if all contributing files are unchanged, the module's cached .o can be reused
-    # without regenerating LLVM IR.
-    getter module_source_files = Hash(String, Set(String)).new
-
     def initialize(@program : Program, @node : ASTNode,
                    @single_module : Bool = false,
                    @debug = Debug::Default,
                    @frame_pointers : FramePointers = :auto,
                    @llvm_context : LLVM::Context = LLVM::Context.new)
       @abi = ABI.from(@program.target_machine)
+      if @program.share_owner_shapes?
+        @owner_shape_sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
+      end
       # LLVM::Context.register(@llvm_context, "main")
       @llvm_mod = configure_module(@llvm_context.new_module("main_module"))
       @main_mod = @llvm_mod
       @main_llvm_context = @main_mod.context
-      @llvm_typer = LLVMTyper.new(@program, @llvm_context)
+      @llvm_typer = LLVMTyper.new(@program, @llvm_context, data_layout: @main_mod.data_layout)
       @main_llvm_typer = @llvm_typer
+      @main_module_info = ModuleInfo.new("", @main_mod, @main_llvm_typer)
+      # The main module is in use for the whole code generation.
+      @main_module_info.pin_count = 1
+      @module_info = @main_module_info
       @main_ret_type = node.type? || @program.nil_type
       ret_type = @llvm_typer.llvm_return_type(@main_ret_type)
       main_type = LLVM::Type.function([llvm_context.int32, llvm_context.void_pointer.pointer], ret_type)
       @main = @llvm_mod.functions.add(MAIN_NAME, main_type)
       @main.linkage = LLVM::Linkage::Internal if @single_module
-      @fun_types = { {@llvm_mod, MAIN_NAME} => main_type }
+      @main_module_info.fun_types[MAIN_NAME] = main_type
 
       if @program.has_flag?("msvc")
         @personality_name = "__CxxFrameHandler3"
@@ -325,10 +350,10 @@ module Crystal
       @argv = @main.params[1]
       @argv.name = "argv"
 
-      @builder = new_builder(@main_llvm_context)
+      @builder = new_builder(@main_module_info)
       @main_builder = @builder
+      @main_module_info.builder = @builder
 
-      @main_module_info = ModuleInfo.new(@main_mod, @main_llvm_typer, @builder)
       @modules = {"" => @main_module_info} of String => ModuleInfo
       @types_to_modules = {} of Type => ModuleInfo
 
@@ -337,7 +362,6 @@ module Crystal
       @alloca_block, @entry_block = new_entry_block_chain "alloca", "entry"
 
       @in_lib = false
-      @strings = {} of StringKey => LLVM::Value
       @symbols = {} of String => Int32
       @symbols_by_index = [] of String
       @symbol_table_values = [] of LLVM::Value
@@ -393,6 +417,13 @@ module Crystal
 
     getter llvm_context
 
+    # The C ABI, computing sizes with the data layout of the module code is
+    # being generated into.
+    private def abi : ABI
+      @abi.target_data = @llvm_typer.data_layout
+      @abi
+    end
+
     def configure_module(llvm_mod)
       llvm_mod.data_layout = @program.target_machine.data_layout
 
@@ -417,8 +448,9 @@ module Crystal
       llvm_mod
     end
 
-    def new_builder(llvm_context)
-      wrap_builder(llvm_context.new_builder)
+    # A builder for the module of *module_info*, in that module's context.
+    def new_builder(module_info : ModuleInfo)
+      CrystalLLVMBuilder.new module_info.mod.context.new_builder, module_info.typer, -> { c_printf_fun }
     end
 
     # Here we only initialize simple constants, those
@@ -463,10 +495,6 @@ module Crystal
         ptr.null,
         int32.const_int(0),
       ])
-    end
-
-    def wrap_builder(builder)
-      CrystalLLVMBuilder.new builder, llvm_typer, c_printf_fun
     end
 
     def define_symbol_table(llvm_mod, llvm_typer)
@@ -574,7 +602,30 @@ module Crystal
       context.type.not_nil!
     end
 
+    # Prints the sharing counters to standard error when
+    # `CRYSTAL_OWNER_SHAPES_STATS` is set.
+    def report_owner_shape_sharing : Nil
+      return unless ENV["CRYSTAL_OWNER_SHAPES_STATS"]?.presence
+      if sharing = @owner_shape_sharing
+        stats = sharing.stats
+        STDERR.printf("owner shapes: %d typed defs, %d groups, %d share another def's function, %d unshareable, %d pinned, %d bodies released, %d rounds, %.1f s\n",
+          stats.typed_defs, stats.groups, stats.shared, stats.unshareable, stats.pinned, stats.released_bodies, stats.rounds, stats.seconds)
+      end
+      STDERR.printf("owner shapes: %d LLVM functions generated\n", @generated_fun_count)
+      if sharing && (pattern = ENV["CRYSTAL_OWNER_SHAPES_DEBUG"]?.presence)
+        regex = Regex.new(pattern)
+        sharing.shapes.each do |shape|
+          typed_def = shape.typed_def
+          label = "#{typed_def.owner?}##{typed_def.name}"
+          next unless label.matches?(regex)
+          representative = sharing.representative?(typed_def)
+          STDERR.puts "owner shapes: #{label} shareable=#{shape.shareable?} pinned=#{shape.pinned?} group=#{shape.first.to_s(16)} function=#{representative ? representative.owner.to_s : "own"} blocker=#{shape.blocker}"
+        end
+      end
+    end
+
     def finish
+      trace_peak("finish begins")
       clear_current_debug_location if @debug.line_numbers?
       codegen_return @main_ret_type
 
@@ -601,8 +652,12 @@ module Crystal
       end
 
       @modules.each do |name, info|
+        # A module part on disk was finished when it was written, and is
+        # verified when its compilation unit is built.
+        next unless info.resident?
+
         mod = info.mod
-        push_debug_info_metadata(mod) unless @debug.none?
+        finish_module_debug_info(info) unless @debug.none?
 
         mod.dump if dump_all_llvm || name =~ dump_llvm_regex
 
@@ -612,7 +667,10 @@ module Crystal
         mod.verify
       end
 
+      trace_peak("modules verified")
       dispose_di_builders
+      spill_last_parts_of_spilled_modules
+      trace_peak("last parts written")
 
       if type_info_path = ENV["CRYSTAL_DUMP_TYPE_INFO"]?.presence
         dump_type_info(type_info_path)
@@ -1697,7 +1755,7 @@ module Crystal
       ids = @program.llvm_id.@ids
       id_map = Array(LLVM::Value).new(size: ids.size, value: LLVM::Value.null)
       ids.each do |type, (_, type_id)|
-        id_map[type_id] = build_string_constant(type.to_s, llvm_mod: @main_mod, llvm_typer: @main_llvm_typer)
+        id_map[type_id] = build_string_constant(type.to_s, module_info: @main_module_info)
       end
 
       @main_llvm_typer.llvm_type(@program.string).const_array(id_map)
@@ -1910,6 +1968,10 @@ module Crystal
       false
     end
 
+    def visit(node : ReleasedBody)
+      raise "BUG: reached a def body that was released after its function was generated"
+    end
+
     def check_proc_is_not_closure(value, type)
       check_fun_name = "~check_proc_is_not_closure"
       func = typed_fun?(@main_mod, check_fun_name) || create_check_proc_is_not_closure_fun(check_fun_name)
@@ -1960,6 +2022,7 @@ module Crystal
       old_builder = self.builder
       old_position = old_builder.insert_block
       old_llvm_mod = @llvm_mod
+      old_module_info = @module_info
       old_llvm_context = @llvm_context
       old_llvm_typer = @llvm_typer
       old_fun = context.fun
@@ -1973,6 +2036,7 @@ module Crystal
       old_debug_location = @current_debug_location
 
       @llvm_mod = @main_mod
+      @module_info = @main_module_info
       @llvm_context = @main_llvm_context
       @llvm_typer = @main_llvm_typer
       @builder = @main_builder
@@ -1989,6 +2053,7 @@ module Crystal
       position_at_end old_position
 
       @llvm_mod = old_llvm_mod
+      @module_info = old_module_info
       @llvm_context = old_llvm_context
       @llvm_typer = old_llvm_typer
       @ensure_exception_handlers = old_ensure_exception_handlers
@@ -2612,12 +2677,13 @@ module Crystal
       @last = last
     end
 
-    def build_string_constant(str, name = "str", *, llvm_mod = @llvm_mod, llvm_typer = @llvm_typer)
+    def build_string_constant(str, name = "str", *, module_info = @module_info)
+      llvm_mod = module_info.mod
+      llvm_typer = module_info.typer
       name = "#{name[0..18]}..." if name.bytesize > 18
       name = name.gsub '@', '.'
       name = "'#{name}'"
-      key = StringKey.new(llvm_mod, str)
-      @strings.put_if_absent(key) do
+      module_info.strings.put_if_absent(str) do
         llvm_context = llvm_mod.context
         global = llvm_mod.globals.add(llvm_typer.llvm_string_type(str.bytesize), name.gsub('\\', "\\\\"))
         global.linkage = LLVM::Linkage::Private

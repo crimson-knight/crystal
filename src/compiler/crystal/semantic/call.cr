@@ -5,12 +5,67 @@ require "./type_lookup"
 
 class Crystal::Call
   property! scope : Type
-  property with_scope : Type?
+  rare_property with_scope : Type?
   property! parent_visitor : MainVisitor
-  property target_defs : Array(Def)?
-  property expanded : ASTNode?
-  property expanded_macro : Macro?
-  property? uses_with_scope = false
+  # The defs this call resolved to. Nearly every call resolves to a single
+  # def, which is stored directly; only a dispatch over several defs (or an
+  # empty match list) keeps an array.
+  @target_defs : Def | Array(Def) | Nil
+
+  def target_defs : Array(Def)?
+    defs = @target_defs
+    defs.is_a?(Def) ? [defs] of Def : defs
+  end
+
+  def target_defs=(defs : Array(Def)?)
+    @target_defs = defs && defs.size == 1 ? defs.unsafe_fetch(0) : defs
+  end
+
+  # Drops what only type inference reads: the visitor that typed this call
+  # and the variables in scope before its block (see
+  # `InferenceEdgeReleaser`).
+  def release_inference_state : Nil
+    @parent_visitor = nil
+    self.before_vars = nil
+  end
+
+  # Yields each def this call resolved to, without building an array.
+  def each_target_def(& : Def ->) : Nil
+    defs = @target_defs
+    if defs.is_a?(Def)
+      yield defs
+    elsif defs
+      defs.each { |a_def| yield a_def }
+    end
+  end
+
+  rare_property expanded : ASTNode?
+  rare_property expanded_macro : Macro?
+  rare_property subclass_notifier : Type?
+
+  class RareFields
+    property? uses_with_scope = false
+    property? block_instance_sharing_disabled = false
+  end
+
+  def uses_with_scope? : Bool
+    rare_fields = @rare_fields
+    rare_fields ? rare_fields.uses_with_scope? : false
+  end
+
+  def uses_with_scope=(value : Bool)
+    if value || @rare_fields
+      rare_fields.uses_with_scope = value
+    end
+    value
+  end
+
+  # Set once this call's block type stopped matching a shared typed def: the
+  # call keeps a private clone from then on (see `BlockInstance`).
+  def block_instance_sharing_disabled? : Bool
+    rare_fields = @rare_fields
+    rare_fields ? rare_fields.block_instance_sharing_disabled? : false
+  end
 
   class RetryLookupWithLiterals < ::Exception
     def initialize
@@ -23,13 +78,9 @@ class Crystal::Call
   end
 
   def target_def
-    if defs = @target_defs
-      if defs.size == 1
-        return defs.first
-      else
-        ::raise "#{defs.size} target defs for #{self}"
-      end
-    end
+    defs = @target_defs
+    return defs if defs.is_a?(Def)
+    ::raise "#{defs.size} target defs for #{self}" if defs
 
     ::raise "Zero target defs for #{self}"
   end
@@ -81,25 +132,59 @@ class Crystal::Call
 
     block = @block
 
-    unbind_from @target_defs if @target_defs
+    detach_block_instance_watchers(block) if block && @target_defs
+
+    # This is a recalculation fired by the lookup of an outer recalculation
+    # of this call, which left the call bound (see below).
+    unbind_kept_target_defs
+
+    old_target_defs = @target_defs
+    if old_target_defs && !block && !self.block_arg && bound_to_target_defs_only?(old_target_defs)
+      # Most recalculations find the target defs the call already has (a new
+      # generic instance makes every call on a virtual type above it look
+      # again). Unbinding from each def now and binding to the same defs
+      # afterwards walks all their observer lists twice, so the call stays
+      # bound and deaf to its defs during the lookup, and is only unbound if
+      # the lookup finds something else.
+      self.keeps_target_defs_bound = true
+    elsif old_target_defs
+      unbind_from old_target_defs
+    end
     unbind_from block.break if block
 
     @target_defs = nil
 
-    if block_arg = @block_arg
+    if block_arg = self.block_arg
       replace_block_arg_with_block(block_arg)
     end
 
-    matches = lookup_matches
+    begin
+      matches = lookup_matches
+    rescue ex
+      unbind_kept_target_defs
+      ::raise ex
+    end
 
     # If @target_defs is set here it means there was a recalculation
     # fired as a result of a recalculation. We keep the last one.
 
     return if @target_defs
 
-    @target_defs = matches
+    self.target_defs = matches
 
-    bind_to matches if matches
+    if keeps_target_defs_bound?
+      self.keeps_target_defs_bound = false
+      if bound_to?(matches)
+        # The same defs: take in what they have to say now, as binding to
+        # them again would.
+        bind { }
+      else
+        unbind_from_all_dependencies
+        bind_to matches if matches
+      end
+    elsif matches
+      bind_to matches
+    end
     bind_to block.break if block
 
     if (parent_visitor = @parent_visitor) && matches
@@ -110,6 +195,44 @@ class Crystal::Call
         end
       end
     end
+  end
+
+  # Set while `recalculate` looks matches up without having unbound this call
+  # from its target defs first.
+  flag_property? keeps_target_defs_bound, 1
+
+  # Target defs tell a call their type through `update`. A call that kept
+  # its defs bound during a lookup does not listen, as if it were unbound.
+  def update(from = nil)
+    return if keeps_target_defs_bound?
+    super
+  end
+
+  private def unbind_kept_target_defs : Nil
+    return unless keeps_target_defs_bound?
+    self.keeps_target_defs_bound = false
+    unbind_from_all_dependencies
+  end
+
+  private def unbind_from_all_dependencies : Nil
+    @dependencies.each &.remove_observer(self)
+    @dependencies = SmallNodeList.new
+  end
+
+  # Are *target_defs* everything this call depends on?
+  private def bound_to_target_defs_only?(target_defs : Def | Array(Def)) : Bool
+    @dependencies.size == (target_defs.is_a?(Def) ? 1 : target_defs.size)
+  end
+
+  # Is this call bound to exactly *defs*, in this order?
+  private def bound_to?(defs : Array(Def)?) : Bool
+    return false unless defs && defs.size == @dependencies.size
+    index = 0
+    @dependencies.each do |dependency|
+      return false unless dependency.same?(defs.unsafe_fetch(index))
+      index += 1
+    end
+    true
   end
 
   def lookup_matches
@@ -195,7 +318,7 @@ class Crystal::Call
       lookup_super_matches(arg_types, named_args_types, with_autocast: with_autocast)
     elsif name == "previous_def"
       lookup_previous_def_matches(arg_types, named_args_types, with_autocast: with_autocast)
-    elsif with_scope = @with_scope
+    elsif with_scope = self.with_scope
       lookup_matches_with_scope_in with_scope, arg_types, named_args_types, with_autocast: with_autocast
     else
       lookup_matches_in scope, arg_types, named_args_types, with_autocast: with_autocast
@@ -247,11 +370,11 @@ class Crystal::Call
     end
 
     if matches.empty?
-      @uses_with_scope = false
+      self.uses_with_scope = false
       return lookup_matches_in scope, arg_types, named_args_types, with_autocast: with_autocast
     end
 
-    @uses_with_scope = true
+    self.uses_with_scope = true
     instantiate signature, matches, owner, self_type: nil, with_autocast: with_autocast
   end
 
@@ -276,11 +399,11 @@ class Crystal::Call
       defined_method_missing = owner.check_method_missing(signature, self)
       if defined_method_missing
         matches = owner.lookup_matches(signature, analyze_all: with_autocast)
-      elsif with_scope = @with_scope
+      elsif with_scope = self.with_scope
         defined_method_missing = with_scope.check_method_missing(signature, self)
         if defined_method_missing
           matches = with_scope.lookup_matches(signature, analyze_all: with_autocast)
-          @uses_with_scope = true
+          self.uses_with_scope = true
         end
       end
     end
@@ -369,8 +492,15 @@ class Crystal::Call
 
     typed_defs = Array(Def).new(matches.size)
 
+    single_match = matches.size == 1
+
     matches.each do |match|
       check_visibility match
+
+      # A `@[TypeOnce]` def is typed for the types it declares.
+      called_match = match
+      match = type_once_match(match, self_type, single_match)
+      typed_once = !match.same?(called_match)
 
       yield_vars, block_arg_type = match_block_arg(match)
       use_cache = !block || match.def.block_arg
@@ -397,19 +527,42 @@ class Crystal::Call
       def_instance_key = DefInstanceKey.new(match.def.object_id, lookup_arg_types, block_type, named_args_types)
       typed_def = def_instance_owner.lookup_def_instance def_instance_key if use_cache
 
+      # A def that yields to this call's block is shared with the other calls
+      # that have the same def, argument types and block type.
+      shares_block_instance = block && !use_cache && shares_block_instance?(match.def, block)
+      if block && shares_block_instance
+        typed_def = lookup_shared_block_instance(def_instance_owner, def_instance_key, block, yield_vars)
+      end
+
+      # Record file-level dependency for incremental compilation.
+      # If a call in file A resolves to a def in file B, then A depends on B.
+      if program.compiler.try(&.incremental?) &&
+         (call_loc = self.location) && (def_loc = match.def.location)
+        call_file = call_loc.original_filename
+        def_file = def_loc.original_filename
+        if call_file && def_file && call_file != def_file
+          program.file_dependencies[call_file].add(def_file)
+        end
+      end
+
+      newly_typed_def = nil
       unless typed_def
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
+        newly_typed_def = typed_def
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
-
-        # Record file-level dependency for incremental compilation.
-        # If a call in file A resolves to a def in file B, then A depends on B.
-        if program.compiler.try(&.incremental?) &&
-           (call_loc = self.location) && (def_loc = match.def.location)
-          call_file = call_loc.original_filename
-          def_file = def_loc.original_filename
-          if call_file && def_file && call_file != def_file
-            program.file_dependencies[call_file].add(def_file)
-          end
+        # Later calls can reach this copy with narrower types than it declares.
+        typed_def.type_once = match.def.type_once?
+        program.type_once_typed += 1 if typed_once
+        if records = program.instantiation_records
+          records[typed_def.object_id] = InstantiationRecord.new(match.def, self_type || match_owner, match.arg_types, named_args_types, block_type, !use_cache)
+        end
+        if block && shares_block_instance
+          restriction = match.def.block_arg.try(&.restriction)
+          block_return_type_declared = restriction.is_a?(ProcNotation) ? !restriction.output.nil? : !restriction.nil?
+          block_instance = BlockInstance.new(self, block, block_return_type_declared)
+          typed_def.block_instance = block_instance
+          def_instance_owner.add_block_def_instance(def_instance_key, typed_def)
+          program.block_instance_stats.typed += 1
         end
 
         if typed_def_return_type = typed_def.return_type
@@ -445,14 +598,177 @@ class Crystal::Call
               end
               visitor.bind_initialize_instance_vars(owner)
             end
+
+            visitor.release_inference_state if program.release_inference_state?
           end
         end
+
+        block_instance.ready = true if block_instance
       end
 
+      program.type_once_reused += 1 if typed_once && !typed_def.same?(newly_typed_def)
       typed_defs << typed_def
     end
 
     typed_defs
+  end
+
+  private def shares_block_instance?(untyped_def : Def, block : Block) : Bool
+    program.share_block_instances? && !untyped_def.uses_block_arg? && !block.fun_literal
+  end
+
+  # Returns a typed def that another call typed for the same def and argument
+  # types and that this call's block can share, or `nil`.
+  private def lookup_shared_block_instance(owner : DefInstanceContainer, key : DefInstanceKey, block : Block, yield_vars : Array(Var)?) : Def?
+    candidates = owner.lookup_block_def_instances(key) || return nil
+    stats = program.block_instance_stats
+
+    # The call that typed a clone gets it back when it is typed again with
+    # the same arguments: the clone is already bound to this block.
+    candidates.each do |candidate|
+      block_instance = candidate.block_instance || next
+      if block_instance.first_block.same?(block) && block_instance.ready? && block_instance.shareable?
+        stats.reused_by_first_call += 1
+        # Matching the def's block parameter may have typed the block's
+        # parameters from this match alone; merge the `yield`s back in.
+        bind_block_to_yields(block, candidate, yield_vars)
+        return candidate
+      end
+    end
+
+    if block_instance_sharing_disabled?
+      stats.note_unshared(candidates.first.name, "call went private earlier")
+      return nil
+    end
+
+    compares_types = false
+    typed_def = candidates.find { |candidate| candidate.block_instance.try(&.ignores_block?) }
+    unless typed_def
+      compares_types = true
+      typed_def = if block.type?
+                    find_block_instance_for_typed_block(candidates, block, yield_vars)
+                  else
+                    find_block_instance_for_untyped_block(candidates, block, yield_vars)
+                  end
+    end
+    return nil unless typed_def
+
+    block_instance = typed_def.block_instance.not_nil!
+    watcher = BlockInstanceWatcher.new(typed_def, block_instance.first_block, block, self, compares_types)
+    watcher.attach
+    block_instance.add_watcher(watcher)
+    stats.shared += 1
+    typed_def
+  end
+
+  # The block has a type already (it was typed when the def's block
+  # parameter was matched). A clone typed against a block of that same type
+  # is the clone this call would type for itself.
+  private def find_block_instance_for_typed_block(candidates : Array(Def), block : Block, yield_vars : Array(Var)?) : Def?
+    block_type = block.type
+    candidates.each do |candidate|
+      block_instance = candidate.block_instance || next
+      next unless block_instance.ready? && block_instance.accepts_sharing?(candidate)
+      next unless block_instance.first_block.type?.same?(block_type)
+
+      # Binding the block's parameters to the clone's `yield` expressions
+      # can change the block's type, as it would with a private clone.
+      bind_block_to_yields(block, candidate, yield_vars)
+      return candidate if block.type?.same?(block_instance.first_block.type?)
+
+      unbind_block_from_yields(block, candidate)
+      program.block_instance_stats.note_unshared(candidate.name, "typed block changed type when bound")
+      program.block_instance_stats.block_type_differs += 1
+      return nil
+    end
+    program.block_instance_stats.note_unshared(candidates.first.name, "typed block, no clone with that block type")
+    program.block_instance_stats.block_type_differs += 1
+    nil
+  end
+
+  # The block has no type yet: it is typed at the def's first `yield`, or it
+  # waits for its parameter types. Only clones whose `yield` expressions
+  # cannot depend on the block are tried, because those expressions have the
+  # same types in every clone, so any of them stands in for a private one.
+  private def find_block_instance_for_untyped_block(candidates : Array(Def), block : Block, yield_vars : Array(Var)?) : Def?
+    stats = program.block_instance_stats
+    sharable = candidates.select do |candidate|
+      block_instance = candidate.block_instance
+      next false unless block_instance && block_instance.ready? && block_instance.accepts_sharing?(candidate)
+      independent = block_instance.yields_independent_of_block?(candidate)
+      stats.yields_depend_on_block += 1 unless independent
+      independent
+    end
+    first = sharable.first?
+    unless first
+      reason = candidates.first.block_instance.try(&.dependence_reason) || "clone not ready"
+      stats.note_unshared(candidates.first.name, "untyped block, no block-independent clone (#{reason})")
+      return nil
+    end
+
+    unless block.visited?
+      # A special var (`$~`) the def assigns is visible inside the block.
+      if special_vars = first.special_vars
+        special_vars.each do |name|
+          parent_visitor.define_special_var(name, first.vars.not_nil![name])
+        end
+      end
+    end
+    bind_block_to_yields(block, first, yield_vars)
+    unless block.visited?
+      bubbling_exception { block.accept parent_visitor }
+    end
+
+    block_type = block.type?
+    unless block_type
+      stats.note_unshared(first.name, "untyped block stayed untyped")
+      return nil
+    end
+    typed_def = sharable.find do |candidate|
+      candidate.block_instance.not_nil!.first_block.type?.same?(block_type)
+    end
+    unless typed_def
+      stats.note_unshared(first.name, "untyped block, no clone with its block type")
+      stats.block_type_differs += 1
+      return nil
+    end
+
+    bind_block_to_yields(block, typed_def, yield_vars)
+    unless block.type?.same?(typed_def.block_instance.not_nil!.first_block.type?)
+      stats.note_unshared(first.name, "untyped block changed type when bound")
+      stats.block_type_differs += 1
+      return nil
+    end
+    typed_def
+  end
+
+  # Stops *block*'s parameters from following the `yield`s of *typed_def*.
+  def unbind_block_from_yields(block : Block, typed_def : Def) : Nil
+    block_instance = typed_def.block_instance || return
+    block.binder.try &.remove_yields(block_instance.yields)
+  end
+
+  private def bind_block_to_yields(block : Block, typed_def : Def, yield_vars : Array(Var)?) : Nil
+    block_instance = typed_def.block_instance || return
+    binder = block.binder ||= YieldBlockBinder.new(program, block)
+    block_instance.yields.each { |node| binder.add_yield_once(node, yield_vars) }
+    binder.update
+  end
+
+  private def detach_block_instance_watchers(block : Block) : Nil
+    block.each_observer do |observer|
+      if observer.is_a?(BlockInstanceWatcher) && observer.call.same?(self) && !observer.detached?
+        observer.detach
+        unbind_block_from_yields(block, observer.typed_def)
+      end
+    end
+  end
+
+  # Types a private clone for this call after its block's type stopped
+  # matching the one *typed_def* was typed against.
+  def give_private_block_instance(typed_def : Def) : Nil
+    rare_fields.block_instance_sharing_disabled = true
+    recalculate
   end
 
   def raise_if_block_too_nested(block_nest)
@@ -775,7 +1091,7 @@ class Crystal::Call
   end
 
   def in_macro_target(&)
-    if with_scope = @with_scope
+    if with_scope = self.with_scope
       macros = yield with_scope
       return macros if macros
     end
@@ -971,7 +1287,7 @@ class Crystal::Call
           fun_literal.expected_return_type = output_type if output_type
           fun_literal.from_block = true
           fun_literal.force_nil = true unless output
-          fun_literal.accept parent_visitor
+          parent_visitor.accept_captured_block(fun_literal, block)
         end
         block.fun_literal = fun_literal
       end
@@ -1150,8 +1466,8 @@ class Crystal::Call
 
   def obj_and_args_types_set?
     obj = @obj
-    block_arg = @block_arg
-    named_args = @named_args
+    block_arg = self.block_arg
+    named_args = self.named_args
 
     return false unless args.all? &.type?
     return false if obj && !obj.type?
@@ -1185,6 +1501,7 @@ class Crystal::Call
     end
 
     typed_def = untyped_def.clone
+    typed_def.share_signature_nodes_with(untyped_def)
     typed_def.owner = owner
     typed_def.original_owner = untyped_def.owner
 
@@ -1270,7 +1587,7 @@ class Crystal::Call
   end
 
   def attach_subclass_observer(type : Type)
-    if subclass_notifier = @subclass_notifier
+    if subclass_notifier = self.subclass_notifier
       # If the new notifier is a subtype of (or equal to) the current one,
       # keep observing the wider type. Migrating to the narrower type would
       # stop us from being woken when sibling subtypes are later added to
@@ -1280,7 +1597,7 @@ class Crystal::Call
     end
 
     type.as(SubclassObservable).add_subclass_observer(self)
-    @subclass_notifier = type
+    self.subclass_notifier = type
   end
 
   def super?

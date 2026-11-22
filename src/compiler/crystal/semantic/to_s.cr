@@ -80,6 +80,10 @@ module Crystal
       false
     end
 
+    def visit(node : BlockInstanceWatcher)
+      false
+    end
+
     def visit(node : FileNode)
       @str.puts
       @str << "# " << node.filename
@@ -100,6 +104,11 @@ module Crystal
 
     def visit(node : Unreachable)
       @str << %(raise "unreachable")
+      false
+    end
+
+    def visit(node : ReleasedBody)
+      @str << "# body released after codegen"
       false
     end
   end
