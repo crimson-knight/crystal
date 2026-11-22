@@ -32,6 +32,19 @@ module Crystal
     FILENAME = "ir_skip_manifest.bin"
     MAGIC    = "CRIRSKP1"
 
+    # The hash of the running compiler's executable: two builds of the
+    # compiler from different code never share keys, even when they carry
+    # the same version and build commit (a development build has none).
+    # An executable that cannot be read gives a value no manifest has, so
+    # nothing is skipped.
+    class_getter compiler_identity : String do
+      executable = Process.executable_path
+      digest = executable && File.file?(executable) ? BitcodeHash.of_part(File.read(executable).to_slice) : nil
+      digest || "unknown-#{Random::Secure.hex(8)}"
+    rescue IO::Error
+      "unknown-#{Random::Secure.hex(8)}"
+    end
+
     # A 128-bit hash, as two words.
     record Digest, first : UInt64, second : UInt64 do
       def to_s(io : IO) : Nil

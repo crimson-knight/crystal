@@ -1665,6 +1665,7 @@ module Crystal
     private def ir_skip_salt(program) : String
       String.build do |io|
         io << Crystal::Config.version << '|' << Crystal::Config.build_commit << '|' << LibLLVM::VERSION
+        io << "|compiler=" << IrSkip.compiler_identity
         io << '|' << @codegen_target << '|' << @mcpu << '|' << @mattr << '|' << @mcmodel
         io << '|' << debug.value << '|' << frame_pointers << '|' << optimization_mode
         io << '|' << program.flags.to_a.sort!.join(',')
