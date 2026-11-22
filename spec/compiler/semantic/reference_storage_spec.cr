@@ -54,6 +54,44 @@ describe "Semantic: ReferenceStorage" do
       CRYSTAL
   end
 
+  it "accepts a class that has subclasses" do
+    assert_type(<<-CRYSTAL) { types["Foo"].metaclass }
+      @[Primitive(:ReferenceStorageType)]
+      struct ReferenceStorage(T) < Value
+        def t
+          T
+        end
+      end
+
+      class Foo
+      end
+
+      class Bar < Foo
+      end
+
+      ReferenceStorage(Foo).new.t
+      CRYSTAL
+  end
+
+  it "accepts a generic class that has a generic subclass" do
+    assert_type(<<-CRYSTAL) { generic_class("Foo", int32).metaclass }
+      @[Primitive(:ReferenceStorageType)]
+      struct ReferenceStorage(T) < Value
+        def t
+          T
+        end
+      end
+
+      class Foo(T)
+      end
+
+      class Bar(T) < Foo(T)
+      end
+
+      ReferenceStorage(Foo(Int32)).new.t
+      CRYSTAL
+  end
+
   it "allows a different name" do
     assert_type(<<-CRYSTAL) { types["Foo"].metaclass }
       @[Primitive(:ReferenceStorageType)]
