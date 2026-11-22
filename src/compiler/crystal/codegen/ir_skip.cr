@@ -459,7 +459,9 @@ module Crystal
     class TypeDescriptors
       UNKNOWN = Digest.new(0_u64, 0_u64)
 
-      @digests = {} of UInt64 => Digest
+      # Keyed by the type itself, which the hash keeps alive: an object id can
+      # be given to another object once the first one is collected.
+      @digests = Hash(Type, Digest).new.compare_by_identity
       @types_by_llvm_name = {} of String => Type?
       @stack = [] of Type
 
@@ -488,7 +490,7 @@ module Crystal
       # The description of *type*, or `UNKNOWN` for a kind of type this
       # class has no description for.
       def digest(type : Type) : Digest
-        if cached = @digests[type.object_id]?
+        if cached = @digests[type]?
           return cached
         end
 
@@ -501,7 +503,7 @@ module Crystal
       # that refers to nothing below itself is the same wherever it is
       # computed from, and only that one is cached.
       private def describe(type : Type) : {Digest, Int32}
-        if cached = @digests[type.object_id]?
+        if cached = @digests[type]?
           return {cached, Int32::MAX}
         end
         if position = @stack.index(&.same?(type))
@@ -532,7 +534,7 @@ module Crystal
         end
         @stack.pop
         digest = known ? hasher.digest : UNKNOWN
-        @digests[type.object_id] = digest if lowest >= own_position
+        @digests[type] = digest if lowest >= own_position
         {digest, lowest}
       ensure
         @stack.truncate(0, own_position) if own_position && @stack.size > own_position
@@ -620,11 +622,17 @@ module Crystal
           yield type.typedef, true
         when AliasType
           yield type.remove_indirection, true unless type.remove_indirection.same?(type)
-        when NonGenericModuleType, GenericModuleInstanceType, GenericClassType
-          # A module, or an abstract generic class, used as a type stands
-          # for the union of the types that include or inherit it.
+        when NonGenericModuleType, GenericModuleInstanceType
+          # A module used as a type stands for the union of the types that
+          # include it.
           including = type.remove_indirection
           yield including, true unless including.same?(type)
+        when GenericClassType, GenericModuleType
+          # A generic type without type arguments (`is_a?(NamedTuple)`) is
+          # never the type of a value: the name says everything. Its
+          # `remove_indirection` is the union of all its instances, built
+          # in an order that follows memory addresses, and what code is
+          # generated for it (the filtered type) is part of the key apart.
         else
           return false
         end
@@ -742,8 +750,12 @@ module Crystal
       @class_vars = [] of MetaTypeVar
       @made_up_names = [] of String
       @inline_depth = 0
-      @filename_digests = {} of UInt64 => Digest
-      @symbol_digests = {} of {UInt64, UInt64} => Digest
+      # These caches are keyed by the objects themselves (or a file name by
+      # its text), never by object id: code generation releases typed bodies,
+      # and a collected object's id can come back as another object's.
+      @filename_digests = {} of String => Digest
+      @virtual_file_digests = Hash(VirtualFile, Digest).new.compare_by_identity
+      @symbol_digests = Hash(Def, Hash(Type, Digest)).new.compare_by_identity
 
       getter descriptors : TypeDescriptors
 
@@ -800,9 +812,9 @@ module Crystal
         filename = location.filename
         case filename
         when String
-          @lines.mix(@filename_digests[filename.object_id] ||= Hasher.digest_of(filename))
+          @lines.mix(@filename_digests[filename] ||= Hasher.digest_of(filename))
         when VirtualFile
-          @lines.mix(@filename_digests[filename.object_id] ||= begin
+          @lines.mix(@virtual_file_digests[filename] ||= begin
             hasher = Hasher.new
             expanded = location.expanded_location
             if expanded
@@ -1305,7 +1317,8 @@ module Crystal
       # The hash of the name of the function a call to *target_def* names:
       # the function of the def that stands for it, when it shares one.
       private def symbol_digest(target_def : Def, owner : Type) : Digest
-        @symbol_digests[{target_def.object_id, owner.object_id}] ||= begin
+        digests_by_owner = @symbol_digests[target_def] ||= Hash(Type, Digest).new.compare_by_identity
+        digests_by_owner[owner] ||= begin
           if (sharing = @sharing) && (representative = sharing.representative?(target_def))
             target_def = representative
             owner = representative.owner
