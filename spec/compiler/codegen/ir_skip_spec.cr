@@ -78,11 +78,20 @@ private LIST_OF_SOURCES = {
       end
     end
     CRYSTAL
+  "counter.cr" => <<-CRYSTAL,
+    class Counter
+      def make_adder(step : Int32) : Proc(Int32, Int32)
+        base = ARGV.size &+ step
+        ->(n : Int32) { n &+ base }
+      end
+    end
+    CRYSTAL
   "program.cr" => <<-CRYSTAL,
     require "./helper"
     require "./shapes"
     require "./user"
     require "./bystander"
+    require "./counter"
 
     user = User.new
     list_of_shapes = [Circle.new] of Shape
@@ -93,10 +102,11 @@ private LIST_OF_SOURCES = {
     puts user.point_y(Point.new(1, 2))
     puts list_of_shapes.sum { |shape| user.area(shape) }
     puts Bystander.new.answer
+    puts Counter.new.make_adder(4).call(1)
     CRYSTAL
 }
 
-private EXPECTED_OUTPUT = "111\n3\n6\n7\n2\n3\n42\n"
+private EXPECTED_OUTPUT = "111\n3\n6\n7\n2\n3\n42\n5\n"
 
 private class SkipProgram
   getter directory : String
@@ -154,6 +164,11 @@ private def regenerated?(stats : Crystal::IrSkip::Stats, module_name : String) :
   stats.list_of_regenerated_units.any?(&.starts_with?("#{module_name}: "))
 end
 
+# How many modules started as no candidate at all.
+private def never_candidates(stats : Crystal::IrSkip::Stats) : Int32
+  stats.units_not_candidate_by_cause.values.sum
+end
+
 private def with_skip_program(name : String, & : SkipProgram ->) : Nil
   with_tempfile(name) do |directory|
     skip_program = SkipProgram.new(directory)
@@ -170,9 +185,12 @@ describe "Code gen: skipping IR generation for unchanged modules" do
       skip_program.touch("bystander.cr")
       stats = skip_program.build
 
-      stats.generated_units.should eq(0)
+      # Only the modules that are never candidates are generated: those
+      # with a function that has no key or no replayable trace (`asm`,
+      # `out` arguments, thread locals, in the standard library).
+      stats.generated_units.should eq(never_candidates(stats))
+      stats.list_of_regenerated_units.should be_empty
       stats.skipped_units.should be > 10
-      stats.generated_functions.should eq(0)
       skip_program.output.should eq(EXPECTED_OUTPUT)
     end
   end
@@ -184,8 +202,9 @@ describe "Code gen: skipping IR generation for unchanged modules" do
 
       regenerated?(stats, "Helper").should be_true
       regenerated?(stats, "User").should be_false
-      stats.generated_units.should eq(1)
-      skip_program.output.should eq("111\n3\n8\n7\n2\n3\n42\n")
+      stats.generated_units.should eq(never_candidates(stats) + 1)
+      stats.list_of_regenerated_units.size.should eq(1)
+      skip_program.output.should eq("111\n3\n8\n7\n2\n3\n42\n5\n")
     end
   end
 
@@ -196,7 +215,7 @@ describe "Code gen: skipping IR generation for unchanged modules" do
 
       regenerated?(stats, "User").should be_true
       regenerated?(stats, "Bystander").should be_false
-      skip_program.output.should eq("112\n3\n6\n7\n2\n3\n42\n")
+      skip_program.output.should eq("112\n3\n6\n7\n2\n3\n42\n5\n")
     end
   end
 
@@ -207,7 +226,7 @@ describe "Code gen: skipping IR generation for unchanged modules" do
 
       regenerated?(stats, "User").should be_true
       regenerated?(stats, "Bystander").should be_false
-      skip_program.output.should eq("111\n6\n6\n7\n2\n3\n42\n")
+      skip_program.output.should eq("111\n6\n6\n7\n2\n3\n42\n5\n")
     end
   end
 
@@ -218,7 +237,7 @@ describe "Code gen: skipping IR generation for unchanged modules" do
 
       regenerated?(stats, "User").should be_true
       regenerated?(stats, "Bystander").should be_false
-      skip_program.output.should eq("111\n3\n6\n9\n2\n3\n42\n")
+      skip_program.output.should eq("111\n3\n6\n9\n2\n3\n42\n5\n")
     end
   end
 
@@ -243,7 +262,23 @@ describe "Code gen: skipping IR generation for unchanged modules" do
 
       regenerated?(stats, "User").should be_true
       regenerated?(stats, "Bystander").should be_false
-      skip_program.output.should eq("111\n3\n6\n7\n2\n8\n42\n")
+      skip_program.output.should eq("111\n3\n6\n7\n2\n8\n42\n5\n")
+    end
+  end
+
+  it "keeps the closure of a module that gets no code, and generates the module when the closure changed" do
+    with_skip_program("ir_skip_closure") do |skip_program|
+      skip_program.touch("counter.cr")
+      stats = skip_program.build
+      regenerated?(stats, "Counter").should be_false
+      skip_program.output.should eq(EXPECTED_OUTPUT)
+
+      skip_program.edit("counter.cr", "n &+ base }", "n &+ base &+ 10 }")
+      stats = skip_program.build
+
+      regenerated?(stats, "Counter").should be_true
+      regenerated?(stats, "User").should be_false
+      skip_program.output.should eq("111\n3\n6\n7\n2\n3\n42\n15\n")
     end
   end
 
@@ -268,7 +303,7 @@ describe "Code gen: skipping IR generation for unchanged modules" do
 
       regenerated?(stats, "Bystander").should be_true
       regenerated?(stats, "User").should be_false
-      skip_program.output.should eq("111\n3\n6\n7\n2\n3\n43\n")
+      skip_program.output.should eq("111\n3\n6\n7\n2\n3\n43\n5\n")
     end
   end
 
@@ -281,7 +316,7 @@ describe "Code gen: skipping IR generation for unchanged modules" do
         stats.skipped_units.should eq(0)
         stats.verified_units.should be > 10
         stats.list_of_verification_failures.should be_empty
-        skip_program.output.should eq("111\n3\n8\n7\n2\n3\n42\n")
+        skip_program.output.should eq("111\n3\n8\n7\n2\n3\n42\n5\n")
       end
     end
 
