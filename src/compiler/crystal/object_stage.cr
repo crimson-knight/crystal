@@ -29,7 +29,11 @@ module Crystal
         getter bitcode_name : String
         getter? reused_previous_compilation : Bool
 
-        def initialize(@original_name, @bitcode_name, @reused_previous_compilation)
+        # Whether the hash of the unit's bitcode decided that, without
+        # reading the cached bitcode.
+        getter? decided_by_bitcode_hash : Bool = false
+
+        def initialize(@original_name, @bitcode_name, @reused_previous_compilation, @decided_by_bitcode_hash = false)
         end
       end
 

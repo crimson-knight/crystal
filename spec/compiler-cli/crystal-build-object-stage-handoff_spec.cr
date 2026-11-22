@@ -107,6 +107,47 @@ describe "`crystal build` with the object stage handoff" do
     end
   end
 
+  it "hands the bitcode hashes over: each object gets its record, and the next build decides by hash" do
+    with_tempfile("handoff-hash-cache", "handoff-hash-program") do |cache_dir, program_dir|
+      with_temp_executable "handoff-hash" do |output_path|
+        Dir.mkdir_p(program_dir)
+        program_path = File.join(program_dir, "program.cr")
+        build_program = ->(list_of_extra_args : Array(String)) do
+          list_of_arguments = [crystal, "build", "--threads", "4", "--stats"] + list_of_extra_args + ["-o", output_path, program_path]
+          Process.capture_result(list_of_arguments, env: {"CRYSTAL_CACHE_DIR" => cache_dir})
+        end
+        source = "class Greeter\n  def greeting(count)\n    count > 0 ? \"hello again\" : \"hello 1\"\n  end\nend\n" \
+                 "class Counter\n  def initialize(@count : Int32)\n  end\n\n  def count\n    @count\n  end\nend\n" \
+                 "puts Greeter.new.greeting(Counter.new(ARGV.size).count)\n"
+
+        File.write(program_path, source)
+        first_build = build_program.call(["--resident-modules", "2"]).should(be_success)
+        first_build.output.should contain(HANDOFF_STATS_LINE)
+        list_of_object_files = list_of_cache_files(cache_dir, "*.o")
+        list_of_object_files.size.should be > 4
+        list_of_cache_files(cache_dir, "*.hash").size.should eq(list_of_object_files.size)
+        Process.capture_result(output_path).should(be_success).output.should eq("hello 1\n")
+
+        # The cached bitcode is not read again: without it, every object is
+        # still known to be up to date.
+        list_of_cache_files(cache_dir, "*.bc").each { |bitcode_file| File.delete(bitcode_file) }
+        unchanged_build = build_program.call(["--resident-modules", "2"]).should(be_success)
+        unchanged_build.output.should contain("all previous .o files were reused")
+        unchanged_build.output.should contain("object reuse was decided by bitcode hash for #{list_of_object_files.size} modules, by comparing bitcode files for 0")
+
+        # One character changes: the bitcode keeps its size, its hash changes.
+        File.write(program_path, source.sub("hello 1", "hello 2"))
+        edited_build = build_program.call(["--resident-modules", "2"]).should(be_success)
+        edited_build.output.should contain(HANDOFF_STATS_LINE)
+        edited_build.output.should contain("#{list_of_object_files.size - 1}/#{list_of_object_files.size} .o files were reused")
+        edited_build.output.should match(/These modules were not reused:\n - Greeter \(G-reeter\S*\.bc\)\n/)
+        list_of_cache_files(cache_dir, "*.hash").size.should eq(list_of_object_files.size)
+        list_of_cache_files(cache_dir, "*.new.bc").should be_empty
+        Process.capture_result(output_path).should(be_success).output.should eq("hello 2\n")
+      end
+    end
+  end
+
   it "exits with the status and the message of a build without handoff when the link fails" do
     with_tempfile("handoff-link-failure-cache", "handoff-link-failure-cache-in-process") do |cache_dir, in_process_cache_dir|
       with_temp_executable "handoff-link-failure" do |output_path|

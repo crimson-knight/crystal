@@ -75,9 +75,17 @@ module Crystal
       # with a factor of its own.
       getter? main_module : Bool = false
 
+      # Where the worker leaves the record of the object file it built
+      # (`CachedObjectRecord`), and the hash of each bitcode file of the
+      # module, `bitcode_filename` first. Without a file name no record is
+      # left.
+      getter hash_record_filename : String? = nil
+      getter list_of_bitcode_part_hashes : Array(String) = [] of String
+
       def initialize(@bitcode_filename, @object_filename, @llvm_ir_filename = nil, @verifies_module = false,
                      @list_of_more_bitcode_filenames = [] of String,
-                     @name = bitcode_filename, @bitcode_bytesize = 0_i64, @main_module = false)
+                     @name = bitcode_filename, @bitcode_bytesize = 0_i64, @main_module = false,
+                     @hash_record_filename = nil, @list_of_bitcode_part_hashes = [] of String)
       end
     end
 
@@ -139,7 +147,7 @@ module Crystal
       times_before = Process.times
       elapsed = Time.measure do
         compiler.compile_bitcode_file_to_object(job.bitcode_filename, job.object_filename, job.llvm_ir_filename, job.verifies_module,
-          job.list_of_more_bitcode_filenames)
+          job.list_of_more_bitcode_filenames, job.hash_record_filename, job.list_of_bitcode_part_hashes)
       end
       times_after = Process.times
       cpu_seconds = (times_after.utime + times_after.stime) - (times_before.utime + times_before.stime)
