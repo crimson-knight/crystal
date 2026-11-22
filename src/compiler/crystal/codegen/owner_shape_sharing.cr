@@ -225,13 +225,55 @@ module Crystal
         next unless shape.shareable?
         key = {shape.first, shape.second}
         if representative = first_of_group[key]?
-          @representatives[shape.typed_def.object_id] = representative
-          @stats.shared += 1
+          first_of_group[key] = shape.typed_def if stands_before?(shape.typed_def, representative)
         else
           first_of_group[key] = shape.typed_def
         end
       end
+      @shapes.each do |shape|
+        next unless shape.shareable?
+        representative = first_of_group[{shape.first, shape.second}]
+        next if representative.same?(shape.typed_def)
+        @representatives[shape.typed_def.object_id] = representative
+        @stats.shared += 1
+      end
       @stats.groups = groups
+    end
+
+    # Whether *typed_def* is the representative of its group rather than
+    # *representative*, the one found so far.
+    #
+    # The first def found stands for its group, and which one is found first
+    # depends on the order the program uses its types in. An incremental
+    # build keeps type ids (see `LLVMId`), and there the def whose owner and
+    # argument types have the smallest ids stands for the group: a type
+    # added to the program has the largest id, so a def that names it never
+    # takes a group over, and the function the group shares keeps its name.
+    private def stands_before?(typed_def : Def, representative : Def) : Bool
+      return false unless @program.stable_numbering
+
+      (list_of_type_ranks(typed_def) <=> list_of_type_ranks(representative)) < 0
+    end
+
+    # The kept ids of the types that the name of the function of *typed_def*
+    # is made of: its owner, then its argument types.
+    private def list_of_type_ranks(typed_def : Def) : Array(Int32)
+      @type_ranks_by_def[typed_def.object_id] ||= begin
+        list_of_ranks = [type_rank(typed_def.owner)]
+        typed_def.args.each { |arg| list_of_ranks << type_rank(arg.type?) }
+        list_of_ranks
+      end
+    end
+
+    @type_ranks_by_def = {} of UInt64 => Array(Int32)
+
+    private def type_rank(type : Type?) : Int32
+      return Int32::MAX unless type
+
+      type = type.devirtualize
+      return Int32::MAX if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+
+      @program.llvm_id.type_id(type)
     end
 
     private def count_groups : Int32

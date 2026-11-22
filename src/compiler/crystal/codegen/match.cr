@@ -64,13 +64,17 @@ class Crystal::CodeGenVisitor
   end
 
   private def create_match_fun_body(type : VirtualType, type_id)
-    min, max = @program.llvm_id.min_max_type_id(type.base_type).not_nil!
-    ret(
-      and(
+    # One range when the subtypes were numbered right before the type, and
+    # more when ids are kept from an earlier build (see `LLVMId`).
+    result = nil
+    @program.llvm_id.id_ranges(type.base_type).each do |(min, max)|
+      in_range = and(
         builder.icmp(LLVM::IntPredicate::SGE, type_id, int(min)),
         builder.icmp(LLVM::IntPredicate::SLE, type_id, int(max))
       )
-    )
+      result = result ? or(result, in_range) : in_range
+    end
+    ret(result || raise "BUG: #{type.base_type} has no type id")
   end
 
   private def create_match_fun_body(type, type_id)

@@ -155,7 +155,6 @@ module Crystal
     def codegen(node, single_module = false, debug = Debug::Default,
                 frame_pointers = FramePointers::Auto, release_typed_bodies = false,
                 module_spill : ModuleSpill? = nil, module_segment_instructions : Int64 = 0_i64)
-      LLVMTyper.reset_closure_counter
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
       visitor.release_typed_bodies = release_typed_bodies
@@ -174,7 +173,7 @@ module Crystal
     end
 
     def llvm_id
-      @llvm_id ||= LLVMId.new(self)
+      @llvm_id ||= LLVMId.new(self, stable_numbering.try(&.type_ids_by_stable_key))
     end
 
     def llvm_typer
@@ -305,6 +304,7 @@ module Crystal
                    @debug = Debug::Default,
                    @frame_pointers : FramePointers = :auto,
                    @llvm_context : LLVM::Context = LLVM::Context.new)
+      discard_local_value_names(@llvm_context)
       @abi = ABI.from(@program.target_machine)
       if @program.share_owner_shapes?
         @owner_shape_sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
@@ -392,6 +392,7 @@ module Crystal
 
       @unused_fun_defs = [] of FunDef
       @proc_counts = Hash(String, Int32).new(0)
+      @closure_counts = Hash(String, Int32).new(0)
 
       # We need to define __crystal_malloc and __crystal_realloc as soon as possible,
       # to avoid some memory being allocated with plain malloc.
@@ -651,6 +652,8 @@ module Crystal
         dump_llvm_regex = Regex.new(env_dump)
       end
 
+      define_type_id_to_class_name_map
+
       @modules.each do |name, info|
         # A module part on disk was finished when it was written, and is
         # verified when its compilation unit is built.
@@ -899,29 +902,23 @@ module Crystal
       false
     end
 
+    # The name of the function of a proc literal: its type, the function it
+    # is generated in, and its turn among the proc literals of that type
+    # there (`~procProc(Nil)@*Foo#bar:Nil`, then `~proc2Proc(Nil)@*Foo#bar:Nil`).
+    #
+    # The name says nothing about where the literal is in its file, so that
+    # lines added above it leave the name, and with it the code of every
+    # module that refers to the function, as they were.
     def fun_literal_name(node : ProcLiteral)
-      location = node.location.try &.expanded_location
-      if location && (type = node.type?)
-        proc_name = true
-        filename = location.filename.as(String)
-        fun_literal_name = Crystal.safe_mangling(@program, "~proc#{type}@#{Crystal.relative_filename(filename)}:#{location.line_number}")
-      else
-        proc_name = false
-        fun_literal_name = "~fun_literal"
+      enclosing_fun_name = context.fun.name
+      prefix = "~proc"
+      type = node.type?
+      unless type
+        prefix = "~fun_literal"
       end
-      proc_count = @proc_counts[fun_literal_name]
-      proc_count += 1
-      @proc_counts[fun_literal_name] = proc_count
-
-      if proc_count > 1
-        if proc_name
-          fun_literal_name = "#{fun_literal_name[0...5]}#{proc_count}#{fun_literal_name[5..-1]}"
-        else
-          fun_literal_name = "#{fun_literal_name}#{proc_count}"
-        end
-      end
-
-      fun_literal_name
+      proc_count = (@proc_counts["#{prefix}#{type}@#{enclosing_fun_name}"] += 1)
+      turn = proc_count > 1 ? proc_count.to_s : ""
+      Crystal.safe_mangling(@program, "#{prefix}#{turn}#{type}@#{enclosing_fun_name}")
     end
 
     def visit(node : ProcPointer)
@@ -1730,35 +1727,72 @@ module Crystal
     def type_id_to_class_name(type_id)
       map_name = "__crystal_type_id_to_class_name_map"
 
-      global = @main_mod.globals[map_name]?
-      unless global
-        global = @main_mod.globals.add(@main_llvm_typer.llvm_type(@program.string).array(@program.llvm_id.@ids.size), map_name)
-        global.linkage = LLVM::Linkage::Internal if @single_module
-        global.initializer = create_type_id_to_class_name_map
-        global.global_constant = true
+      # With kept type ids (see `LLVMId`) every module sees the map as an
+      # array of unknown length, so that a new type, which makes the map
+      # longer, leaves the module's code as it was. The main module defines
+      # the map when code generation ends (`define_type_id_to_class_name_map`),
+      # with every id that was given out by then.
+      stable = @program.llvm_id.stable?
+      map_length = stable ? 0 : @program.llvm_id.id_limit
+      @uses_type_id_to_class_name_map = true
+
+      definition = @main_mod.globals[map_name]?
+      unless definition || stable
+        initializer = create_type_id_to_class_name_map
+        definition = @main_mod.globals.add(initializer.type, map_name)
+        definition.linkage = LLVM::Linkage::Internal if @single_module
+        definition.initializer = initializer
+        definition.global_constant = true
       end
 
-      if @llvm_mod != @main_mod
+      global = definition
+      if stable || @llvm_mod != @main_mod
         global = @llvm_mod.globals[map_name]?
         unless global
-          global = @llvm_mod.globals.add(@llvm_typer.llvm_type(@program.string).array(@program.llvm_id.@ids.size), map_name)
+          global = @llvm_mod.globals.add(@llvm_typer.llvm_type(@program.string).array(map_length), map_name)
           global.linkage = LLVM::Linkage::External
           global.global_constant = true
         end
       end
+      raise "BUG: the class-name map is neither defined nor declared" unless global
 
-      str_ptr = gep llvm_type(@program.string).array(@program.llvm_id.@ids.size), global, 0, type_id
+      str_ptr = gep llvm_type(@program.string).array(map_length), global, 0, type_id
       load llvm_type(@program.string), str_ptr
     end
 
+    @uses_type_id_to_class_name_map = false
+
+    # Defines the class-name map in the main module, if any module reads it
+    # and the definition was left for the end (see `type_id_to_class_name`).
+    private def define_type_id_to_class_name_map : Nil
+      map_name = "__crystal_type_id_to_class_name_map"
+      return unless @uses_type_id_to_class_name_map && @program.llvm_id.stable?
+
+      initializer = create_type_id_to_class_name_map
+      # The main module declared the map if its own code reads it.
+      declaration = @main_mod.globals[map_name]?
+      definition = @main_mod.globals.add(initializer.type, declaration ? "#{map_name}.definition" : map_name)
+      definition.linkage = LLVM::Linkage::Internal if @single_module
+      definition.initializer = initializer
+      definition.global_constant = true
+      if declaration
+        LibLLVM.replace_all_uses_with(declaration, definition)
+        LibLLVM.delete_global(declaration)
+        definition.name = map_name
+      end
+    end
+
     def create_type_id_to_class_name_map
-      ids = @program.llvm_id.@ids
-      id_map = Array(LLVM::Value).new(size: ids.size, value: LLVM::Value.null)
-      ids.each do |type, (_, type_id)|
+      llvm_id = @program.llvm_id
+      string_type = @main_llvm_typer.llvm_type(@program.string)
+      # An id that no type has (possible with kept ids) maps to a null
+      # string; no value ever carries such an id.
+      id_map = Array(LLVM::Value).new(size: llvm_id.id_limit, value: string_type.null)
+      llvm_id.each_type_with_id do |type, type_id|
         id_map[type_id] = build_string_constant(type.to_s, module_info: @main_module_info)
       end
 
-      @main_llvm_typer.llvm_type(@program.string).const_array(id_map)
+      string_type.const_array(id_map)
     end
 
     def visit(node : IsA)
@@ -2241,6 +2275,18 @@ module Crystal
       closure_vars
     end
 
+    # The name of the next closure type of the function being generated:
+    # the function's name and the type's turn among its closure types
+    # (`closure@*Foo#bar:Nil`, then `closure2@*Foo#bar:Nil`).
+    #
+    # The name is the same in every module the type is copied to, and it
+    # depends on nothing outside the function.
+    private def next_closure_type_name : String
+      fun_name = context.fun.name
+      closure_count = (@closure_counts[fun_name] += 1)
+      closure_count > 1 ? "closure#{closure_count}@#{fun_name}" : "closure@#{fun_name}"
+    end
+
     def malloc_closure(closure_vars, current_context, parent_context = nil, self_closured = false)
       parent_closure_type = parent_context.try &.closure_type
 
@@ -2248,7 +2294,7 @@ module Crystal
         closure_vars ||= [] of MetaVar
 
         closure_type, closure_has_inner_pointers =
-          @llvm_typer.closure_context_type(closure_vars, parent_closure_type, (self_closured ? current_context.type : nil))
+          @llvm_typer.closure_context_type(next_closure_type_name, closure_vars, parent_closure_type, (self_closured ? current_context.type : nil))
         closure_ptr = closure_has_inner_pointers ? malloc(closure_type) : malloc_atomic(closure_type)
 
         closure_vars.each_with_index do |var, i|

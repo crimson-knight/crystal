@@ -57,7 +57,7 @@ class Crystal::CodeGenVisitor
       # It is not in the current module (checked above), so it is declared.
       return declare_fun(mangled_name, func)
     end
-    self_type_module_info = segment_for_next_fun(first_module_info)
+    self_type_module_info = segment_for_next_fun(first_module_info, mangled_name)
 
     # Declaring the new function here reads it from its module, which must
     # stay in memory until then.
@@ -106,7 +106,7 @@ class Crystal::CodeGenVisitor
     typed_fun
   end
 
-  def codegen_fun(mangled_name, target_def, self_type, is_exported_fun = false, fun_module_info = type_module(self_type), is_fun_literal = false, is_closure = false)
+  def codegen_fun(mangled_name, target_def, self_type, is_exported_fun = false, fun_module_info = type_module(self_type, mangled_name), is_fun_literal = false, is_closure = false)
     old_position = insert_block
     old_entry_block = @entry_block
     old_alloca_block = @alloca_block
@@ -777,10 +777,10 @@ class Crystal::CodeGenVisitor
 
   # The module of *type*, in memory. See `use_module` for how long handles
   # into other modules stay valid.
-  def type_module(type) : ModuleInfo
+  def type_module(type, mangled_name : String? = nil) : ModuleInfo
     return @main_module_info if @single_module
 
-    module_info = segment_for_next_fun(type_module_info(type))
+    module_info = segment_for_next_fun(type_module_info(type), mangled_name)
     use_module(module_info)
     module_info
   end

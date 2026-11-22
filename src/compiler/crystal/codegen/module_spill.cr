@@ -168,6 +168,29 @@ module Crystal
       # Empty when there is no hash function.
       getter list_of_spill_part_hashes = [] of String
 
+      # How many functions each spilled part holds, in the same order.
+      getter list_of_part_fun_counts = [] of Int32
+
+      # How many functions each part held in the build before this one, when
+      # that build spilled this module (see `StableNumbering`). The module is
+      # cut into parts at the same functions again: the bitcode of a part
+      # can only equal the cached one when the part holds the same functions.
+      property list_of_planned_part_fun_counts : Array(Int32)?
+
+      # Whether the part in memory holds the functions its plan gives it and
+      # waits to be written (see `CodeGenVisitor#spill_modules_at_planned_cut`).
+      property? at_planned_cut = false
+
+      # How many functions the part in memory holds once it is complete
+      # according to the plan, if the plan has a part at this position.
+      def planned_fun_count_of_current_part : Int32?
+        list_of_planned_part_fun_counts = @list_of_planned_part_fun_counts
+        return nil unless list_of_planned_part_fun_counts
+
+        planned_fun_count = list_of_planned_part_fun_counts[@list_of_spill_paths.size]?
+        planned_fun_count && planned_fun_count > 0 ? planned_fun_count : nil
+      end
+
       # The estimate of this module's IR that is part of the code
       # generator's total (see `CodeGenVisitor#account_module_ir`).
       property accounted_ir_bytes = 0_i64
@@ -180,6 +203,13 @@ module Crystal
       # `CodeGenVisitor#module_segment_instructions`), oldest first. Only
       # the type's first module has any.
       getter list_of_later_segments = [] of ModuleInfo
+
+      # The segment each function of the type was generated into, by
+      # `StableNumbering.function_digest`, and what the build before kept of
+      # the type's segments. Only the type's first module has them, in an
+      # incremental build.
+      getter segment_index_by_function_digest = {} of String => Int32
+      property kept_segments : StableNumbering::Segments?
 
       def initialize(@name : String, @mod : LLVM::Module, @typer : LLVMTyper)
       end
@@ -242,6 +272,7 @@ module Crystal
         @builder = nil
         @di_builder = nil
         @fun_types.clear
+        @at_planned_cut = false
         @list_of_generated_fun_names.clear
         @strings.clear
         @debug_files.clear
@@ -284,17 +315,70 @@ module Crystal
     # The module the next function of the type of *first_module_info* is
     # generated into: the type's newest segment, or a new one when that
     # reached the size limit.
-    private def segment_for_next_fun(first_module_info : ModuleInfo) : ModuleInfo
+    #
+    # In an incremental build the function named *mangled_name* goes to the
+    # segment it was in in the build before (see `StableNumbering`), and a
+    # function that is new goes to the type's last segment. A function added
+    # to a type then changes one segment, where filling the segments in the
+    # order the functions are generated would move every later function to
+    # another segment.
+    private def segment_for_next_fun(first_module_info : ModuleInfo, mangled_name : String? = nil) : ModuleInfo
       latest_segment = first_module_info.latest_segment
       return latest_segment if @module_segment_instructions <= 0 || first_module_info.same?(@main_module_info)
-      return latest_segment if latest_segment.generated_instruction_count < @module_segment_instructions
 
+      stable_numbering = @program.stable_numbering
+      unless stable_numbering && mangled_name
+        return latest_segment if latest_segment.generated_instruction_count < @module_segment_instructions
+
+        return add_segment(first_module_info)
+      end
+
+      function_digest = StableNumbering.function_digest(mangled_name)
+      kept_segments = first_module_info.kept_segments ||= stable_numbering.segments_by_module_name[first_module_info.name]? || StableNumbering::Segments.new
+      segment_index = kept_segments.segment_index_by_function_digest[function_digest]?
+      unless segment_index
+        # A new function: the last segment the type has or had, or one more
+        # when that one is full, counting what it held in the build before.
+        segment_index = Math.max(first_module_info.list_of_later_segments.size, kept_segments.list_of_instruction_counts.size - 1)
+        last_segment = segment_at(first_module_info, segment_index)
+        kept_instruction_count = kept_segments.list_of_instruction_counts[segment_index]? || 0_i64
+        if Math.max(last_segment.generated_instruction_count, kept_instruction_count) >= @module_segment_instructions
+          segment_index += 1
+        end
+      end
+      first_module_info.segment_index_by_function_digest[function_digest] = segment_index
+      segment_at(first_module_info, segment_index)
+    end
+
+    # Segment *segment_index* of the type of *first_module_info* (0 is the
+    # first module), created with every segment before it if need be.
+    private def segment_at(first_module_info : ModuleInfo, segment_index : Int32) : ModuleInfo
+      return first_module_info if segment_index <= 0
+
+      while first_module_info.list_of_later_segments.size < segment_index
+        add_segment(first_module_info)
+      end
+      first_module_info.list_of_later_segments[segment_index - 1]
+    end
+
+    private def add_segment(first_module_info : ModuleInfo) : ModuleInfo
       list_of_later_segments = first_module_info.list_of_later_segments
       segment_name = CodeGenVisitor.segment_module_name(first_module_info.name, list_of_later_segments.size + 1)
       segment = new_module_info(segment_name)
       @modules[segment_name] = segment
       list_of_later_segments << segment
       segment
+    end
+
+    # What the next incremental build keeps of the segments of the type of
+    # *first_module_info*, or `nil` for a type with one module.
+    def self.segments_to_keep(first_module_info : ModuleInfo) : StableNumbering::Segments?
+      return nil if first_module_info.list_of_later_segments.empty?
+
+      segments = StableNumbering::Segments.new
+      segments.segment_index_by_function_digest = first_module_info.segment_index_by_function_digest
+      segments.list_of_instruction_counts = [first_module_info.generated_instruction_count] + first_module_info.list_of_later_segments.map(&.generated_instruction_count)
+      segments
     end
 
     # The modules that are in memory, except the main one (it always is).
@@ -318,6 +402,7 @@ module Crystal
     private def fun_signatures : ModuleInfo
       @fun_signatures ||= begin
         llvm_context = LLVM::Context.new
+        discard_local_value_names(llvm_context)
         llvm_mod = configure_module(llvm_context.new_module("function_signatures"))
         signatures = ModuleInfo.new("(function signatures)", llvm_mod, LLVMTyper.new(@program, llvm_context, data_layout: llvm_mod.data_layout))
         signatures.pin_count = 1
@@ -366,6 +451,48 @@ module Crystal
         # Code is only generated into a pinned module, so this is where a
         # module's growth becomes known.
         account_module_ir(module_info)
+        note_planned_cut(module_info)
+      end
+    end
+
+    # The modules whose part in memory is complete according to their plan.
+    @list_of_modules_at_planned_cut = [] of ModuleInfo
+
+    # Remembers *module_info*, which just became idle, when its part in
+    # memory holds the functions the part held in the build before.
+    #
+    # Where a module is cut otherwise depends on what else is in memory at
+    # the time, so code added anywhere in the program would move the cuts of
+    # modules it has nothing to do with, and none of their parts would equal
+    # the cached ones.
+    private def note_planned_cut(module_info : ModuleInfo) : Nil
+      return unless @module_spill
+      return if module_info.at_planned_cut?
+      return if module_info.same?(@main_module_info) || module_info.same?(@fun_signatures)
+      return unless planned_fun_count = module_info.planned_fun_count_of_current_part
+      return if module_info.list_of_generated_fun_names.size < planned_fun_count
+
+      module_info.at_planned_cut = true
+      @list_of_modules_at_planned_cut << module_info
+    end
+
+    # Writes the modules that are at a planned cut. Called where idle
+    # modules may be spilled anyway (see `use_module`), never while a
+    # module is being read.
+    private def spill_modules_at_planned_cut(spill : ModuleSpill, finishes_debug_info : Bool = true) : Nil
+      return if @list_of_modules_at_planned_cut.empty?
+
+      @list_of_modules_at_planned_cut.reject! do |module_info|
+        # Written since, because memory ran short.
+        next true unless module_info.at_planned_cut?
+
+        # In use again: it is written the next time, with more functions
+        # than planned, and its cached object is built again.
+        next false unless module_info.idle?
+
+        module_info.at_planned_cut = false
+        spill_module(module_info, spill, finishes_debug_info) if module_info.resident?
+        true
       end
     end
 
@@ -380,9 +507,27 @@ module Crystal
       module_info.accounted_ir_bytes = estimated_ir_bytes
     end
 
+    # Makes *llvm_context*, which has no value yet, drop the names of local
+    # values (instructions, arguments, basic blocks) in an incremental build.
+    #
+    # Those names carry counters that run over the whole program
+    # (`__temp_123` for the 123rd temporary variable), so code added
+    # anywhere would otherwise change the bitcode of modules it has nothing
+    # to do with. Functions, globals and types keep their names. `DUMP`
+    # prints the modules, with the names.
+    private def discard_local_value_names(llvm_context : LLVM::Context) : Nil
+      return unless @program.stable_numbering
+      return if ENV["DUMP"]?
+
+      llvm_context.discard_value_names = true
+    end
+
     private def new_module_info(type_name : String) : ModuleInfo
       llvm_mod, llvm_typer = new_module_and_typer(type_name)
       module_info = ModuleInfo.new(type_name, llvm_mod, llvm_typer)
+      if stable_numbering = @program.stable_numbering
+        module_info.list_of_planned_part_fun_counts = stable_numbering.list_of_part_fun_counts_by_module_name[type_name]?
+      end
       module_info.builder = new_builder(module_info)
       module_became_resident(module_info)
       module_info
@@ -391,6 +536,7 @@ module Crystal
     # An empty module for the type named *type_name*, in a context of its own.
     private def new_module_and_typer(type_name : String) : {LLVM::Module, LLVMTyper}
       llvm_context = LLVM::Context.new
+      discard_local_value_names(llvm_context)
       # LLVM::Context.register(llvm_context, type_name)
 
       llvm_mod = configure_module(llvm_context.new_module(type_name))
@@ -414,6 +560,7 @@ module Crystal
       return unless spill
       return if module_info.same?(@main_module_info)
 
+      spill_modules_at_planned_cut(spill)
       start_next_part(module_info) unless module_info.resident?
       module_info.last_used_at = (@module_use_clock += 1)
 
@@ -435,8 +582,17 @@ module Crystal
     # memory are a little below both limits. Modules in use stay, however
     # large they are.
     private def spill_idle_modules(spill : ModuleSpill, keeping : ModuleInfo) : Nil
-      list_of_idle_modules = @resident_modules.select { |module_info| module_info.idle? && !module_info.same?(keeping) }
-      list_of_idle_modules.sort_by!(&.last_used_at)
+      # A module that has no function yet is about to get one (a segment
+      # made ahead of the functions it keeps): writing it would only add an
+      # empty part.
+      list_of_idle_modules = @resident_modules.select do |module_info|
+        module_info.idle? && !module_info.same?(keeping) && !module_info.list_of_generated_fun_names.empty?
+      end
+      # A module that follows a plan is cut where the plan says for as long
+      # as memory allows: the modules without one go first.
+      list_of_idle_modules.sort_by! do |module_info|
+        {module_info.planned_fun_count_of_current_part ? 1 : 0, module_info.last_used_at}
+      end
       list_of_idle_modules.each do |module_info|
         # *keeping* is idle too and stays, so it takes one of the places.
         count_is_low_enough = !spill.limits_module_count? || @idle_resident_module_count <= spill.idle_count_after_spilling
@@ -481,6 +637,7 @@ module Crystal
       ensure
         bitcode.dispose
       end
+      module_info.list_of_part_fun_counts << module_info.list_of_generated_fun_names.size
       spill.record_built_instructions(module_info.built_instruction_count)
 
       freed_ir_bytes = module_info.accounted_ir_bytes
@@ -527,6 +684,7 @@ module Crystal
     def spill_last_parts_of_spilled_modules : Nil
       return unless spill = @module_spill
 
+      spill_modules_at_planned_cut(spill, finishes_debug_info: false)
       @resident_modules.dup.each do |module_info|
         if module_info.list_of_spill_paths.empty?
           spill.record_built_instructions(module_info.built_instruction_count)

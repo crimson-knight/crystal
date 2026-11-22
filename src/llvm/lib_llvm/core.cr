@@ -23,6 +23,7 @@ lib LibLLVM
 
   fun create_context = LLVMContextCreate : ContextRef
   fun dispose_context = LLVMContextDispose(c : ContextRef)
+  fun context_set_discard_value_names = LLVMContextSetDiscardValueNames(c : ContextRef, discard : Bool)
 
   fun get_md_kind_id_in_context = LLVMGetMDKindIDInContext(c : ContextRef, name : Char*, s_len : UInt) : UInt
 
@@ -115,6 +116,7 @@ lib LibLLVM
   fun is_constant = LLVMIsConstant(val : ValueRef) : Bool
   fun get_value_name = LLVMGetValueName(val : ValueRef) : Char*
   fun set_value_name = LLVMSetValueName(val : ValueRef, name : Char*)
+  fun replace_all_uses_with = LLVMReplaceAllUsesWith(old_val : ValueRef, new_val : ValueRef)
 
   fun get_operand = LLVMGetOperand(val : ValueRef, index : UInt) : ValueRef
   fun get_num_operands = LLVMGetNumOperands(val : ValueRef) : Int
@@ -152,6 +154,7 @@ lib LibLLVM
 
   fun set_alignment = LLVMSetAlignment(v : ValueRef, bytes : UInt)
 
+  fun delete_global = LLVMDeleteGlobal(global_var : ValueRef)
   fun add_global = LLVMAddGlobal(m : ModuleRef, ty : TypeRef, name : Char*) : ValueRef
   {% if LibLLVM::IS_LT_200 %}
     fun get_named_global = LLVMGetNamedGlobal(m : ModuleRef, name : Char*) : ValueRef
