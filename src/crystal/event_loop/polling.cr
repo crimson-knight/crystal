@@ -108,12 +108,12 @@ abstract class Crystal::EventLoop::Polling < Crystal::EventLoop
   @timers_lock = SpinLock.new
   @timers = Timers(Event).new
 
-  {% if flag?(:without_mt) %}
-    # no parallelism issues, but let's clean-up anyway
-    def after_fork : Nil
-      @timers_lock = SpinLock.new
-    end
-  {% end %}
+  # Also defined in multithreaded mode: the compiler build server forks while only
+  # one thread runs Crystal code (see `Crystal::InferReuse.fork_process`).
+  # no parallelism issues, but let's clean-up anyway
+  def after_fork : Nil
+    @timers_lock = SpinLock.new
+  end
 
   # thread unsafe
   def run(blocking : Bool) : Bool

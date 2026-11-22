@@ -292,6 +292,22 @@ module Crystal
       @observers.push observer
     end
 
+    # Yields every node that observes this one.
+    def each_observer(& : ASTNode ->) : Nil
+      @observers.each { |observer| yield observer }
+    end
+
+    # Makes this node depend on *new_node* where it depended on *old_node*,
+    # and observe it instead, without looking at types again: for a typed def
+    # a build server replaced with one of the same type (see
+    # `InferReuse::Retyper`). Returns whether *old_node* was a dependency.
+    def replace_dependency(old_node : ASTNode, new_node : ASTNode) : Bool
+      return false unless @dependencies.replace_first(old_node, new_node)
+      old_node.remove_observer(self)
+      new_node.add_observer(self)
+      true
+    end
+
     def remove_observer(observer)
       @observers.try &.reject! &.same?(observer)
     end
