@@ -70,7 +70,7 @@ generated documents and require zero disagreements (see Mica's
 `docs/yaml.md`). The emitter is a port of libyaml 0.2.5's and writes the
 same bytes.
 
-- `spec/std/yaml` passes on both engines (457 examples each).
+- `spec/std/yaml` passes on both engines (465 examples each).
 - `YAML.libyaml_version` returns 0.2.5 on Mica: the dialect the
   engine reads, so version checks written for libyaml see that version.
 - The pull parser's nesting guard (`max_nesting`) and alias-to-anchor
