@@ -83,6 +83,7 @@ class Crystal::CodeGenVisitor
   end
 
   def initialize_class_var(class_var : MetaTypeVar, initializer : ClassVarInitializer)
+    mark_ir_trace_unreplayable("a class variable initialized inside a function")
     init_func = create_initialize_class_var_function(class_var, initializer)
     init_func = check_main_fun(init_func.func.name, init_func) if init_func
 
@@ -181,6 +182,7 @@ class Crystal::CodeGenVisitor
   end
 
   def read_class_var_ptr(class_var : MetaTypeVar)
+    record_ir_class_var_pointer(class_var)
     class_var.read = true
 
     owner = class_var.owner
@@ -206,6 +208,41 @@ class Crystal::CodeGenVisitor
     else
       get_class_var_global(class_var)
     end
+  end
+
+  # What reading *class_var* asks of the main module, without reading it:
+  # the part of `read_class_var_ptr` a replayed trace repeats (see `IrSkip`).
+  def request_class_var_pointer_in_main(class_var : MetaTypeVar) : Nil
+    class_var.read = true
+
+    owner = class_var.owner
+    read_function_name = "~#{class_var_global_name(class_var)}:read"
+    if owner.is_a?(VirtualType)
+      typed_fun?(@main_mod, read_function_name) ||
+        create_read_virtual_class_var_ptr_function(read_function_name, class_var, owner)
+      return
+    end
+    if owner.is_a?(VirtualMetaclassType)
+      typed_fun?(@main_mod, read_function_name) ||
+        create_read_virtual_metaclass_var_ptr_function(read_function_name, class_var, owner)
+      return
+    end
+
+    initializer = class_var.initializer
+    reads_through_function = initializer && !class_var.uninitialized? && !class_var.no_init_flag? &&
+                             create_read_class_var_function(class_var, initializer)
+    define_class_var_global_in_main(class_var) unless reads_through_function
+  end
+
+  # The main module's side of `get_global_var` for a class variable that is
+  # read from another module.
+  private def define_class_var_global_in_main(class_var : MetaTypeVar) : Nil
+    global_name = class_var_global_name(class_var)
+    return if @main_mod.globals[global_name]?
+
+    main_llvm_type = @main_llvm_typer.llvm_type(class_var.type)
+    main_global = @main_mod.globals.add(main_llvm_type, global_name)
+    main_global.initializer = main_llvm_type.null
   end
 
   def get_class_var_global(class_var)

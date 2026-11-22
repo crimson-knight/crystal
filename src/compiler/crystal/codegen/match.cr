@@ -38,10 +38,17 @@ class Crystal::CodeGenVisitor
   end
 
   private def match_any_type_id_with_function(type, type_id)
-    match_fun_name = "~match<#{type.llvm_name}>"
-    func = typed_fun?(@main_mod, match_fun_name) || create_match_fun(match_fun_name, type)
-    func = check_main_fun match_fun_name, func
+    record_ir_type_effect(IrSkip::TraceKind::Match, type)
+    func = match_fun_in_main(type)
+    func = check_main_fun func.func.name, func
     call func, [type_id] of LLVM::Value
+  end
+
+  # The function that tells whether a type id is that of *type* or of one
+  # of its subtypes, defined in the main module on first use.
+  def match_fun_in_main(type : UnionType | VirtualType | VirtualMetaclassType) : LLVMTypedFunction
+    match_fun_name = "~match<#{type.llvm_name}>"
+    typed_fun?(@main_mod, match_fun_name) || create_match_fun(match_fun_name, type)
   end
 
   private def create_match_fun(name, type)

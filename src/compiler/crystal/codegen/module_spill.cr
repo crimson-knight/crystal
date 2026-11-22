@@ -214,6 +214,38 @@ module Crystal
       def initialize(@name : String, @mod : LLVM::Module, @typer : LLVMTyper)
       end
 
+      # A module without a part in memory yet: one that may get no code at
+      # all in this build (see `IrSkip`).
+      def initialize(@name : String)
+      end
+
+      # While set, the functions this module is asked for are compared with
+      # the build before instead of generated (see `IrSkip::UnitPlan`).
+      property ir_skip_plan : IrSkip::UnitPlan?
+
+      # The key and trace of each function that was generated into this
+      # module, in the order they were asked for: what the next build
+      # compares with.
+      getter list_of_recorded_funs = [] of IrSkip::RecordedFun
+
+      # Whether this module matched the build before to the end and got no
+      # code (see `IrSkip`).
+      def skipped_ir_generation? : Bool
+        plan = @ir_skip_plan
+        !plan.nil? && plan.complete?
+      end
+
+      # How many instructions the module holds, for the build after this
+      # one: a module that got no code holds what it held before.
+      def instruction_count_to_keep : Int64
+        plan = @ir_skip_plan
+        plan && plan.complete? ? plan.recorded.instruction_count : generated_instruction_count
+      end
+
+      # Whether functions were generated into this module after the moment
+      # they were asked for.
+      property? late_generated = false
+
       def mod : LLVM::Module
         @mod || raise "BUG: LLVM module #{@name.inspect} is used while it is on disk"
       end
@@ -377,7 +409,7 @@ module Crystal
 
       segments = StableNumbering::Segments.new
       segments.segment_index_by_function_digest = first_module_info.segment_index_by_function_digest
-      segments.list_of_instruction_counts = [first_module_info.generated_instruction_count] + first_module_info.list_of_later_segments.map(&.generated_instruction_count)
+      segments.list_of_instruction_counts = [first_module_info.instruction_count_to_keep] + first_module_info.list_of_later_segments.map(&.instruction_count_to_keep)
       segments
     end
 
@@ -523,14 +555,27 @@ module Crystal
     end
 
     private def new_module_info(type_name : String) : ModuleInfo
-      llvm_mod, llvm_typer = new_module_and_typer(type_name)
-      module_info = ModuleInfo.new(type_name, llvm_mod, llvm_typer)
+      # A module that may match the build before gets its LLVM module only
+      # when it turns out to need code.
+      if recorded_unit = ir_skip_session.try(&.candidate?(type_name))
+        module_info = ModuleInfo.new(type_name)
+        module_info.ir_skip_plan = IrSkip::UnitPlan.new(recorded_unit)
+      else
+        llvm_mod, llvm_typer = new_module_and_typer(type_name)
+        module_info = ModuleInfo.new(type_name, llvm_mod, llvm_typer)
+        module_info.builder = new_builder(module_info)
+        module_became_resident(module_info)
+      end
       if stable_numbering = @program.stable_numbering
         module_info.list_of_planned_part_fun_counts = stable_numbering.list_of_part_fun_counts_by_module_name[type_name]?
       end
-      module_info.builder = new_builder(module_info)
-      module_became_resident(module_info)
       module_info
+    end
+
+    # Gives *module_info* a part in memory if it has none, with or without
+    # a `ModuleSpill`.
+    private def make_module_resident(module_info : ModuleInfo) : Nil
+      start_next_part(module_info) unless module_info.resident? || module_info.same?(@main_module_info)
     end
 
     # An empty module for the type named *type_name*, in a context of its own.

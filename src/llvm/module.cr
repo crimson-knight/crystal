@@ -85,6 +85,12 @@ class LLVM::Module
 
   # Whether `#split_to_bitcode` can split this module: it needs LLVM 17 or
   # later, and a module without module-level assembly.
+  # Moves the function declarations to the end of the module, ordered by
+  # name, so the bitcode does not depend on the order they were made in.
+  def sort_function_declarations_by_name : Nil
+    LibLLVMExt.sort_function_declarations_by_name(self)
+  end
+
   def can_be_split? : Bool
     LibLLVMExt.module_can_be_split(self) != 0
   end

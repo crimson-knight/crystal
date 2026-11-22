@@ -486,6 +486,22 @@ class Crystal::CodeGenVisitor
     codegen_call_or_invoke(node, target_def, self_type, func, call_args, target_def.raises?, target_def.type)
   end
 
+  # Whether a call to *target_def*, whose body is *body*, generates the body
+  # in place (see `try_inline_call`). The key of a function covers such a
+  # body (see `IrSkip::KeyWalker`), so both ask here.
+  def self.inlines_body_at_call?(target_def : Def, body : ASTNode) : Bool
+    return false if target_def.is_a?(External)
+
+    case body
+    when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral, InstanceVar
+      true
+    when Var
+      body.name == "self"
+    else
+      false
+    end
+  end
+
   # If a method's body is just a simple literal, "self", or an instance variable,
   # we always inline it: less code generated, easier job for LLVM to optimize, and
   # avoid a call in non-release builds.
@@ -495,7 +511,7 @@ class Crystal::CodeGenVisitor
   # Additionally, not inlining instance variable getters changes the semantic
   # a program, so we must always inline these.
   def try_inline_call(target_def, body, self_type, call_args)
-    return false if target_def.is_a?(External)
+    return false unless CodeGenVisitor.inlines_body_at_call?(target_def, body)
 
     case body
     when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral
