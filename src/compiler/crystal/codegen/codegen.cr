@@ -1736,15 +1736,16 @@ module Crystal
       map_length = stable ? 0 : @program.llvm_id.id_limit
       @uses_type_id_to_class_name_map = true
 
-      global = @main_mod.globals[map_name]?
-      unless global || stable
+      definition = @main_mod.globals[map_name]?
+      unless definition || stable
         initializer = create_type_id_to_class_name_map
-        global = @main_mod.globals.add(initializer.type, map_name)
-        global.linkage = LLVM::Linkage::Internal if @single_module
-        global.initializer = initializer
-        global.global_constant = true
+        definition = @main_mod.globals.add(initializer.type, map_name)
+        definition.linkage = LLVM::Linkage::Internal if @single_module
+        definition.initializer = initializer
+        definition.global_constant = true
       end
 
+      global = definition
       if stable || @llvm_mod != @main_mod
         global = @llvm_mod.globals[map_name]?
         unless global
@@ -1753,8 +1754,9 @@ module Crystal
           global.global_constant = true
         end
       end
+      raise "BUG: the class-name map is neither defined nor declared" unless global
 
-      str_ptr = gep llvm_type(@program.string).array(map_length), global.not_nil!, 0, type_id
+      str_ptr = gep llvm_type(@program.string).array(map_length), global, 0, type_id
       load llvm_type(@program.string), str_ptr
     end
 

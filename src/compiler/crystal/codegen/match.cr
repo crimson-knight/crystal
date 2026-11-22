@@ -74,7 +74,7 @@ class Crystal::CodeGenVisitor
       )
       result = result ? or(result, in_range) : in_range
     end
-    ret result.not_nil!
+    ret(result || raise "BUG: #{type.base_type} has no type id")
   end
 
   private def create_match_fun_body(type, type_id)
