@@ -391,7 +391,7 @@ module Crystal
       @needs_value = true
 
       @unused_fun_defs = [] of FunDef
-      @proc_counts = Hash(String, Int32).new(0)
+      @proc_counts = {} of String => Hash(String, Int32)
       @closure_counts = Hash(String, Int32).new(0)
 
       # We need to define __crystal_malloc and __crystal_realloc as soon as possible,
@@ -642,6 +642,8 @@ module Crystal
         codegen_fun node.real_name, node.external, @program, is_exported_fun: true
       end
 
+      finish_ir_skip
+
       env_dump = ENV["DUMP"]?
       case env_dump
       when Nil
@@ -848,6 +850,7 @@ module Crystal
                 instance_var_ptr context.type.remove_typedef, node_exp.name, llvm_self_ptr
               when ClassVar
                 # Make sure the class var is initializer before taking a pointer of it
+                mark_ir_trace_unreplayable("pointerof a class variable")
                 if node_exp.var.initializer
                   initialize_class_var(node_exp)
                 end
@@ -876,19 +879,11 @@ module Crystal
       fun_literal_name = fun_literal_name(node)
       is_closure = node.def.closure?
 
-      # If we don't care about a proc literal's return type then we mark the associated
-      # def as returning void. This can't be done in the type inference phase because
-      # of bindings and type propagation.
-      if node.force_nil?
-        node.def.set_type @program.nil
-      else
-        # Use proc literal's type, which might have a broader type then the body
-        # (for example, return type: Int32 | String, body: String)
-        node.def.set_type node.return_type
-      end
+      set_proc_literal_def_type(node)
 
-      the_fun = codegen_fun fun_literal_name, node.def, context.type, fun_module_info: @main_module_info, is_fun_literal: true, is_closure: is_closure
-      the_fun = check_main_fun fun_literal_name, the_fun
+      literal_module_info = proc_literal_module_info
+      the_fun = codegen_fun fun_literal_name, node.def, context.type, fun_module_info: literal_module_info, is_fun_literal: true, is_closure: is_closure
+      the_fun = check_mod_fun literal_module_info, fun_literal_name, the_fun
 
       set_current_debug_location(node) if @debug.line_numbers?
       fun_ptr = cast_to_void_pointer(the_fun.func)
@@ -900,6 +895,28 @@ module Crystal
       @last = make_fun node.type, fun_ptr, ctx_ptr
 
       false
+    end
+
+    # The module the function of a proc literal is generated into. In a build
+    # that skips IR generation for unchanged modules (see `IrSkip`) it is the
+    # module of the function that holds the literal, so a module that gets no
+    # code keeps the functions of its literals in its cached object file;
+    # otherwise it is the main module.
+    private def proc_literal_module_info : ModuleInfo
+      ir_skip_session ? @module_info : @main_module_info
+    end
+
+    # If we don't care about a proc literal's return type then we mark the associated
+    # def as returning void. This can't be done in the type inference phase because
+    # of bindings and type propagation.
+    private def set_proc_literal_def_type(node : ProcLiteral) : Nil
+      if node.force_nil?
+        node.def.set_type @program.nil
+      else
+        # Use proc literal's type, which might have a broader type then the body
+        # (for example, return type: Int32 | String, body: String)
+        node.def.set_type node.return_type
+      end
     end
 
     # Joins the type of a proc literal function and the function it is in
@@ -927,7 +944,8 @@ module Crystal
       unless type
         prefix = "~fun_literal"
       end
-      proc_count = (@proc_counts["#{prefix}#{type}#{PROC_LITERAL_SEPARATOR}#{enclosing_fun_name}"] += 1)
+      proc_counts_of_fun = @proc_counts[enclosing_fun_name] ||= Hash(String, Int32).new(0)
+      proc_count = (proc_counts_of_fun["#{prefix}#{type}"] += 1)
       turn = proc_count > 1 ? proc_count.to_s : ""
       Crystal.safe_mangling(@program, "#{prefix}#{turn}#{type}#{PROC_LITERAL_SEPARATOR}#{enclosing_fun_name}")
     end
@@ -1439,6 +1457,7 @@ module Crystal
       # which is the same as the global, but through a non-inlined function.
       #
       # Making a function that just returns the pointer doesn't work: LLVM inlines it.
+      mark_ir_trace_unreplayable("a thread local variable")
       fun_name = "*#{name}"
       thread_local_fun = typed_fun?(@main_mod, fun_name)
       unless thread_local_fun
@@ -1745,6 +1764,7 @@ module Crystal
       # with every id that was given out by then.
       stable = @program.llvm_id.stable?
       map_length = stable ? 0 : @program.llvm_id.id_limit
+      record_ir_effect(IrSkip::TraceKind::ClassNameMap)
       @uses_type_id_to_class_name_map = true
 
       definition = @main_mod.globals[map_name]?
@@ -2019,10 +2039,18 @@ module Crystal
 
     def check_proc_is_not_closure(value, type)
       check_fun_name = "~check_proc_is_not_closure"
-      func = typed_fun?(@main_mod, check_fun_name) || create_check_proc_is_not_closure_fun(check_fun_name)
+      record_ir_effect(IrSkip::TraceKind::CheckProcIsNotClosure)
+      func = check_proc_is_not_closure_fun_in_main
       func = check_main_fun check_fun_name, func
       value = call func, [value] of LLVM::Value
       pointer_cast value, llvm_proc_type(type).pointer
+    end
+
+    # The function that raises when a closure is passed to C, defined in the
+    # main module on first use.
+    def check_proc_is_not_closure_fun_in_main : LLVMTypedFunction
+      check_fun_name = "~check_proc_is_not_closure"
+      typed_fun?(@main_mod, check_fun_name) || create_check_proc_is_not_closure_fun(check_fun_name)
     end
 
     def create_check_proc_is_not_closure_fun(fun_name)
@@ -2092,7 +2120,12 @@ module Crystal
 
       clear_current_debug_location if @debug.line_numbers?
 
+      # What is generated into the main module is no request of the
+      # function that is being generated (see `IrSkip`).
+      traces_requests = !@ir_trace_frames.empty?
+      @ir_trace_frames << nil if traces_requests
       block_value = yield
+      @ir_trace_frames.pop if traces_requests
 
       @builder = old_builder
       position_at_end old_position
@@ -2595,6 +2628,7 @@ module Crystal
     # be invoked instead.
 
     def c_malloc_fun
+      record_ir_effect(IrSkip::TraceKind::CMalloc)
       malloc_fun = @c_malloc_fun = fetch_typed_fun(@main_mod, "malloc") do
         LLVM::Type.function([main_llvm_context_size_t], @main_llvm_context.void_pointer)
       end
@@ -2603,6 +2637,7 @@ module Crystal
     end
 
     def c_realloc_fun
+      record_ir_effect(IrSkip::TraceKind::CRealloc)
       realloc_fun = @c_realloc_fun = fetch_typed_fun(@main_mod, "realloc") do
         LLVM::Type.function([@main_llvm_context.void_pointer, main_llvm_context_size_t], @main_llvm_context.void_pointer)
       end

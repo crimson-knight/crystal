@@ -1021,9 +1021,17 @@ class Crystal::CodeGenVisitor
   def codegen_primitive_class_with_type(type : VirtualType, value)
     type_id = type_id(value, type)
     metaclass_fun_name = "~metaclass"
-    func = typed_fun?(@main_mod, metaclass_fun_name) || create_metaclass_fun(metaclass_fun_name)
+    record_ir_effect(IrSkip::TraceKind::Metaclass)
+    func = metaclass_fun_in_main
     func = check_main_fun metaclass_fun_name, func
     call func, [type_id] of LLVM::Value
+  end
+
+  # The function that maps the type id of an object to the type id of its
+  # class, defined in the main module on first use.
+  def metaclass_fun_in_main : LLVMTypedFunction
+    metaclass_fun_name = "~metaclass"
+    typed_fun?(@main_mod, metaclass_fun_name) || create_metaclass_fun(metaclass_fun_name)
   end
 
   def create_metaclass_fun(name)
