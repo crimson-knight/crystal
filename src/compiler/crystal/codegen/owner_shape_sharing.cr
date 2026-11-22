@@ -225,13 +225,41 @@ module Crystal
         next unless shape.shareable?
         key = {shape.first, shape.second}
         if representative = first_of_group[key]?
-          @representatives[shape.typed_def.object_id] = representative
-          @stats.shared += 1
+          first_of_group[key] = shape.typed_def if stands_before?(shape.typed_def, representative)
         else
           first_of_group[key] = shape.typed_def
         end
       end
+      @shapes.each do |shape|
+        next unless shape.shareable?
+        representative = first_of_group[{shape.first, shape.second}]
+        next if representative.same?(shape.typed_def)
+        @representatives[shape.typed_def.object_id] = representative
+        @stats.shared += 1
+      end
       @stats.groups = groups
+    end
+
+    # Whether *typed_def* is the representative of its group rather than
+    # *representative*, the one found so far.
+    #
+    # The first def found stands for its group, and which one is found first
+    # depends on the order the program uses its types in. An incremental
+    # build keeps type ids (see `LLVMId`), and there the def whose owner has
+    # the smallest id stands for the group: a type added to the program has
+    # the largest id, so it never takes a group over, and the function the
+    # group shares keeps its name.
+    private def stands_before?(typed_def : Def, representative : Def) : Bool
+      return false unless @program.stable_numbering
+
+      owner_rank(typed_def) < owner_rank(representative)
+    end
+
+    private def owner_rank(typed_def : Def) : Int32
+      owner = typed_def.owner.devirtualize
+      return Int32::MAX if owner.is_a?(VirtualType) || owner.is_a?(VirtualMetaclassType)
+
+      @program.llvm_id.type_id(owner)
     end
 
     private def count_groups : Int32
