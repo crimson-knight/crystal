@@ -158,7 +158,6 @@ class Crystal::CodeGenVisitor
     end
     return nil unless previous_fun
 
-    @irs_log.try &.puts(mangled_name)
     signature = declare_fun_signature_only(mangled_name, target_def, self_type)
     plan.list_of_accepted << IrSkip::AcceptedFun.new(mangled_name, target_def, self_type, previous_fun)
     plan.position += 1
@@ -214,17 +213,7 @@ class Crystal::CodeGenVisitor
 
   # Repeats what generating the function of *recorded_fun* asked of the
   # rest of the program. Returns why it cannot, or `nil` when it did.
-  @ir_skip_replaying = [] of String
-  @irs_log : File? = ENV["IRS_LOG"]?.try { |path| File.open(path, "w") }
-
   private def replay_ir_trace(recorded_fun : IrSkip::RecordedFun, walk : IrSkip::Walk) : String?
-    @ir_skip_replaying << recorded_fun.name
-    failure = replay_ir_trace_entries(recorded_fun, walk)
-    @ir_skip_replaying.pop
-    failure
-  end
-
-  private def replay_ir_trace_entries(recorded_fun : IrSkip::RecordedFun, walk : IrSkip::Walk) : String?
     recorded_fun.list_of_trace_entries.each do |entry|
       case entry.kind
       in .fun?

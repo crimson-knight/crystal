@@ -180,7 +180,6 @@ class Crystal::CodeGenVisitor
     fun_module_info.list_of_generated_fun_names << mangled_name
     pin_module(fun_module_info)
 
-    @irs_log.try &.puts(mangled_name)
     # Proc literals and closures are numbered within their function.
     @proc_counts.delete(mangled_name)
     @closure_counts.delete(mangled_name)
