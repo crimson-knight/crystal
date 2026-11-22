@@ -643,6 +643,7 @@ module Crystal
       end
 
       finish_ir_skip
+      @irs_log.try &.close
 
       env_dump = ENV["DUMP"]?
       case env_dump
