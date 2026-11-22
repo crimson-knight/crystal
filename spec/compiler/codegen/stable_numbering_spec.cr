@@ -231,6 +231,46 @@ describe "Code generation: stable numbering" do
     end
   end
 
+  describe "functions shared by owners of one shape" do
+    it "keeps the owner that stood for a group when a new class of that shape comes first" do
+      shared_advance = <<-CRYSTAL
+        class Base
+          def initialize(@count : Int32)
+          end
+
+          def advance
+            @count = @count &+ 1
+          end
+        end
+
+        class First < Base
+        end
+
+        class Second < Base
+        end
+        CRYSTAL
+      numbering = Crystal::StableNumbering.new
+      before = semantic(%(#{shared_advance}\nFirst.new(1).advance &+ Second.new(2).advance), inject_primitives: true)
+      before.program.stable_numbering = numbering
+      before.program.codegen(before.node, single_module: true)
+      numbering.type_ids_by_stable_key = before.program.llvm_id.type_ids_in_use_by_stable_key
+
+      with_a_new_class_first = %(#{shared_advance.sub("class First < Base", "class Earlier < Base\nend\n\nclass First < Base")}
+        Earlier.new(0).advance &+ First.new(1).advance &+ Second.new(2).advance)
+      owner_that_stands_for_the_group = ->(kept_numbering : Crystal::StableNumbering?) do
+        result = semantic(with_a_new_class_first, inject_primitives: true)
+        result.program.stable_numbering = kept_numbering
+        sharing = Crystal::OwnerShapeSharing.new(result.program)
+        sharing.analyze(result.node)
+        shape = sharing.shapes.find! { |candidate| candidate.typed_def.name == "advance" && candidate.typed_def.owner.to_s == "Second" }
+        sharing.representative?(shape.typed_def).not_nil!.owner.to_s
+      end
+
+      owner_that_stands_for_the_group.call(nil).should eq("Earlier")
+      owner_that_stands_for_the_group.call(numbering).should eq("First")
+    end
+  end
+
   describe "proc literal functions" do
     it "names them after the function they are in and their turn in it" do
       mod = codegen(PROC_LITERALS)
