@@ -26,6 +26,9 @@ $ otool -L app      # or ldd: no libpcre2-8
 `Crystal::Program#uses_mica_regex_engine?` makes the same choice in the
 compiler.
 
+YAML has its own default and opt-out (`-Duse_libyaml`, see
+`doc/yaml_mica.md`); the two choices are independent.
+
 Build with `-Duse_pcre2` when a program needs syntax Mica does not run
 (lookaround, backreferences and the others listed under "Syntax Mica does
 not run"), `MATCH_INVALID_UTF`, or PCRE2's exact behavior on a haystack

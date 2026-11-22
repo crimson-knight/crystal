@@ -1,15 +1,25 @@
 require "spec"
 require "yaml"
 
-# Results that must be identical on libyaml and on the Mica engine
-# (`-Duse_mica`, see doc/yaml_mica.md). The expected values were recorded
-# from libyaml 0.2.5.
+# Results that must be identical on the Mica engine (the default, see
+# doc/yaml_mica.md) and on libyaml (`-Duse_libyaml`). The expected values
+# were recorded from libyaml 0.2.5.
 describe "YAML engines" do
   it "states the libyaml version the Mica engine follows" do
-    {% if flag?(:use_mica) %}
-      YAML.libyaml_version.should eq SemanticVersion.new(0, 2, 5)
-    {% else %}
+    {% if flag?(:use_libyaml) %}
       YAML.libyaml_version.should be >= SemanticVersion.new(0, 1, 0)
+    {% else %}
+      YAML.libyaml_version.should eq SemanticVersion.new(0, 2, 5)
+    {% end %}
+  end
+
+  it "runs on the engine the build selected" do
+    {% if flag?(:use_libyaml) %}
+      {{ YAML.has_constant?(:MicaEngine) }}.should be_false
+      {{ @top_level.has_constant?(:LibYAML) }}.should be_true
+    {% else %}
+      {{ YAML.has_constant?(:MicaEngine) }}.should be_true
+      {{ @top_level.has_constant?(:LibYAML) }}.should be_false
     {% end %}
   end
 

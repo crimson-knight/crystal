@@ -26,7 +26,7 @@ require "../mica/yaml"
 # string # => "---\nfoo:\n- 1\n- 2\nbar:\n  baz: qux\n"
 # ```
 #
-# This is the `-Duse_mica` implementation: the output comes from Mica's
+# This is the default implementation: the output comes from Mica's
 # pure-Crystal emitter, which writes the same bytes as libyaml (see
 # `doc/yaml_mica.md`).
 class YAML::Builder
