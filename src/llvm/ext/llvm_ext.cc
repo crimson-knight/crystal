@@ -163,6 +163,24 @@ void LLVMExtSetWasmExceptionHandling(LLVMTargetMachineRef T) {
   LLVMExtEnableLegacyWasmExceptionHandlingOptions();
 }
 
+// Moves the function declarations (functions without a body) of a module to
+// its end, ordered by name. Definitions keep their order, and no use of a
+// function changes. The bitcode of a module then does not depend on the
+// order its declarations were made in.
+void LLVMExtSortFunctionDeclarationsByName(LLVMModuleRef M) {
+  Module &module = *unwrap(M);
+  std::vector<Function *> declarations;
+  for (Function &function : module)
+    if (function.isDeclaration())
+      declarations.push_back(&function);
+  llvm::sort(declarations, [](Function *a, Function *b) {
+    return a->getName() < b->getName();
+  });
+  auto &functions = module.getFunctionList();
+  for (Function *function : declarations)
+    functions.splice(functions.end(), functions, function->getIterator());
+}
+
 // Whether `LLVMExtSplitModuleToBitcode` can split this module: it needs
 // LLVM 17 or later, and a module without module-level assembly, which
 // SplitModule cannot keep consistent across parts.

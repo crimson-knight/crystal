@@ -832,6 +832,12 @@ module Crystal
       if ir_skip_session
         summarize_ir_skip(ir_skip_session, llvm_modules)
         print_ir_skip_stats(ir_skip_session)
+        # The main module is generated in every build, and the moment it
+        # gets a declaration (a lib fun, a callee) depends on which functions
+        # were skipped. In name order, its bitcode does not.
+        if (main_module_info = llvm_modules[""]?) && main_module_info.resident?
+          main_module_info.mod.sort_function_declarations_by_name
+        end
       end
 
       release_parts = release_parts_for(program, is_single_module, llvm_modules)
