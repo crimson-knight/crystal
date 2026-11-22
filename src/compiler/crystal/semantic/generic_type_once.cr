@@ -672,3 +672,51 @@ module Crystal
     end
   end
 end
+
+module Crystal::GenericTypeOnce
+  # `CRYSTAL_GENERIC_TYPE_ONCE_PROBE=<file>`: for every method typed for an
+  # instance of a generic class that declares `@[TypeBound]`, whether it
+  # could be typed once for every instance and, when not, why. Writes one
+  # line per method, most copies first. A diagnostic for choosing what to
+  # mark; it changes no typing.
+  module Probe
+    class_getter? enabled : Bool = !ENV["CRYSTAL_GENERIC_TYPE_ONCE_PROBE"]?.nil?
+
+    record Entry, a_def : Def, reason : String?, copies : Int32
+
+    @@entries = Hash(UInt64, Entry).new
+
+    def self.note(program : Program, match : Match, typed_def : Def) : Nil
+      a_def = match.def
+      receiver = match.context.instantiated_type
+      instance = GenericTypeOnce.receiver_instance(receiver) || return
+      generic = instance.generic_type
+      return unless generic.is_a?(GenericClassType) && program.generic_bounds(generic)
+      erased = GenericTypeOnce.erased_instance(program, instance)
+      reason = if erased.nil?
+                 "an argument is outside the bound, or the erased instance is used directly"
+               else
+                 scan = program.generic_type_once_scan(a_def, erased) do
+                   result = Scan.new
+                   Scanner.new(program, erased, receiver.metaclass?, result, Set(UInt64).new).scan_def(a_def, entry: true)
+                   result
+                 end
+                 scan.reason || GenericTypeOnce.receiver_mismatch(receiver, instance, erased, scan, a_def)
+               end
+      key = a_def.object_id
+      entry = @@entries[key]?
+      @@entries[key] = Entry.new(a_def, entry.try(&.reason) || reason, (entry.try(&.copies) || 0) + 1)
+    end
+
+    def self.report(program : Program) : Nil
+      path = ENV["CRYSTAL_GENERIC_TYPE_ONCE_PROBE"]? || return
+      File.open(path, "w") do |file|
+        @@entries.values.sort_by! { |entry| -entry.copies }.each do |entry|
+          a_def = entry.a_def
+          location = a_def.location
+          file.puts "#{entry.copies}\t#{a_def.owner}#{a_def.receiver ? "." : "#"}#{a_def.name}\t#{location.try(&.original_filename)}:#{location.try(&.line_number)}\t#{a_def.type_once? ? "marked" : "unmarked"}\t#{entry.reason || "OK"}"
+        end
+      end
+    end
+  end
+end
