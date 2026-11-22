@@ -340,7 +340,9 @@ module Crystal::LinePatch
 
     private def c_string(offset : Int64) : String
       finish = offset
-      finish += 1 while finish < @bytes.size && @bytes[finish] != 0
+      while finish < @bytes.size && @bytes[finish] != 0
+        finish += 1
+      end
       String.new(@bytes[offset, finish - offset])
     end
 

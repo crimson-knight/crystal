@@ -792,7 +792,7 @@ module Crystal
       # such a build drops.
       stable_numbering = @incremental && !@no_cache && @emit_targets.none? ? StableNumbering.load(output_dir) : nil
       program.stable_numbering = stable_numbering
-      ir_skip_session = ir_skip_session_for(program, output_dir, is_single_module, stable_numbering)
+      ir_skip_session = ir_skip_session_for(program, output_dir, is_single_module, stable_numbering, sources)
       program.ir_skip = ir_skip_session
       @last_ir_skip_stats = ir_skip_session.try(&.stats)
 
@@ -843,6 +843,7 @@ module Crystal
       release_parts = release_parts_for(program, is_single_module, llvm_modules)
       bc_flags_changed = bc_flags_changed? output_dir, release_parts
       target_triple = target_machine.triple
+      list_of_line_patch_checks = @list_of_line_patch_checks = [] of LinePatch::Verification::Check
 
       units = llvm_modules.map do |type_name, info|
         # A module is either in memory or, all of its parts, on disk.
@@ -858,8 +859,20 @@ module Crystal
         # than the files its own defs are in (inlined bodies, callee return
         # types, type layouts).
         list_of_carried_part_hashes = info.skipped_ir_generation? ? info.ir_skip_plan.try(&.recorded.list_of_part_hashes) : nil
+        patched_object = info.ir_skip_plan.try(&.line_patch)
+        if patched_object && !info.skipped_ir_generation?
+          # Generated after all (or in verification): the patched object is
+          # only compared with the fresh one, if at all.
+          if ir_skip_session && ir_skip_session.verify? && (pending_filename = patched_object.pending_filename)
+            list_of_line_patch_checks << LinePatch::Verification::Check.new(type_name, pending_filename,
+              Crystal.relative_filename("#{output_dir}/#{CompilationUnit.file_basename(type_name, optimization_mode)}#{codegen_target.object_extension}"))
+          else
+            patched_object.discard
+          end
+          patched_object = nil
+        end
         CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, release_parts,
-          info.list_of_spill_paths, info.list_of_spill_part_hashes, list_of_carried_part_hashes)
+          info.list_of_spill_paths, info.list_of_spill_part_hashes, list_of_carried_part_hashes, patched_object)
       end
       @ir_skip_session_to_finish = ir_skip_session
       @list_of_ir_skip_module_infos = ir_skip_session ? llvm_modules.values : nil
@@ -1229,6 +1242,7 @@ module Crystal
           parallel_codegen(units, n_threads)
         end
         finish_ir_skip_session(output_dir, units)
+        verify_line_patches(@list_of_line_patch_checks)
 
         if units.size == 1
           units.first.emit(@emit_targets, emit_base_filename || output_filename)
@@ -1433,6 +1447,7 @@ module Crystal
           pending_incremental_cache_filename: pending_incremental_cache_filename,
           list_of_warnings: warnings.infos,
           error_on_warnings: warnings.error_on_warnings?,
+          list_of_line_patch_checks: @list_of_line_patch_checks,
         )
         handoff_filename = File.join(output_dir, "object-stage-handoff.json")
         File.write(handoff_filename, handoff.to_json)
@@ -1642,17 +1657,42 @@ module Crystal
     @ir_skip_session_to_finish : IrSkip::Session?
     @list_of_ir_skip_module_infos : Array(CodeGenVisitor::ModuleInfo)?
 
+    # The patched objects to compare with fresh ones once objects are built
+    # (`CRYSTAL_LINE_PATCH_VERIFY=1`).
+    @list_of_line_patch_checks = [] of LinePatch::Verification::Check
+
+    # How many patched objects the last build verified, and the differences
+    # it found.
+    getter last_line_patch_verification : {Int32, Array(String)}?
+
+    # Compares the patched objects of a verification build with the fresh
+    # ones, and fails the build when they differ (see `LinePatch::Verification`).
+    def verify_line_patches(list_of_checks : Array(LinePatch::Verification::Check)) : Nil
+      return if list_of_checks.empty?
+      list_of_failures = LinePatch::Verification.run(list_of_checks)
+      @last_line_patch_verification = {list_of_checks.size, list_of_failures}
+      puts "Line patch verification: #{list_of_checks.size - list_of_failures.size} of #{list_of_checks.size} patched objects match the fresh ones" if @progress_tracker.stats?
+      if report_filename = ENV["CRYSTAL_LINE_PATCH_REPORT"]?.presence
+        File.write(report_filename, {checked: list_of_checks.size, failures: list_of_failures}.to_pretty_json)
+      end
+      unless list_of_failures.empty?
+        raise CompilerError.new("Line patch verification failed:\n" + list_of_failures.first(50).join("\n"))
+      end
+    end
+
     # The session of an incremental build that may skip IR generation for
     # the modules whose inputs did not change (see `IrSkip`), or `nil` for
     # a build that generates everything and keeps no keys.
     # See `#ir_skip?` and `#ir_skip_verify?`.
-    private def ir_skip_session_for(program, output_dir, is_single_module, stable_numbering) : IrSkip::Session?
+    private def ir_skip_session_for(program, output_dir, is_single_module, stable_numbering, sources) : IrSkip::Session?
       return nil unless stable_numbering && !is_single_module
       return nil unless ir_skip?
       # Without a hash of the bitcode there is nothing to carry over.
       return nil unless BitcodeHash.of_part(Bytes.empty)
 
-      mode = ir_skip_verify? ? IrSkip::Session::Mode::Verify : IrSkip::Session::Mode::Skip
+      # Verifying patched objects generates every module, as IR skip
+      # verification does.
+      mode = ir_skip_verify? || LinePatch::Verification.enabled? ? IrSkip::Session::Mode::Verify : IrSkip::Session::Mode::Skip
       salt = ir_skip_salt(program)
       previous = IrSkip::Manifest.load?(output_dir, salt)
       session = IrSkip::Session.new(mode, salt, previous)
@@ -1663,7 +1703,39 @@ module Crystal
       else
         mark_units_whose_object_is_current(previous, output_dir)
       end
+      prepare_line_patch(session, program, sources, output_dir)
       session
+    end
+
+    # Whether an incremental build keeps the objects of modules whose lines
+    # only moved, with patched debug info (see `LinePatch`).
+    # `CRYSTAL_LINE_PATCH=0` turns it off.
+    property? line_patch : Bool = ENV["CRYSTAL_LINE_PATCH"]? != "0"
+
+    # Reads the lines of every source file, for the next build, and when the
+    # build before recorded its own, maps how they moved.
+    private def prepare_line_patch(session : IrSkip::Session, program : Program, sources, output_dir : String) : Nil
+      started_at = Time.instant
+      list_of_filenames = program.requires.to_a
+      sources.each { |source| list_of_filenames << source.filename }
+      current = LinePatch.read_source_lines(list_of_filenames.uniq!)
+      session.source_lines_by_filename = current
+
+      previous = session.previous
+      if line_patch? && previous && session.no_candidates_cause.nil?
+        maps = LinePatch::Maps.compute(previous.source_lines_by_filename, current)
+        session.line_maps = maps
+        object_extension = codegen_target.object_extension
+        optimization_mode = self.optimization_mode
+        session.line_patcher = LinePatch::UnitPatcher.new(maps, ->(unit_name : String) do
+          "#{output_dir}/#{CompilationUnit.file_basename(unit_name, optimization_mode)}#{object_extension}"
+        end)
+        stats = session.stats
+        stats.line_patch = true
+        stats.source_files_changed = maps.maps_by_filename.size
+        stats.source_files_without_map = maps.maps_by_filename.count { |_, map| map.nil? }
+      end
+      session.stats.line_map_seconds = (Time.instant - started_at).total_seconds
     end
 
     # Everything outside the program's source that the code of a function
@@ -1741,6 +1813,17 @@ module Crystal
       stats.units_not_candidate_by_cause.each do |cause, count|
         puts " - modules that were no candidates, #{cause}: #{count}"
       end
+      return unless stats.line_patch?
+
+      puts " - line patching: #{stats.source_files_changed} source files changed (#{stats.source_files_without_map} without a line map), mapped in #{stats.line_map_seconds.round(2)} s"
+      puts " - functions that matched with moved lines: #{stats.shifted_functions}"
+      stats.unshifted_functions_by_cause.each do |cause, count|
+        puts " - functions whose lines did not just move, #{cause}: #{count}"
+      end
+      puts " - modules whose lines moved: #{stats.units_with_moved_lines}; patched: #{stats.units_patched} in #{stats.patch_seconds.round(2)} s"
+      stats.patch_refusals_by_cause.each do |cause, count|
+        puts " - patches refused, #{cause}: #{count}"
+      end
     end
 
     # Leaves the manifest for the next build, once every unit knows the
@@ -1756,17 +1839,31 @@ module Crystal
 
       stats = session.stats
       manifest = IrSkip::Manifest.new(session.salt)
+      manifest.source_lines_by_filename = session.source_lines_by_filename
       list_of_module_infos.each_with_index do |info, index|
         next if info.name.empty?
 
         plan = info.ir_skip_plan
         if plan && info.skipped_ir_generation?
-          manifest.units_by_name[info.name] = plan.recorded
+          recorded = plan.recorded
+          if (patched_object = plan.line_patch) && !patched_object.unchanged?
+            # The object was patched: its functions are at their new lines.
+            recorded = IrSkip::RecordedUnit.new(recorded.name, plan.list_of_funs_with_new_lines,
+              patched_object.list_of_part_hashes, recorded.list_of_part_fun_counts, recorded.instruction_count,
+              recorded.late_generated?)
+          elsif plan.shifted?
+            recorded = IrSkip::RecordedUnit.new(recorded.name, plan.list_of_funs_with_new_lines,
+              recorded.list_of_part_hashes, recorded.list_of_part_fun_counts, recorded.instruction_count,
+              recorded.late_generated?)
+          end
+          manifest.units_by_name[info.name] = recorded
           next
         end
         next unless list_of_part_hashes = units[index].list_of_part_hashes
 
-        if plan && session.verify? && !plan.invalidated? && plan.position == plan.recorded.list_of_funs.size
+        # A module whose lines moved has other bitcode by design; its patched
+        # object is verified against the fresh one instead.
+        if plan && session.verify? && !plan.invalidated? && !plan.shifted? && plan.position == plan.recorded.list_of_funs.size
           if plan.recorded.late_generated? || plan.recorded.list_of_part_fun_counts != info.list_of_part_fun_counts
             stats.units_not_verifiable += 1
           elsif plan.recorded.list_of_part_hashes != list_of_part_hashes
@@ -2402,7 +2499,8 @@ module Crystal
                      @part_count : Int32 = 1,
                      list_of_spilled_bitcode_paths : Array(String) = [] of String,
                      list_of_spilled_part_hashes : Array(String) = [] of String,
-                     list_of_carried_part_hashes : Array(String)? = nil)
+                     list_of_carried_part_hashes : Array(String)? = nil,
+                     @patched_object : LinePatch::PatchedObject? = nil)
         @original_name = @name == "" ? "_main" : @name
         @name = CompilationUnit.file_basename(@name, @compiler.optimization_mode)
         @object_extension = compiler.codegen_target.object_extension
@@ -2704,10 +2802,35 @@ module Crystal
       # it there is nothing here to build it from.
       private def must_compile_carried? : Bool
         unless !@bc_flags_changed && cached_bitcode.same?
+          @patched_object.try &.discard
           raise CompilerError.new("the cache of this program changed while it was being built " \
                                   "(the object file of #{@original_name} was replaced); build again")
         end
+        install_patched_object
         false
+      end
+
+      # The object with patched lines (see `LinePatch`), when IR generation
+      # matched this unit with moved lines.
+      @patched_object : LinePatch::PatchedObject?
+
+      # Whether this unit's object is the cached one with patched lines.
+      getter? patched_lines = false
+
+      # Puts the patched object in place of the cached one, with the record
+      # of what it stands for. The cache directory is locked by now.
+      private def install_patched_object : Nil
+        patched_object = @patched_object
+        return unless patched_object
+        @patched_object = nil
+        @patched_lines = true
+        pending_filename = patched_object.pending_filename
+        return unless pending_filename
+
+        File.delete?(hash_record_name)
+        File.rename(pending_filename, object_name)
+        @list_of_part_hashes = patched_object.list_of_part_hashes.dup
+        write_hash_record
       end
 
       private def must_compile?

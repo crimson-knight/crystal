@@ -460,9 +460,6 @@ module Crystal
       property patch_refusals_by_cause = {} of String => Int32
       property patch_seconds = 0.0
       property list_of_patched_units = [] of String
-      # Verification of patched objects against fresh ones.
-      property line_patch_verified_units = 0
-      property list_of_line_patch_verification_failures = [] of String
 
       def initialize
       end

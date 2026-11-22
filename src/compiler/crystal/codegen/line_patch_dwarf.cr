@@ -251,9 +251,8 @@ module Crystal::LinePatch
         ->(old_offset : Int64) do
           index = list_of_runs.bsearch_index { |run| run[0] > old_offset }
           index = index ? index - 1 : list_of_runs.size - 1
-          next nil if index < 0
-          run = list_of_runs[index]
-          old_offset < run[0] + run[2] ? run[1] + (old_offset - run[0]) : nil
+          run = index >= 0 ? list_of_runs[index] : nil
+          run && old_offset < run[0] + run[2] ? run[1] + (old_offset - run[0]) : nil
         end
       end
 
