@@ -1,20 +1,37 @@
-# The Mica YAML engine (`-Duse_mica`)
+# The Mica YAML engine (the default)
 
-`YAML` can run on [Mica](https://github.com/amberframework/mica)'s YAML
-parser and emitter instead of libyaml. Mica is written in Crystal, and
-nothing links a C YAML library. Existing code keeps working unchanged:
+`YAML` runs on [Mica](https://github.com/amberframework/mica)'s YAML
+parser and emitter. Mica is written in Crystal, and nothing links a C
+YAML library. Existing code keeps working unchanged:
 `YAML.parse`, `YAML.parse_all`, `YAML::Serializable`, `from_yaml`,
 `to_yaml`, `YAML.build`, `YAML::PullParser`, `YAML::Builder`, `YAML::Nodes`
 and `YAML::Schema::Core` keep their API and their results.
 
 ```console
-$ crystal build -Duse_mica app.cr
+$ crystal build app.cr
 $ otool -L app      # or ldd: no libyaml
 ```
 
-libyaml stays the default. The flag is the same one that selects Mica's
-regex engine (`doc/regex_mica.md`): a program built with `-Duse_mica` uses
-Mica for both, and links neither PCRE2 nor libyaml.
+## Choosing the engine
+
+| Build | YAML engine |
+|---|---|
+| `crystal build app.cr` | Mica |
+| `crystal build -Duse_libyaml app.cr` | libyaml (links `libyaml`) |
+| `crystal build -Duse_mica app.cr` | Mica; the flag is accepted so build scripts written while Mica was opt-in keep working |
+
+`-Duse_libyaml` wins over `-Duse_mica`. The regex engine has its own
+opt-out, `-Duse_pcre2` (`doc/regex_mica.md`); the two are independent, and
+a program built with neither links neither PCRE2 nor libyaml.
+
+Build with `-Duse_libyaml` for libyaml's own readings where they differ
+(see "Differences"), or to follow a libyaml newer than 0.2.5. Such a
+program needs the libyaml library where it is built and where it runs.
+
+Evidence behind the default (Mica's `docs/yaml.md` and
+`docs/benchmarks.md`): yaml-test-suite 402 of 402, 6,000,000 generated
+documents compared against libyaml 0.2.5 with 0 disagreements, and
+`spec/std/yaml` passing on both engines.
 
 ## How Mica reaches the standard library
 
@@ -31,13 +48,13 @@ Mica for both, and links neither PCRE2 nor libyaml.
 - Mica's node API (composer, schema, values) is not vendored: the standard
   library's own `YAML::Nodes`, `YAML::Schema::Core` and `YAML::Any` run on
   the pull parser as they do with libyaml.
-- Nothing in `src/yaml/mica/` or `src/yaml/mica_engine/` is compiled unless
-  `-Duse_mica` is set.
+- A program built with `-Duse_libyaml` compiles nothing in `src/yaml/mica/`
+  or `src/yaml/mica_engine/`.
 
 The two classes that touch the engine are selected in
 `src/yaml/pull_parser.cr` and `src/yaml/builder.cr`:
 
-| Class | libyaml (default) | `-Duse_mica` |
+| Class | `-Duse_libyaml` | Mica (default) |
 |---|---|---|
 | `YAML::PullParser` | `src/yaml/libyaml/pull_parser.cr` | `src/yaml/mica_engine/pull_parser.cr` on `Mica::YAML::PullParser` |
 | `YAML::Builder` | `src/yaml/libyaml/builder.cr` | `src/yaml/mica_engine/builder.cr` on `Mica::YAML::Emitter` |
@@ -53,8 +70,8 @@ generated documents and require zero disagreements (see Mica's
 `docs/yaml.md`). The emitter is a port of libyaml 0.2.5's and writes the
 same bytes.
 
-- `spec/std/yaml` passes on both engines (457 examples each).
-- `YAML.libyaml_version` returns 0.2.5 under `-Duse_mica`: the dialect the
+- `spec/std/yaml` passes on both engines (465 examples each).
+- `YAML.libyaml_version` returns 0.2.5 on Mica: the dialect the
   engine reads, so version checks written for libyaml see that version.
 - The pull parser's nesting guard (`max_nesting`) and alias-to-anchor
   guard are the standard library's own and apply on both engines.
@@ -91,4 +108,4 @@ same bytes.
    `scripts/vendor_mica_yaml.cr` from `git rev-parse HEAD` and
    `git rev-parse HEAD^{tree}`.
 3. `crystal run scripts/vendor_mica_yaml.cr -- path/to/mica`
-4. `crystal spec -Duse_mica spec/std/yaml`
+4. `crystal spec spec/std/yaml`, and the same with `-Duse_libyaml`.

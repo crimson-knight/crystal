@@ -1,4 +1,4 @@
-# Vendors the Mica regex engine into `src/regex/mica/` for the `-Duse_mica`
+# Vendors the Mica regex engine into `src/regex/mica/` for the default
 # Regex engine (see `doc/regex_mica.md`).
 #
 # Usage:
@@ -14,7 +14,7 @@
 # the sha256 of every vendored file.
 #
 # To move to a new Mica release, update both pins from the tagged commit, run
-# the script, and run `spec/std/regex_spec.cr` with `-Duse_mica`.
+# the script, and run `spec/std/regex_spec.cr`.
 
 require "digest/sha256"
 require "file_utils"

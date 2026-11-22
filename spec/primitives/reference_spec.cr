@@ -22,6 +22,14 @@ private class Bar < Base
   end
 end
 
+private class Shelf(T)
+  getter list_of_items = [] of T
+end
+
+private class WideShelf(T) < Shelf(T)
+  @padding = 0_i64
+end
+
 private struct Inner
 end
 
@@ -73,6 +81,15 @@ describe "Primitives: reference" do
       foo = Foo.pre_initialize(pointerof(foo_buffer))
       pointerof(foo_buffer).as(typeof(Foo.crystal_instance_type_id)*).value.should eq(Foo.crystal_instance_type_id)
       foo.str.should eq("abc")
+    end
+
+    it "works in storage for a class that has a generic subclass" do
+      shelf_buffer = uninitialized ReferenceStorage(Shelf(Int32))
+      sizeof(typeof(shelf_buffer)).should eq(instance_sizeof(Shelf(Int32)))
+      shelf = Shelf(Int32).unsafe_construct(pointerof(shelf_buffer))
+      shelf.list_of_items << 3
+      shelf.list_of_items.should eq([3])
+      shelf.should_not be_a(WideShelf(Int32))
     end
 
     # see notes in `Reference.pre_initialize`

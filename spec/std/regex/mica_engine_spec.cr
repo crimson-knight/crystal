@@ -11,6 +11,7 @@ require "../spec_helper"
       error = expect_raises(Regex::UnsupportedSyntaxError, "lookahead is not supported by the Mica regex engine at 1") do
         Regex.new("a(?=b)")
       end
+      error.message.to_s.should contain("-Duse_pcre2")
       error.construct.should eq("lookahead")
       error.byte_offset.should eq(1)
       error.should be_a(ArgumentError)

@@ -1,11 +1,11 @@
 require "./enums"
 
-# libyaml is the default YAML engine. Mica's pure-Crystal parser and emitter
-# (no C library) are opt-in via compiler flag `-Duse_mica`; see
-# `doc/yaml_mica.md`.
-{% if flag?(:use_mica) %}
-  require "./mica_engine/pull_parser"
-{% else %}
+# Mica's pure-Crystal parser and emitter (no C library) are the default YAML
+# engine; see `doc/yaml_mica.md`. libyaml is selected with the compiler flag
+# `-Duse_libyaml`. `-Duse_mica` is accepted and selects the default.
+{% if flag?(:use_libyaml) %}
   require "./libyaml/lib_yaml"
   require "./libyaml/pull_parser"
+{% else %}
+  require "./mica_engine/pull_parser"
 {% end %}

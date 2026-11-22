@@ -22,7 +22,7 @@ end
 #
 # Invoking `read_next` reads the next event.
 #
-# This is the `-Duse_mica` implementation: the events come from Mica's
+# This is the default implementation: the events come from Mica's
 # pure-Crystal parser in its libyaml dialect (see `doc/yaml_mica.md`). The
 # public API, the events, their marks and the error messages are those of
 # the libyaml implementation in `src/yaml/libyaml/pull_parser.cr`.

@@ -33,10 +33,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Assert select libyaml
+        run: bin/crystal eval -Duse_libyaml 'require "yaml"; abort if {{ YAML.has_constant?(:MicaEngine) }}'
+      - name: Assert libyaml over Mica
+        run: bin/crystal eval -Duse_libyaml -Duse_mica 'require "yaml"; LibYAML.yaml_get_version(out major, out minor, out patch)'
       - name: Show libyaml version
-        run: bin/crystal eval 'require "yaml"; puts YAML.libyaml_version'
+        run: bin/crystal eval -Duse_libyaml 'require "yaml"; puts YAML.libyaml_version'
       - name: Run YAML specs
-        run: bin/crystal spec --order=random spec/std/yaml
+        run: bin/crystal spec --order=random spec/std/yaml -Duse_libyaml
   mica:
     runs-on: ubuntu-latest
     name: "Mica"
@@ -48,7 +52,9 @@ jobs:
           persist-credentials: false
       - name: Remove libyaml
         run: apk del yaml-dev
-      - name: Assert select Mica
+      - name: Assert defaulting to Mica
+        run: bin/crystal eval 'require "yaml"; abort unless YAML::MicaEngine::LIBYAML_VERSION == {0, 2, 5}'
+      - name: Assert -Duse_mica selects the default
         run: bin/crystal eval -Duse_mica 'require "yaml"; abort unless YAML::MicaEngine::LIBYAML_VERSION == {0, 2, 5}'
       - name: Run YAML specs
-        run: bin/crystal spec --order=random spec/std/yaml -Duse_mica
+        run: bin/crystal spec --order=random spec/std/yaml

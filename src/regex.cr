@@ -80,9 +80,15 @@ require "./regex/match_data"
 # have their own language for describing strings.
 #
 # Many programming languages and tools implement their own regular expression
-# language, but Crystal uses [PCRE2](http://www.pcre.org/), a popular C library, with
-# [JIT compilation](http://www.pcre.org/current/doc/html/pcre2jit.html) enabled
-# for providing regular expressions. Here give a brief summary of the most
+# language. Crystal reads the pattern language of [PCRE2](http://www.pcre.org/),
+# a popular C library. By default patterns run on Mica, an engine written in
+# Crystal whose searches take time linear in the subject and which links no C
+# library; it leaves out lookaround, backreferences and a few other constructs
+# (a regex literal that uses one is a compile error, and `Regex.new` raises
+# `Regex::UnsupportedSyntaxError`). A program built with `-Duse_pcre2` runs on
+# the PCRE2 library itself, with
+# [JIT compilation](http://www.pcre.org/current/doc/html/pcre2jit.html) enabled,
+# and has all of its syntax. Here give a brief summary of the most
 # basic features of regular expressions - grouping, repetition, and
 # alternation - but the feature set of PCRE2 extends far beyond these, and we
 # don't attempt to describe it in full here. For more information, refer to

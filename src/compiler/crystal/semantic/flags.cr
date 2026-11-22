@@ -21,6 +21,15 @@ class Crystal::Program
     flags.includes?(name)
   end
 
+  # Returns `true` if the program's `Regex` runs on the Mica engine, which is
+  # the default: `-Duse_pcre2` selects PCRE2, and `-Duse_pcre` or the env var
+  # `USE_PCRE1` selects the legacy PCRE. Makes the same choice as
+  # `src/regex/engine.cr`; change both together.
+  def uses_mica_regex_engine? : Bool
+    return false if has_flag?("use_pcre2") || has_flag?("use_pcre")
+    ENV.fetch("USE_PCRE1", "").empty?
+  end
+
   # Returns the value of a flag in the format `"#{key}=#{value}"`.
   # Or `true` if the flags contain `key`.
   def flag_value(name : String) : String | Bool

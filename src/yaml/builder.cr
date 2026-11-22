@@ -1,11 +1,11 @@
 require "./enums"
 
-# See `src/yaml/pull_parser.cr`: libyaml by default, Mica under `-Duse_mica`.
-{% if flag?(:use_mica) %}
-  require "./mica_engine/builder"
-{% else %}
+# See `src/yaml/pull_parser.cr`: Mica by default, libyaml under `-Duse_libyaml`.
+{% if flag?(:use_libyaml) %}
   require "./libyaml/lib_yaml"
   require "./libyaml/builder"
+{% else %}
+  require "./mica_engine/builder"
 {% end %}
 
 module YAML

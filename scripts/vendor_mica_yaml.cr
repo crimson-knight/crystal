@@ -1,5 +1,5 @@
 # Vendors Mica's YAML parser and emitter into `src/yaml/mica/` for the
-# `-Duse_mica` YAML engine (see `doc/yaml_mica.md`).
+# default YAML engine (see `doc/yaml_mica.md`).
 #
 # Usage:
 #
@@ -17,7 +17,7 @@
 # own pin, in its own namespace; the two never share a file.
 #
 # To move to a new Mica commit, update both pins, run the script, and run
-# `spec/std/yaml` with `-Duse_mica`.
+# `spec/std/yaml`, and again with `-Duse_libyaml`.
 
 require "digest/sha256"
 require "file_utils"
