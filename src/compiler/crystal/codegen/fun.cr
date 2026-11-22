@@ -26,6 +26,19 @@ class Crystal::CodeGenVisitor
   end
 
   def target_def_fun(target_def, self_type) : LLVMTypedFunction
+    record_ir_fun_request(target_def, self_type)
+    resolve_target_def_fun(target_def, self_type, declares_in_current_module: true) ||
+      raise "BUG: #{target_def.name} was not declared in the module that calls it"
+  end
+
+  # Makes sure the function of *target_def* exists (generated, or matched
+  # with the build before, see `IrSkip`), without declaring it in the module
+  # code is being generated into. Replaying a trace asks this way.
+  def request_target_def_fun(target_def, self_type) : Nil
+    resolve_target_def_fun(target_def, self_type, declares_in_current_module: false)
+  end
+
+  private def resolve_target_def_fun(target_def, self_type, declares_in_current_module : Bool) : LLVMTypedFunction?
     if (sharing = @owner_shape_sharing) && (representative = sharing.representative?(target_def))
       unless self_type.same?(target_def.owner)
         raise "BUG: #{target_def.name} shares the function of another def but is called with self type #{self_type} instead of its owner #{target_def.owner}"
@@ -36,16 +49,13 @@ class Crystal::CodeGenVisitor
 
     mangled_name = target_def.mangled_name(@program, self_type)
 
-    # Already defined or declared in the module code is being generated
-    # into: the module of `self_type` is not needed (it may be on disk).
-    if existing_fun = typed_fun?(@module_info, mangled_name)
-      return existing_fun
-    end
+    # Matched with the build before, in a module that is generated after
+    # all: it is generated now, as it would have been when it was first
+    # asked for.
+    generate_late_pending_fun(mangled_name) unless @ir_skip_late_pending.empty?
 
-    # Declared in another module before, or generated into a module part
-    # that is on disk by now: its recorded signature is enough.
-    if known_signature = known_fun_signature?(mangled_name)
-      return declare_fun(mangled_name, known_signature)
+    if existing_declaration = declaration_of_known_fun?(mangled_name, declares_in_current_module)
+      return existing_declaration[0]
     end
 
     # The function is in a part of its type's modules that is in memory, or
@@ -55,18 +65,56 @@ class Crystal::CodeGenVisitor
     first_module_info = @single_module ? @main_module_info : type_module_info(self_type)
     if func = typed_fun_in_segments?(first_module_info, mangled_name)
       # It is not in the current module (checked above), so it is declared.
-      return declare_fun(mangled_name, func)
+      return declares_in_current_module ? declare_fun(mangled_name, func) : nil
     end
     self_type_module_info = segment_for_next_fun(first_module_info, mangled_name)
 
+    # A module that matches the build before gets no code: the function is
+    # declared and its trace replayed.
+    invalidation_count = @ir_skip_invalidation_count
+    if skipped_fun = skip_ir_generation_of(self_type_module_info, mangled_name, target_def, self_type)
+      return declares_in_current_module ? declare_fun(mangled_name, skipped_fun) : nil
+    end
+    if invalidation_count != @ir_skip_invalidation_count
+      # Modules were generated after all in the meantime, and this function
+      # may be among what they generated.
+      if existing_declaration = declaration_of_known_fun?(mangled_name, declares_in_current_module)
+        return existing_declaration[0]
+      end
+      if func = typed_fun_in_segments?(first_module_info, mangled_name)
+        return declares_in_current_module ? declare_fun(mangled_name, func) : nil
+      end
+    end
+
     # Declaring the new function here reads it from its module, which must
     # stay in memory until then.
+    make_module_resident(self_type_module_info)
     use_module(self_type_module_info)
     pin_module(self_type_module_info)
     func = codegen_fun(mangled_name, target_def, self_type, fun_module_info: self_type_module_info)
-    declared_fun = check_mod_fun(self_type_module_info, mangled_name, func)
+    declared_fun = declares_in_current_module ? check_mod_fun(self_type_module_info, mangled_name, func) : nil
     unpin_module(self_type_module_info)
     declared_fun
+  end
+
+  # The function named *mangled_name* when it needs no generating: it is in
+  # the module code is being generated into, or its signature is known
+  # (declared in another module before, generated into a module part that
+  # is on disk by now, or matched with the build before). The tuple tells a
+  # function that is known but, as asked, not declared (`nil`) from one
+  # that is not known (no tuple).
+  private def declaration_of_known_fun?(mangled_name : String, declares_in_current_module : Bool) : {LLVMTypedFunction?}?
+    # Already defined or declared in the current module: the module of the
+    # self type is not needed (it may be on disk).
+    if existing_fun = typed_fun?(@module_info, mangled_name)
+      return {existing_fun}
+    end
+
+    if known_signature = known_fun_signature?(mangled_name)
+      return {declares_in_current_module ? declare_fun(mangled_name, known_signature) : nil}
+    end
+
+    nil
   end
 
   def main_fun(name)
@@ -131,6 +179,12 @@ class Crystal::CodeGenVisitor
     # holds values of it.
     fun_module_info.list_of_generated_fun_names << mangled_name
     pin_module(fun_module_info)
+
+    # Proc literals and closures are numbered within their function.
+    @proc_counts.delete(mangled_name)
+    @closure_counts.delete(mangled_name)
+    ir_trace_frame = begin_ir_trace_frame(mangled_name, target_def, self_type, fun_module_info,
+      records: !(is_fun_literal || is_closure || is_exported_fun))
 
     typed_function = with_cloned_context do |old_context|
       context.type = self_type
@@ -295,6 +349,7 @@ class Crystal::CodeGenVisitor
       LLVMTypedFunction.new(context.fun_type, context.fun)
     end
 
+    end_ir_trace_frame(ir_trace_frame, mangled_name, fun_module_info)
     unpin_module(fun_module_info)
 
     # Proc literals can be generated more than once (a block inlined at
@@ -311,6 +366,8 @@ class Crystal::CodeGenVisitor
     return unless release_typed_bodies?
     return if target_def.is_a?(External)
     return if target_def.body.is_a?(Primitive)
+    # A body that is generated in place of a call is read by every later call.
+    return if CodeGenVisitor.inlines_body_at_call?(target_def, target_def.body)
 
     target_def.body = ReleasedBody.new
     # Cut the edges that would keep the old body reachable: the def's own

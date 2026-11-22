@@ -240,6 +240,7 @@ class Crystal::CodeGenVisitor
   end
 
   def read_const_pointer(const)
+    record_ir_const_pointer(const)
     const.read = true
 
     if !const.needs_init_flag?
@@ -254,10 +255,28 @@ class Crystal::CodeGenVisitor
       return global
     end
 
-    read_function_name = "~#{const.llvm_name}:const_read"
-    func = typed_fun?(@main_mod, read_function_name) || create_read_const_function(read_function_name, const)
-    func = check_main_fun read_function_name, func
+    func = read_const_function_in_main(const)
+    func = check_main_fun func.func.name, func
     call func
+  end
+
+  # The function that initializes *const* if need be and returns a pointer
+  # to it, defined in the main module on first use.
+  private def read_const_function_in_main(const : Const) : LLVMTypedFunction
+    read_function_name = "~#{const.llvm_name}:const_read"
+    typed_fun?(@main_mod, read_function_name) || create_read_const_function(read_function_name, const)
+  end
+
+  # What reading *const* asks of the main module, without reading it: the
+  # part of `read_const_pointer` a replayed trace repeats (see `IrSkip`).
+  def request_const_pointer_in_main(const : Const) : Nil
+    const.read = true
+
+    if const.needs_init_flag?
+      read_const_function_in_main(const)
+    else
+      declare_const(const)
+    end
   end
 
   def create_read_const_function(fun_name, const)

@@ -748,13 +748,24 @@ module Crystal
       end
     end
 
-    private def bc_flags_changed?(output_dir, release_parts = 1)
-      bc_flags_changed = true
+    # The flags object files are built with: an object built with other
+    # flags is never reused.
+    private def current_bc_flags(release_parts = 1) : String
       current_bc_flags = "#{@codegen_target}|#{@mcpu}|#{@mattr}|#{@link_flags}|#{@mcmodel}"
       if release_parts > 1
         current_bc_flags += "|parts=#{release_parts}"
       end
-      bc_flags_filename = "#{output_dir}/bc_flags#{optimization_mode.suffix}"
+      current_bc_flags
+    end
+
+    private def bc_flags_filename(output_dir) : String
+      "#{output_dir}/bc_flags#{optimization_mode.suffix}"
+    end
+
+    private def bc_flags_changed?(output_dir, release_parts = 1)
+      bc_flags_changed = true
+      current_bc_flags = current_bc_flags(release_parts)
+      bc_flags_filename = bc_flags_filename(output_dir)
       if File.file?(bc_flags_filename)
         previous_bc_flags = File.read(bc_flags_filename).strip
         bc_flags_changed = previous_bc_flags != current_bc_flags
@@ -781,6 +792,9 @@ module Crystal
       # such a build drops.
       stable_numbering = @incremental && !@no_cache && @emit_targets.none? ? StableNumbering.load(output_dir) : nil
       program.stable_numbering = stable_numbering
+      ir_skip_session = ir_skip_session_for(program, output_dir, is_single_module, stable_numbering)
+      program.ir_skip = ir_skip_session
+      @last_ir_skip_stats = ir_skip_session.try(&.stats)
 
       llvm_modules = @progress_tracker.stage("Codegen (crystal)") do
         GCTuning.with_ir_generation_divisor do
@@ -793,7 +807,10 @@ module Crystal
         stable_numbering.type_ids_by_stable_key = program.llvm_id.type_ids_in_use_by_stable_key
         list_of_part_fun_counts_by_module_name = {} of String => Array(Int32)
         llvm_modules.each do |type_name, info|
-          list_of_part_fun_counts_by_module_name[type_name] = info.list_of_part_fun_counts unless info.list_of_part_fun_counts.empty?
+          # A module that got no code keeps the cuts of the build before.
+          list_of_part_fun_counts = info.skipped_ir_generation? ? info.ir_skip_plan.try(&.recorded.list_of_part_fun_counts) : nil
+          list_of_part_fun_counts ||= info.list_of_part_fun_counts
+          list_of_part_fun_counts_by_module_name[type_name] = list_of_part_fun_counts unless list_of_part_fun_counts.empty?
         end
         stable_numbering.list_of_part_fun_counts_by_module_name = list_of_part_fun_counts_by_module_name
         segments_by_module_name = {} of String => StableNumbering::Segments
@@ -812,6 +829,10 @@ module Crystal
       # Printed as soon as the stage ends: a build that is stopped after IR
       # generation still shows them.
       print_module_spill_stats
+      if ir_skip_session
+        summarize_ir_skip(ir_skip_session, llvm_modules)
+        print_ir_skip_stats(ir_skip_session)
+      end
 
       release_parts = release_parts_for(program, is_single_module, llvm_modules)
       bc_flags_changed = bc_flags_changed? output_dir, release_parts
@@ -830,9 +851,12 @@ module Crystal
         # itself against the cached bitcode. A module's code depends on more
         # than the files its own defs are in (inlined bodies, callee return
         # types, type layouts).
+        list_of_carried_part_hashes = info.skipped_ir_generation? ? info.ir_skip_plan.try(&.recorded.list_of_part_hashes) : nil
         CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, release_parts,
-          info.list_of_spill_paths, info.list_of_spill_part_hashes)
+          info.list_of_spill_paths, info.list_of_spill_part_hashes, list_of_carried_part_hashes)
       end
+      @ir_skip_session_to_finish = ir_skip_session
+      @list_of_ir_skip_module_infos = ir_skip_session ? llvm_modules.values : nil
 
       @last_modules_total = units.size
 
@@ -1178,6 +1202,9 @@ module Crystal
           sequential_codegen(units)
         elsif (worker_executable = @codegen_worker_executable) && units.size > 1
           list_of_jobs = write_bitcode_and_release_modules(units)
+          # Every unit has its bitcode hash now, and this process may end
+          # with the handoff below.
+          finish_ir_skip_session(output_dir, units)
           unless list_of_jobs.empty?
             if object_stage_handoff?
               hand_off_object_stage(program, units, list_of_jobs, n_threads, worker_executable,
@@ -1195,6 +1222,7 @@ module Crystal
         else
           parallel_codegen(units, n_threads)
         end
+        finish_ir_skip_session(output_dir, units)
 
         if units.size == 1
           units.first.emit(@emit_targets, emit_base_filename || output_filename)
@@ -1589,6 +1617,170 @@ module Crystal
           io << compiled_macro_run.elapsed
         end
         io.puts
+      end
+    end
+
+    # Whether an incremental build skips IR generation for the modules
+    # whose inputs did not change (see `IrSkip`). `CRYSTAL_IR_SKIP=0` turns
+    # it off.
+    property? ir_skip : Bool = ENV["CRYSTAL_IR_SKIP"]? != "0"
+
+    # Whether such a build generates every module anyway and fails when a
+    # module whose key matched the build before produced other bitcode.
+    # `CRYSTAL_IR_SKIP_VERIFY=1` turns it on.
+    property? ir_skip_verify : Bool = ENV["CRYSTAL_IR_SKIP_VERIFY"]? == "1"
+
+    # What the last compilation skipped and generated, if it kept keys.
+    getter last_ir_skip_stats : IrSkip::Stats?
+
+    @ir_skip_session_to_finish : IrSkip::Session?
+    @list_of_ir_skip_module_infos : Array(CodeGenVisitor::ModuleInfo)?
+
+    # The session of an incremental build that may skip IR generation for
+    # the modules whose inputs did not change (see `IrSkip`), or `nil` for
+    # a build that generates everything and keeps no keys.
+    # See `#ir_skip?` and `#ir_skip_verify?`.
+    private def ir_skip_session_for(program, output_dir, is_single_module, stable_numbering) : IrSkip::Session?
+      return nil unless stable_numbering && !is_single_module
+      return nil unless ir_skip?
+      # Without a hash of the bitcode there is nothing to carry over.
+      return nil unless BitcodeHash.of_part(Bytes.empty)
+
+      mode = ir_skip_verify? ? IrSkip::Session::Mode::Verify : IrSkip::Session::Mode::Skip
+      salt = ir_skip_salt(program)
+      previous = IrSkip::Manifest.load?(output_dir, salt)
+      session = IrSkip::Session.new(mode, salt, previous)
+      if previous.nil?
+        session.no_candidates_cause = "no manifest of the build before, or one made with other settings"
+      elsif !(File.file?(bc_flags_filename(output_dir)) && File.read(bc_flags_filename(output_dir)).strip == current_bc_flags)
+        session.no_candidates_cause = "the flags object files are built with changed"
+      else
+        mark_units_whose_object_is_current(previous, output_dir)
+      end
+      session
+    end
+
+    # Everything outside the program's source that the code of a function
+    # depends on. A manifest made with another salt is not used.
+    private def ir_skip_salt(program) : String
+      String.build do |io|
+        io << Crystal::Config.version << '|' << Crystal::Config.build_commit << '|' << LibLLVM::VERSION
+        io << '|' << @codegen_target << '|' << @mcpu << '|' << @mattr << '|' << @mcmodel
+        io << '|' << debug.value << '|' << frame_pointers << '|' << optimization_mode
+        io << '|' << program.flags.to_a.sort!.join(',')
+        io << "|segment=" << @module_segment_instructions
+        io << "|prelude=" << prelude
+        io << "|shapes=" << program.share_owner_shapes?
+        io << "|block_instances=" << ENV["CRYSTAL_SHARE_BLOCK_INSTANCES"]?
+        # Every string constant carries the type id of String.
+        io << "|string_id=" << program.llvm_id.type_id(program.string)
+      end
+    end
+
+    # Marks the modules of *previous* whose object file in the cache was
+    # built from the bitcode the manifest recorded: only those can go
+    # without new bitcode.
+    private def mark_units_whose_object_is_current(previous : IrSkip::Manifest, output_dir : String) : Nil
+      object_extension = codegen_target.object_extension
+      previous.units_by_name.each_value do |recorded_unit|
+        basename = CompilationUnit.file_basename(recorded_unit.name, optimization_mode)
+        record = CachedObjectRecord.read?("#{output_dir}/#{basename}#{CachedObjectRecord::FILE_EXTENSION}")
+        module_hash = BitcodeHash.of_module(recorded_unit.list_of_part_hashes)
+        next unless record && module_hash && record.module_hash == module_hash
+        next unless record.describes_objects?([Crystal.relative_filename("#{output_dir}/#{basename}#{object_extension}")])
+
+        recorded_unit.object_is_current = true
+      end
+    end
+
+    # Counts what IR generation skipped and what it generated after all.
+    private def summarize_ir_skip(session : IrSkip::Session, llvm_modules) : Nil
+      stats = session.stats
+      llvm_modules.each do |type_name, info|
+        next if type_name.empty?
+
+        if info.skipped_ir_generation?
+          stats.skipped_units += 1
+          next
+        end
+        stats.generated_units += 1
+        next unless (plan = info.ir_skip_plan) && (reason = plan.reason)
+
+        stats.regenerated_units_by_reason[reason.to_s] = (stats.regenerated_units_by_reason[reason.to_s]? || 0) + 1
+        if reason.source_position? && plan.source_position_only? && plan.position == plan.recorded.list_of_funs.size
+          stats.units_regenerated_for_source_position_alone += 1
+        end
+        stats.list_of_regenerated_units << "#{type_name}: #{reason} (#{plan.reason_detail})"
+      end
+    end
+
+    private def print_ir_skip_stats(session : IrSkip::Session) : Nil
+      return unless @progress_tracker.stats?
+
+      stats = session.stats
+      puts
+      puts "IR generation skipped for unchanged modules (#{stats.mode}):"
+      if cause = session.no_candidates_cause
+        puts " - no module could be skipped: #{cause}"
+      end
+      puts " - modules without new IR: #{stats.skipped_units}; modules generated: #{stats.generated_units} (#{stats.candidate_units} started as candidates)"
+      puts " - functions matched and replayed: #{stats.replayed_functions}; generated: #{stats.generated_functions} (#{stats.late_generated_functions} of them after they had matched)"
+      puts " - functions without a key: #{stats.unkeyable_functions}; with a trace that cannot be replayed: #{stats.unreplayable_functions}"
+      puts " - computing keys: #{stats.key_seconds.round(1)} s; replaying traces: #{stats.replay_seconds.round(1)} s"
+      stats.regenerated_units_by_reason.each do |reason, count|
+        puts " - candidate modules generated after all, #{reason}: #{count}"
+      end
+      puts " - of those, modules in which only source positions changed: #{stats.units_regenerated_for_source_position_alone}"
+      stats.units_not_candidate_by_cause.each do |cause, count|
+        puts " - modules that were no candidates, #{cause}: #{count}"
+      end
+    end
+
+    # Leaves the manifest for the next build, once every unit knows the
+    # hash of its bitcode. In verification it first compares each module
+    # that matched the build before with the bitcode that build recorded.
+    private def finish_ir_skip_session(output_dir : String, units : Array(CompilationUnit)) : Nil
+      session = @ir_skip_session_to_finish
+      list_of_module_infos = @list_of_ir_skip_module_infos
+      return unless session && list_of_module_infos
+      @ir_skip_session_to_finish = nil
+      @list_of_ir_skip_module_infos = nil
+      return unless list_of_module_infos.size == units.size
+
+      stats = session.stats
+      manifest = IrSkip::Manifest.new(session.salt)
+      list_of_module_infos.each_with_index do |info, index|
+        next if info.name.empty?
+
+        plan = info.ir_skip_plan
+        if plan && info.skipped_ir_generation?
+          manifest.units_by_name[info.name] = plan.recorded
+          next
+        end
+        next unless list_of_part_hashes = units[index].list_of_part_hashes
+
+        if plan && session.verify? && !plan.invalidated? && plan.position == plan.recorded.list_of_funs.size
+          if plan.recorded.late_generated? || plan.recorded.list_of_part_fun_counts != info.list_of_part_fun_counts
+            stats.units_not_verifiable += 1
+          elsif plan.recorded.list_of_part_hashes != list_of_part_hashes
+            stats.list_of_verification_failures << "#{info.name}: every key matched, but the bitcode differs from the recorded one"
+          else
+            stats.verified_units += 1
+          end
+        end
+        manifest.units_by_name[info.name] = IrSkip::RecordedUnit.new(info.name, info.list_of_recorded_funs,
+          list_of_part_hashes, info.list_of_part_fun_counts, info.generated_instruction_count, info.late_generated?)
+      end
+      manifest.save(output_dir)
+
+      if report_filename = ENV["CRYSTAL_IR_SKIP_REPORT"]?.presence
+        File.write(report_filename, stats.to_pretty_json)
+      end
+      if session.verify?
+        puts "IR skip verification: #{stats.verified_units} modules verified, #{stats.units_not_verifiable} not verifiable, #{stats.list_of_verification_failures.size} failures" if @progress_tracker.stats?
+        unless stats.list_of_verification_failures.empty?
+          raise CompilerError.new("IR skip verification failed:\n" + stats.list_of_verification_failures.first(50).join("\n"))
+        end
       end
     end
 
@@ -2202,7 +2394,8 @@ module Crystal
                      @llvm_mod : LLVM::Module?, @output_dir : String, @bc_flags_changed : Bool,
                      @part_count : Int32 = 1,
                      list_of_spilled_bitcode_paths : Array(String) = [] of String,
-                     list_of_spilled_part_hashes : Array(String) = [] of String)
+                     list_of_spilled_part_hashes : Array(String) = [] of String,
+                     list_of_carried_part_hashes : Array(String)? = nil)
         @original_name = @name == "" ? "_main" : @name
         @name = CompilationUnit.file_basename(@name, @compiler.optimization_mode)
         @object_extension = compiler.codegen_target.object_extension
@@ -2211,12 +2404,21 @@ module Crystal
         if spilled? && list_of_spilled_part_hashes.size == @spilled_part_count
           @list_of_part_hashes = list_of_spilled_part_hashes.dup
         end
+        if list_of_carried_part_hashes
+          @carries_cached_bitcode = true
+          @list_of_part_hashes = list_of_carried_part_hashes.dup
+        end
       end
+
+      # Whether IR generation was skipped for this unit (see `IrSkip`): it
+      # has no module and no new bitcode, only the hashes of the bitcode its
+      # object file in the cache was built from.
+      getter? carries_cached_bitcode = false
 
       # The hash of the bitcode of each part of this unit's module, in the
       # order the parts are linked (one part for a module that stayed in
       # memory). `nil` until the bitcode exists, and without a hash function.
-      @list_of_part_hashes : Array(String)?
+      getter list_of_part_hashes : Array(String)?
 
       # Whether the hash of this unit's bitcode told if its previous object
       # file can be reused, without reading the cached bitcode.
@@ -2322,8 +2524,9 @@ module Crystal
       end
 
       def generate_bitcode : LLVM::MemoryBuffer?
-        # A spilled unit already is bitcode, on disk.
-        return nil if spilled?
+        # A spilled unit already is bitcode, on disk, and a unit without
+        # generated IR has none to make.
+        return nil if spilled? || carries_cached_bitcode?
         @memory_buffer ||= begin
           memory_buffer = llvm_mod.write_bitcode_to_memory_buffer
           if part_hash = BitcodeHash.of_part(memory_buffer.to_slice)
@@ -2420,6 +2623,10 @@ module Crystal
       # bitcode file unless the previous object file can be reused, and frees
       # the module. Returns whether a worker must build the object file.
       def write_bitcode_and_release_module : Bool
+        if carries_cached_bitcode?
+          @reused_previous_compilation = true unless must_compile?
+          return false
+        end
         return hand_spilled_bitcode_to_worker if spilled?
 
         # Generated even with --no-cache: the worker reads the module from
@@ -2484,7 +2691,20 @@ module Crystal
         )
       end
 
+      # A unit without generated IR was matched with an object file before
+      # IR generation. The build holds no lock on the cache directory in
+      # between, so the object is checked again; when another build replaced
+      # it there is nothing here to build it from.
+      private def must_compile_carried? : Bool
+        unless !@bc_flags_changed && cached_bitcode.same?
+          raise CompilerError.new("the cache of this program changed while it was being built " \
+                                  "(the object file of #{@original_name} was replaced); build again")
+        end
+        false
+      end
+
       private def must_compile?
+        return must_compile_carried? if carries_cached_bitcode?
         return true if compiler.no_cache?
 
         return must_compile_spilled? if spilled?
