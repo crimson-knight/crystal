@@ -1,4 +1,5 @@
 #include <llvm/Config/llvm-config.h>
+#include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/StringExtras.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
@@ -10,7 +11,7 @@
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
-#include <llvm/Transforms/Utils/SplitModule.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 #if LLVM_VERSION_MAJOR >= 17
 #include <llvm/TargetParser/Triple.h>
 #else
@@ -177,9 +178,17 @@ LLVMBool LLVMExtModuleCanBeSplit(LLVMModuleRef M) {
 // Split a module into `parts` modules and hand each one to `callback` as
 // bitcode, in partition order, as soon as it is written.
 //
-// The module is changed in place. SplitModule makes every local definition an
-// external symbol with hidden visibility, so references across parts resolve
-// when the objects are linked. Before that, each local definition whose name
+// Each part holds a contiguous run of the module's functions (and of its global
+// variables), cut so the parts have about the same number of instructions.
+// The linker lays the part objects out one after another, so the executable
+// keeps the single-object build's order of functions, and code that runs
+// together stays on the same memory pages. (LLVM's SplitModule deals functions
+// out round-robin, which spreads a request's hot path over every part: a small
+// Amber server touched about 0.4 MiB more of its executable.)
+//
+// The module is changed in place. Every local definition becomes an external
+// symbol with hidden visibility, as SplitModule does, so references across
+// parts resolve when the objects are linked. Before that, each local definition whose name
 // could meet another object's symbol in the link is renamed:
 //
 // - private definitions (string literals, constant tables) and internal
@@ -253,19 +262,87 @@ unsigned LLVMExtSplitModuleToBitcode(LLVMModuleRef M, unsigned parts,
   for (GlobalIFunc &ifunc : module.ifuncs())
     rename_local(ifunc);
 
-  unsigned index = 0;
-  SplitModule(
-      module, parts,
-      [&](std::unique_ptr<Module> part) {
-        SmallString<0> bitcode;
-        raw_svector_ostream stream(bitcode);
-        WriteBitcodeToFile(*part, stream);
-        part.reset();
-        auto buffer = MemoryBuffer::getMemBufferCopy(
-            StringRef(bitcode.data(), bitcode.size()), "crystal-release-part");
-        callback(data, index++, wrap(buffer.release()));
-      },
-      /* PreserveLocals */ false, /* RoundRobin */ true);
+// Make every local definition external and hidden, and name the unnamed
+// ones, so each part can refer to what another part defines.
+auto externalize = [](GlobalValue &value) {
+  if (value.hasLocalLinkage()) {
+    value.setLinkage(GlobalValue::ExternalLinkage);
+    value.setVisibility(GlobalValue::HiddenVisibility);
+  }
+  if (!value.hasName())
+    value.setName("__llvmsplit_unnamed");
+};
+for (Function &function : module)
+  externalize(function);
+for (GlobalVariable &variable : module.globals())
+  externalize(variable);
+for (GlobalAlias &alias : module.aliases())
+  externalize(alias);
+for (GlobalIFunc &ifunc : module.ifuncs())
+  externalize(ifunc);
+
+// Assign each definition its part. Functions and global variables are cut
+// into contiguous runs in module order; members of a comdat stay with the
+// first member; an alias or ifunc goes with the object it names.
+DenseMap<const GlobalValue *, unsigned> part_of_value;
+DenseMap<const Comdat *, unsigned> part_of_comdat;
+auto assign = [&](const GlobalObject &object, unsigned part) {
+  if (const Comdat *comdat = object.getComdat()) {
+    auto [entry, inserted] = part_of_comdat.try_emplace(comdat, part);
+    part = entry->second;
+  }
+  part_of_value[&object] = part;
+};
+
+uint64_t total_instructions = 0;
+for (const Function &function : module)
+  if (!function.isDeclaration())
+    total_instructions += std::max(function.getInstructionCount(), 1u);
+uint64_t instructions_before = 0;
+for (const Function &function : module) {
+  if (function.isDeclaration())
+    continue;
+  assign(function, std::min<uint64_t>(instructions_before * parts / total_instructions, parts - 1));
+  instructions_before += std::max(function.getInstructionCount(), 1u);
+}
+
+uint64_t total_variables = 0;
+for (const GlobalVariable &variable : module.globals())
+  if (!variable.isDeclaration())
+    total_variables += 1;
+uint64_t variables_before = 0;
+for (const GlobalVariable &variable : module.globals()) {
+  if (variable.isDeclaration())
+    continue;
+  assign(variable, std::min<uint64_t>(variables_before * parts / total_variables, parts - 1));
+  variables_before += 1;
+}
+
+auto part_of = [&](const GlobalValue *value) -> unsigned {
+  if (auto *alias = dyn_cast<GlobalAlias>(value))
+    if (const GlobalObject *object = alias->getAliaseeObject())
+      value = object;
+  if (auto *ifunc = dyn_cast<GlobalIFunc>(value))
+    if (const GlobalObject *object = ifunc->getResolverFunction())
+      value = object;
+  auto entry = part_of_value.find(value);
+  return entry == part_of_value.end() ? 0 : entry->second;
+};
+
+unsigned index = 0;
+for (unsigned part_index = 0; part_index < parts; ++part_index) {
+  ValueToValueMapTy value_map;
+  std::unique_ptr<Module> part = CloneModule(module, value_map, [&](const GlobalValue *value) {
+    return part_of(value) == part_index;
+  });
+  SmallString<0> bitcode;
+  raw_svector_ostream stream(bitcode);
+  WriteBitcodeToFile(*part, stream);
+  part.reset();
+  auto buffer = MemoryBuffer::getMemBufferCopy(
+      StringRef(bitcode.data(), bitcode.size()), "crystal-release-part");
+  callback(data, index++, wrap(buffer.release()));
+}
   return index;
 #else
   return 0;
