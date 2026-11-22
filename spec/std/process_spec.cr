@@ -534,14 +534,14 @@ describe Process do
         value = Process.run(*print_env_command, env: {"FOO" => "bar"}) do |proc|
           proc.output.gets_to_end
         end
-        value.should match /(*ANYCRLF)^FOO=bar$/m
+        value.should match /^FOO=bar\r?$/m
       end
 
       it "sets an empty environment variable" do
         value = Process.run(*print_env_command, env: {"FOO" => ""}) do |proc|
           proc.output.gets_to_end
         end
-        value.should match /(*ANYCRLF)^FOO=$/m
+        value.should match /^FOO=\r?$/m
       end
 
       it "deletes existing environment variable" do
@@ -549,7 +549,7 @@ describe Process do
           value = Process.run(*print_env_command, env: {"FOO" => nil}) do |proc|
             proc.output.gets_to_end
           end
-          value.should_not match /(*ANYCRLF)^FOO=/m
+          value.should_not match /^FOO=/m
         end
       end
 
@@ -559,7 +559,7 @@ describe Process do
             value = Process.run(*print_env_command, env: {"foo" => nil}) do |proc|
               proc.output.gets_to_end
             end
-            value.should_not match /(*ANYCRLF)^FOO=/mi
+            value.should_not match /^FOO=/mi
           end
         end
       {% end %}
@@ -569,7 +569,7 @@ describe Process do
           value = Process.run(*print_env_command) do |proc|
             proc.output.gets_to_end
           end
-          value.should match /(*ANYCRLF)^FOO=bar$/m
+          value.should match /^FOO=bar\r?$/m
         end
       end
 
@@ -578,8 +578,8 @@ describe Process do
           value = Process.run(*print_env_command, env: {"FOO2" => "bar2"}) do |proc|
             proc.output.gets_to_end
           end
-          value.should match /(*ANYCRLF)^FOO=bar$/m
-          value.should match /(*ANYCRLF)^FOO2=bar2$/m
+          value.should match /^FOO=bar\r?$/m
+          value.should match /^FOO2=bar2\r?$/m
         end
       end
 
@@ -588,7 +588,7 @@ describe Process do
           value = Process.run(*print_env_command, env: {"FOO" => "different"}) do |proc|
             proc.output.gets_to_end
           end
-          value.should match /(*ANYCRLF)^FOO=different$/m
+          value.should match /^FOO=different\r?$/m
         end
       end
 
@@ -598,8 +598,8 @@ describe Process do
             value = Process.run(*print_env_command, env: {"fOo" => "different"}) do |proc|
               proc.output.gets_to_end
             end
-            value.should_not match /(*ANYCRLF)^FOO=/m
-            value.should match /(*ANYCRLF)^fOo=different$/m
+            value.should_not match /^FOO=/m
+            value.should match /^fOo=different\r?$/m
           end
         end
       {% end %}

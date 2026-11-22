@@ -122,7 +122,7 @@ describe "Regex" do
         /([\w_\.@#\/\*])+/.match("\xFF\xFE")
       end
 
-      if Regex::Engine.version_number >= {10, 36}
+      if Regex.supports_compile_options?(:match_invalid_utf) && Regex::Engine.version_number >= {10, 36}
         Regex.new("([\\w_\\.@#\\/\\*])+", options: Regex::Options::MATCH_INVALID_UTF).match("\xFF\xFE").should be_nil
       end
     end
@@ -194,7 +194,7 @@ describe "Regex" do
         /foo/.match_at_byte_index("öfoo", 1)
       end
 
-      if Regex::Engine.version_number >= {10, 36}
+      if Regex.supports_compile_options?(:match_invalid_utf) && Regex::Engine.version_number >= {10, 36}
         md = Regex.new("foo", options: Regex::CompileOptions::MATCH_INVALID_UTF).match_at_byte_index("öfoo", 1).should_not be_nil
         md.begin.should eq 1
         md.byte_begin.should eq 2
@@ -293,7 +293,7 @@ describe "Regex" do
           /foo/.matches?("f\x96o")
         end
 
-        if Regex::Engine.version_number >= {10, 36}
+        if Regex.supports_compile_options?(:match_invalid_utf) && Regex::Engine.version_number >= {10, 36}
           Regex.new("foo", options: Regex::CompileOptions::MATCH_INVALID_UTF).matches?("f\x96o").should be_false
           Regex.new("f\x96o", options: Regex::CompileOptions::MATCH_INVALID_UTF | Regex::CompileOptions::NO_UTF_CHECK).matches?("f\x96o").should be_false
           Regex.new("f.o", options: Regex::CompileOptions::MATCH_INVALID_UTF).matches?("f\x96o").should be_false
@@ -329,6 +329,10 @@ describe "Regex" do
         rescue exc : Exception
           exc.to_s.should eq("Regex match error: JIT_STACKLIMIT")
         end
+      {% elsif Regex::Engine.resolve.name == "Regex::MicaEngine" %}
+        # Mica searches in time linear in the haystack and never recurses
+        # on the machine stack.
+        str.matches?(/^(?:[A-Za-z0-9+\/]{4})*(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=)?$/)
       {% else %}
         # Can't use regex literal because the *LIMIT_DEPTH verb is not supported in libpcre (only libpcre2)
         # and thus the compiler doesn't recognize it.
@@ -358,7 +362,7 @@ describe "Regex" do
         /foo/.matches_at_byte_index?("öfoo", 1)
       end
 
-      if Regex::Engine.version_number >= {10, 36}
+      if Regex.supports_compile_options?(:match_invalid_utf) && Regex::Engine.version_number >= {10, 36}
         Regex.new("foo", options: Regex::CompileOptions::MATCH_INVALID_UTF).matches_at_byte_index?("öfoo", 1).should be_true
       end
       /foo/.matches_at_byte_index?("öfoo", 2).should be_true
@@ -442,8 +446,11 @@ describe "Regex" do
     end
 
     it "more than 255 groups" do
-      regex = Regex.new(Array.new(1000) { |i| "(?<c#{i}>.)" }.join)
-      name_table = Array.new(1000) { |i| {i + 1, "c#{i}"} }.to_h
+      # Mica refuses 1000 groups: their Pike VM workspace passes its compile
+      # limit. 300 groups still number past 255.
+      group_count = {{ Regex::Engine.resolve.name == "Regex::MicaEngine" ? 300 : 1000 }}
+      regex = Regex.new(Array.new(group_count) { |i| "(?<c#{i}>.)" }.join)
+      name_table = Array.new(group_count) { |i| {i + 1, "c#{i}"} }.to_h
       regex.name_table.should eq(name_table)
     end
   end
@@ -589,7 +596,7 @@ describe "Regex" do
   it ".error?" do
     Regex.error?("(foo|bar)").should be_nil
     Regex.error?("(foo|bar").should eq(
-      if Regex::Engine.to_s == "Regex::PCRE2"
+      if Regex::Engine.to_s != "Regex::PCRE"
         "missing closing parenthesis at 8"
       else
         "missing ) at 8"

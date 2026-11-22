@@ -2146,7 +2146,7 @@ module Crystal
       when .command?
         result = Call.new("`", result).at(result)
       when .regex?
-        if result.is_a?(StringLiteral) && (regex_error = Regex.error?(result.value))
+        if result.is_a?(StringLiteral) && (regex_error = RegexLiteralSyntax.error?(result.value))
           raise "invalid regex: #{regex_error}", location
         end
 
