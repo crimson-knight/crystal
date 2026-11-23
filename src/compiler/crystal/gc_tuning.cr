@@ -142,10 +142,13 @@ module Crystal
         stats = GC.prof_stats
         footprint, footprint_peak = footprint_bytes
         times = Process.times
+        # The C allocator's bytes come from the code generator's peak probe; the
+        # LLVM-free frontend (`-Dwithout_llvm`) has no code generator to require.
+        malloc_bytes = {% if flag?(:without_llvm) %} 0_i64 {% else %} PeakProbe.malloc_bytes_in_use {% end %}
         STDERR.printf("gc-trace stage=%s t=%.1f heap_mb=%.1f free_mb=%.1f unmapped_mb=%.1f since_gc_mb=%.1f collections=%d allocated_mb=%.1f divisor=%d malloc_mb=%.1f footprint_mb=%.1f footprint_peak_mb=%.1f user_s=%.1f system_s=%.1f\n",
           (name || "?").gsub(' ', '_'), started_at.elapsed.total_seconds, stats.heap_size / 1e6, stats.free_bytes / 1e6,
           stats.unmapped_bytes / 1e6, stats.bytes_since_gc / 1e6, stats.gc_no, (stats.bytes_before_gc + stats.bytes_since_gc) / 1e6,
-          LibGC.get_free_space_divisor, PeakProbe.malloc_bytes_in_use / 1e6, footprint / 1e6, footprint_peak / 1e6,
+          LibGC.get_free_space_divisor, malloc_bytes / 1e6, footprint / 1e6, footprint_peak / 1e6,
           times.utime, times.stime)
       {% end %}
     end
