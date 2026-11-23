@@ -631,6 +631,7 @@ class Crystal::Call
       end
 
       program.type_once_reused += 1 if typed_once && !typed_def.same?(newly_typed_def)
+      GenericTypeOnce::Probe.note(program, match, newly_typed_def) if newly_typed_def && GenericTypeOnce::Probe.enabled?
       typed_defs << typed_def
     end
 

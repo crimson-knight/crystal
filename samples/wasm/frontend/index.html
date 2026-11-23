@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crystal Type Check</title>
+<style>
+  :root { --bg: #fafaf7; --fg: #1d1d1b; --muted: #6b6b66; --ok: #1f7a3a; --err: #a3271f; --panel: #ffffff; --line: #deded8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --fg: #ececE8; --muted: #9a9a94; --ok: #6fd08c; --err: #ff8a80; --panel: #20201e; --line: #34342f; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  main { width: min(100%, 75vw); margin: 0 auto; padding: 24px 16px; box-sizing: border-box; }
+  @media (max-width: 700px) { main { width: 100%; } }
+  textarea { width: 100%; min-height: 14em; box-sizing: border-box; font: 14px/1.4 ui-monospace, monospace;
+             background: var(--panel); color: var(--fg); border: 1px solid var(--line); padding: 8px; }
+  pre { white-space: pre; overflow-x: auto; background: var(--panel); border: 1px solid var(--line); padding: 8px; }
+  .ok { color: var(--ok); } .err { color: var(--err); } .muted { color: var(--muted); }
+  button { font: inherit; padding: 6px 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Crystal type check in the browser</h1>
+  <p class="muted">The Crystal frontend (parser, macros, type inference) compiled to wasm32-wasi runs here with the
+     std library bundled in memory. No code is generated.</p>
+  <textarea id="source">class Greeter
+  def initialize(@name : String); end
+
+  def greet : String
+    "Hello, #{@name}! #{[1, 2, 3].sum}"
+  end
+end
+
+puts Greeter.new("browser").greet
+</textarea>
+  <p><button id="check" disabled>Type check</button> <span id="status" class="muted">loading…</span></p>
+  <pre id="output"></pre>
+  <pre id="stats" class="muted"></pre>
+</main>
+<script type="module">
+import { MemoryFileSystem, WasiHost } from "./crystal_wasi.mjs";
+
+const params = new URLSearchParams(location.search);
+const wasmUrl = params.get("wasm") || "frontend.wasm";
+const bundleUrl = params.get("bundle") || "bundle.json";
+const output = document.getElementById("output");
+const status = document.getElementById("status");
+const stats = document.getElementById("stats");
+const button = document.getElementById("check");
+
+const loadStart = performance.now();
+const [module, bundle] = await Promise.all([
+  WebAssembly.compileStreaming(fetch(wasmUrl)),
+  fetch(bundleUrl).then((response) => response.json()),
+]);
+const loadMs = performance.now() - loadStart;
+status.textContent = "ready";
+button.disabled = false;
+
+// *mainPath* names a bundled file to check in place (its relative requires
+// resolve from its own directory); otherwise *source* is checked as /work/main.cr.
+async function check(source, extraArgs = [], mainPath = null) {
+  const fs = new MemoryFileSystem();
+  const loaded = fs.loadBundle(bundle);
+  fs.mkdirs("/cache");
+  if (!mainPath) fs.writeFile("/work/main.cr", new TextEncoder().encode(source));
+  const decoder = new TextDecoder();
+  let text = "";
+  const host = new WasiHost({
+    args: ["crystal-frontend", "--no-color", ...(bundle.default_args || []), ...extraArgs, mainPath || "/work/main.cr"],
+    env: { CRYSTAL_PATH: bundle.crystal_path || "/src", CRYSTAL_CACHE_DIR: "/cache", HOME: "/cache" },
+    fs,
+    stdout: (bytes) => { text += decoder.decode(bytes); },
+    stderr: (bytes) => { text += decoder.decode(bytes); },
+  });
+  const runStart = performance.now();
+  let code;
+  try {
+    code = await host.run(module);
+  } catch (error) {
+    code = -1;
+    text += `\n[trap] ${error}`;
+  }
+  const result = {
+    exit_code: code, load_ms: Math.round(loadMs), run_ms: Math.round(performance.now() - runStart),
+    linear_memory_bytes: host.memory ? host.memory.buffer.byteLength : 0, bundle_files: loaded.files,
+  };
+  return { text, result };
+}
+
+async function runAndShow(source, extraArgs, mainPath = null) {
+  button.disabled = true;
+  status.textContent = "checking…";
+  const { text, result } = await check(source, extraArgs, mainPath);
+  output.textContent = text;
+  output.className = result.exit_code === 0 ? "ok" : "err";
+  stats.textContent = JSON.stringify(result, null, 2);
+  status.textContent = result.exit_code === 0 ? "type check passed" : "type check failed";
+  document.body.dataset.result = JSON.stringify(result);
+  // ?report=<url> posts the result there (used by headless checks).
+  const report = params.get("report");
+  if (report) await fetch(report, { method: "POST", body: JSON.stringify({ ...result, output: text.slice(0, 4000) }) });
+  button.disabled = false;
+}
+
+button.addEventListener("click", () => runAndShow(document.getElementById("source").value, []));
+// ?auto=1 runs once on load (headless checks read data-result from the page).
+if (params.get("auto")) {
+  const extraArgs = (params.get("args") || "").split(" ").filter(Boolean);
+  await runAndShow(document.getElementById("source").value, extraArgs, params.get("main"));
+}
+</script>
+</body>
+</html>

@@ -4181,6 +4181,29 @@ module Crystal
       assert_error %({{ `#{exit_code_command(2)}` }}), "error executing command: #{exit_code_command(2)}, got exit status 2"
       assert_error %({{ `#{exit_code_command(127)}` }}), "error executing command: #{exit_code_command(127)}, got exit status 127"
     end
+
+    it "answers a command from the target profile without running it" do
+      assert_macro %({{ `commanddoesnotexist --modversion` }}), "8.2.8" do |program|
+        program.macro_shell_answers_by_command = {"commanddoesnotexist --modversion" => "8.2.8"}
+        nil
+      end
+    end
+
+    it "runs a command the target profile does not answer" do
+      assert_macro %({{ `#{shell_command("echo foobar")}` }}), "foobar#{newline}" do |program|
+        program.macro_shell_answers_by_command = {"other command" => "unused"}
+        nil
+      end
+    end
+
+    it "records the output of each command it runs" do
+      recorded = {} of String => String
+      assert_macro %({{ `#{shell_command("echo foobar")}` }}), "foobar#{newline}" do |program|
+        program.recorded_macro_shell_output_by_command = recorded
+        nil
+      end
+      recorded.should eq({shell_command("echo foobar") => "foobar#{newline}"})
+    end
   end
 
   describe "error reporting" do

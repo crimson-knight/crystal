@@ -161,6 +161,33 @@ end
 annotation TypeOnce
 end
 
+# Declares the bound of a type parameter of a generic class: every type
+# argument the program passes for it is a class that inherits from the bound.
+#
+# ```
+# @[TypeBound(Model, Record)]
+# class Query(Model)
+#   @[TypeOnce]
+#   def table : String
+#     Model.table_name # Model is read at run time, typed as Record+.class
+#   end
+# end
+# ```
+#
+# A typed-once method of such a class (`@[TypeOnce]`, or a fully typed method
+# of a strict file) is typed once for every instance whose argument is within
+# the bound, instead of once per instance. The method may use the bounded
+# parameter as a value (`Model.table_name`, `Model.new`), not as a type
+# (`Array(Model)`, `as(Model)`), and may read only instance variables whose
+# type does not depend on it. A method that cannot be typed once for every
+# instance keeps one copy per instance and gets a warning naming what to
+# change.
+#
+# A compiler without this feature builds the same code unchanged once the
+# annotation is declared: `annotation TypeBound; end`.
+annotation TypeBound
+end
+
 # Marks a `def` that is meant to replace an earlier definition of the same
 # method in the same type, or to override a method the type inherits.
 #

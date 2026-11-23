@@ -16,10 +16,22 @@ module Crystal
 
         io << "\n\nThe compiler was not built in release mode." unless release_mode?
 
-        io << "\n\nLLVM: " << LLVM.version
+        io << "\n\nLLVM: " << llvm_version
         io << "\nDefault target: " << host_target
         io << "\n"
       end
+    end
+
+    # The version of LLVM this compiler uses. Under `-Dwithout_llvm`
+    # (frontend-only builds) no LLVM is linked, so the value is baked at
+    # build time from `CRYSTAL_CONFIG_LLVM_VERSION` (the version exposed to
+    # user code via the `Crystal::LLVM_VERSION` predefined constant).
+    def self.llvm_version : String
+      {% if flag?(:without_llvm) %}
+        {{ env("CRYSTAL_CONFIG_LLVM_VERSION") || "0.0.0 (without_llvm)" }}
+      {% else %}
+        LLVM.version
+      {% end %}
     end
 
     def self.build_commit
@@ -53,7 +65,15 @@ module Crystal
 
     def self.host_target : Crystal::Codegen::Target
       @@host_target ||= begin
-        target = Crystal::Codegen::Target.new({{env("CRYSTAL_CONFIG_TARGET")}} || LLVM.default_target_triple)
+        # Under -Dwithout_llvm there is no host triple autodetection: the
+        # target must be baked in at build time via CRYSTAL_CONFIG_TARGET.
+        default_triple =
+          {% if flag?(:without_llvm) %}
+            {{ env("CRYSTAL_CONFIG_TARGET") || raise("CRYSTAL_CONFIG_TARGET must be set when building with -Dwithout_llvm") }}
+          {% else %}
+            {{env("CRYSTAL_CONFIG_TARGET")}} || LLVM.default_target_triple
+          {% end %}
+        target = Crystal::Codegen::Target.new(default_triple)
 
         if target.linux?
           # The statically linked linux binary runs as well on linux-gnu as

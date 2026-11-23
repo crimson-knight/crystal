@@ -1,4 +1,8 @@
 {% skip_file unless flag?(:wasm32) %}
+# C-4 fix (docs_c4_design.md §3.1/§6): the frontend build removes the entire
+# asyncify layer. Under -Dfrontend_no_fibers this file compiles to nothing, so
+# no LibAsyncify/LibCrystalAsyncify import or export survives into the module.
+{% skip_file if flag?(:frontend_no_fibers) %}
 
 # Crystal::Asyncify — Binaryen Asyncify runtime integration for fiber switching
 #

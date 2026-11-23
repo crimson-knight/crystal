@@ -3254,6 +3254,10 @@ class Crystal::Repl::Compiler < Crystal::Visitor
     raise "BUG: reached a def body that was released after its function was generated"
   end
 
+  def visit(node : ErasedTypeVar)
+    node.raise "a type parameter read at run time is not supported by the interpreter"
+  end
+
   def visit(node : FileNode)
     file_module = @context.program.file_module(node.filename)
 

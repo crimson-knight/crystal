@@ -471,4 +471,51 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
       expect_build(project, "1\n", reused: true, list_of_extra_args: flags)
     end
   end
+
+  it "types the whole program again for an edit to a method typed once for every instance of a generic class" do
+    with_project("infer-reuse-generic-type-once") do |project|
+      main = <<-MAIN
+        abstract class Model
+          def self.table : String
+            "models"
+          end
+        end
+
+        class Post < Model
+          def self.table : String
+            "posts"
+          end
+        end
+
+        class User < Model
+          def self.table : String
+            "users"
+          end
+        end
+
+        @[TypeBound(M, Model)]
+        class Query(M)
+          def initialize(@limit : Int32)
+          end
+
+          @[TypeOnce]
+          def sql : String
+            "FROM \#{M.table} LIMIT \#{@limit}"
+          end
+        end
+
+        puts Query(Post).new(1).sql
+        puts Query(User).new(2).sql
+
+        MAIN
+      project.write("main.cr", main)
+      expect_build(project, "FROM posts LIMIT 1\nFROM users LIMIT 2\n", reused: false)
+
+      # The one copy serves both instances; a new body may no longer be right
+      # for every instance, so the program is typed fresh.
+      project.write("main.cr", main.sub("LIMIT \#{@limit}", "TOP \#{@limit}"))
+      report = expect_build(project, "FROM posts TOP 1\nFROM users TOP 2\n", reused: false)
+      report["reason"].as_s.should contain("typed once for every instance")
+    end
+  end
 end

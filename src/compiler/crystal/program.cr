@@ -187,9 +187,30 @@ module Crystal
 
     getter predefined_constants = Array(Const).new
 
-    property compiler : Compiler?
+    {% if flag?(:without_llvm) %}
+      # Frontend-only builds have no Compiler instance (that class needs the
+      # LLVM backend); incremental-compilation checks treat this as disabled.
+      def compiler : Nil
+        nil
+      end
+    {% else %}
+      property compiler : Compiler?
+    {% end %}
 
-    property optimization_mode = Compiler::OptimizationMode::O0
+    # The output of each shell command a macro runs (backticks or `system`),
+    # by the exact command text, from a target profile. A command found here
+    # is not run. Lets a compiler without subprocesses (WASI) check a program
+    # for a target whose std library asks `pkg-config` for library versions.
+    property macro_shell_answers_by_command : Hash(String, String)? = nil
+
+    # When set, each macro shell command that succeeds is stored here with its
+    # output, to record a target profile (see `FrontendTargetProfile`).
+    property recorded_macro_shell_output_by_command : Hash(String, String)? = nil
+
+    {% unless flag?(:without_llvm) %}
+      # Read only by codegen (fun.cr); a frontend-only build has no Compiler.
+      property optimization_mode = Compiler::OptimizationMode::O0
+    {% end %}
 
     def initialize
       super(self, self, "main")
@@ -320,6 +341,7 @@ module Crystal
       types["TargetFeature"] = @target_feature_annotation = AnnotationType.new self, self, "TargetFeature"
       types["TypeOnce"] = @type_once_annotation = AnnotationType.new self, self, "TypeOnce"
       types["Override"] = @override_annotation = AnnotationType.new self, self, "Override"
+      types["TypeBound"] = @type_bound_annotation = AnnotationType.new self, self, "TypeBound"
 
       define_crystal_constants
 
@@ -388,7 +410,7 @@ module Crystal
       define_crystal_string_constant "VERSION", Crystal::Config.version, <<-MD
         The version of the Crystal compiler.
         MD
-      define_crystal_string_constant "LLVM_VERSION", LLVM.version, <<-MD
+      define_crystal_string_constant "LLVM_VERSION", Crystal::Config.llvm_version, <<-MD
         The version of LLVM used by the Crystal compiler.
         MD
       define_crystal_string_constant "HOST_TRIPLE", Crystal::Config.host_target.to_s, <<-MD
@@ -416,7 +438,9 @@ module Crystal
       const
     end
 
-    property(target_machine : LLVM::TargetMachine) { codegen_target.to_target_machine }
+    {% unless flag?(:without_llvm) %}
+      property(target_machine : LLVM::TargetMachine) { codegen_target.to_target_machine }
+    {% end %}
 
     def codegen_target=(@codegen_target : Codegen::Target) : Codegen::Target
       crystal.types["TARGET_TRIPLE"].as(Const).value.as(StringLiteral).value = codegen_target.to_s
@@ -607,7 +631,7 @@ module Crystal
                      always_inline_annotation naked_annotation returns_twice_annotation
                      raises_annotation primitive_annotation call_convention_annotation
                      flags_annotation link_annotation extern_annotation deprecated_annotation experimental_annotation
-                     type_once_annotation override_annotation) %}
+                     type_once_annotation override_annotation type_bound_annotation) %}
       def {{name.id}}
         @{{name.id}}.not_nil!
       end

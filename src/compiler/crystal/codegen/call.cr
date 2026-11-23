@@ -59,6 +59,10 @@ class Crystal::CodeGenVisitor
     if target_def.type_once?
       from = from_type.remove_indirection
       to = to_type.remove_indirection
+      # A method typed once for every instance of a generic class takes the
+      # receiver as the erased instance: an object pointer (or, for a class
+      # method, a type id) of the same representation.
+      return value if from != to && erased_instance_receiver?(to)
       if from != to && !from.is_a?(VoidType) && type_once_upcast?(from, to)
         return upcast(value, to_type, from_type)
       end

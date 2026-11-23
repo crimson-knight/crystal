@@ -303,7 +303,7 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   # FD_WRITE subscription with the event loop. The event loop's `run`
   # method will poll it and call `io.resume_write` when the FD is ready
   # or `io.resume_write(timed_out: true)` on timeout.
-  def create_fd_write_event(io : IO::Evented, edge_triggered : Bool = false) : Crystal::EventLoop::Event
+  def create_fd_write_event(io : Crystal::EventLoop::Wasi::Evented, edge_triggered : Bool = false) : Crystal::EventLoop::Event
     Wasi::Event.new(self, Wasi::Event::Kind::FdWrite, io: io, fd: io.fd)
   end
 
@@ -313,7 +313,7 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   # FD_READ subscription with the event loop. The event loop's `run`
   # method will poll it and call `io.resume_read` when the FD is ready
   # or `io.resume_read(timed_out: true)` on timeout.
-  def create_fd_read_event(io : IO::Evented, edge_triggered : Bool = false) : Crystal::EventLoop::Event
+  def create_fd_read_event(io : Crystal::EventLoop::Wasi::Evented, edge_triggered : Bool = false) : Crystal::EventLoop::Event
     Wasi::Event.new(self, Wasi::Event::Kind::FdRead, io: io, fd: io.fd)
   end
 
@@ -422,7 +422,7 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   end
 
   # NOTE: The evented_read/evented_write helpers below call Fiber.suspend
-  # via IO::Evented#evented_wait_readable/evented_wait_writable. This requires
+  # via Wasi::Evented#evented_wait_readable/evented_wait_writable. This requires
   # working fiber context switching (Asyncify), which is not yet implemented
   # for wasm32. These methods compile but will not work correctly at runtime
   # for non-blocking file descriptors until fiber support is added.
@@ -486,7 +486,7 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
   end
 
   # NOTE: Socket evented I/O methods below also depend on Fiber.suspend
-  # via IO::Evented. See the note above read(file_descriptor, ...) for details.
+  # via Wasi::Evented. See the note above read(file_descriptor, ...) for details.
 
   def read(socket : ::Socket, slice : Bytes) : Int32
     evented_read(socket, "Error reading socket") do
@@ -597,11 +597,11 @@ struct Crystal::EventLoop::Wasi::Event
 
   getter kind : Kind
   getter fiber : Fiber?
-  getter io : IO::Evented?
+  getter io : Crystal::EventLoop::Wasi::Evented?
   getter fd : Int32
 
   def initialize(@event_loop : Crystal::EventLoop::Wasi, @kind : Kind, *,
-                 @fiber : Fiber? = nil, @io : IO::Evented? = nil, @fd : Int32 = -1)
+                 @fiber : Fiber? = nil, @io : Crystal::EventLoop::Wasi::Evented? = nil, @fd : Int32 = -1)
     @active = false
   end
 
@@ -642,3 +642,5 @@ struct Crystal::EventLoop::Wasi::Event
     @active = false
   end
 end
+
+require "./wasi/evented"
