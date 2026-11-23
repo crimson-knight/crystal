@@ -55,6 +55,7 @@ require "./crystal/macros/*"
 require "./crystal/frontend/type_layout"
 require "./crystal/frontend/patches"
 require "./crystal/frontend/target_profile"
+require "./crystal/frontend/memory_limit"
 
 Log.setup_from_env(default_level: :warn, default_sources: "crystal.*")
 
@@ -122,6 +123,7 @@ module Crystal
       defines = [] of String
       filenames = [] of String
       profile_path = nil
+      memory_limit = nil
       record_profile_path = nil
 
       parser = OptionParser.new do |opts|
@@ -133,6 +135,7 @@ module Crystal
         opts.on("--error-format FORMAT", "Error output format: text|json (default: text)") { |f| error_format = f }
         opts.on("-D FLAG", "--define FLAG", "Define a compile-time flag for the analyzed program") { |f| defines << f }
         opts.on("--no-color", "Disable colored output") { color = false }
+        opts.on("--memory-limit BYTES", "Most GC heap the check may use; past it, exit 3 with a message") { |bytes| memory_limit = bytes.to_u64 }
         opts.on("--stats", "Print elapsed time of each phase") { stats = true }
         opts.on("--version", "Show version") do
           puts Config.description
@@ -159,6 +162,8 @@ module Crystal
         exit 1
       end
       source_code = File.read(filename)
+
+      memory_limit.try { |bytes| FrontendMemoryLimit.apply(bytes) }
 
       profile = profile_path.try { |path| FrontendTargetProfile.load(path) }
       target ||= profile.try(&.target)
