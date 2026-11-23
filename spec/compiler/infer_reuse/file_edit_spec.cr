@@ -61,11 +61,11 @@ describe Crystal::InferReuse::FileEdit do
     edit = compare(OLD_TEXT.sub("    \"Hello", "    1\n    2\n    3\n    \"Hello"))
     edit.list_of_changed_defs.map(&.new_def.name).should eq(["greet"])
     shift = edit.line_shift
-    shift.apply(2).should eq(2)       # class Greeter
-    shift.apply(5).should eq(8)       # the `end` of greet
-    shift.apply(7).should eq(10)      # private def shout
-    shift.apply(8).should eq(11)      # its unchanged body
-    shift.apply(22).should eq(25)     # puts ...
+    shift.apply(2).should eq(2)   # class Greeter
+    shift.apply(5).should eq(8)   # the `end` of greet
+    shift.apply(7).should eq(10)  # private def shout
+    shift.apply(8).should eq(11)  # its unchanged body
+    shift.apply(22).should eq(25) # puts ...
     edit.replaced_line?(4).should be_true
     edit.replaced_line?(8).should be_false
   end

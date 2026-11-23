@@ -303,8 +303,12 @@ module Crystal::InferReuse
       old_size = @list_of_old_lines.size
       new_size = @list_of_new_lines.size
       loop do
-        old_line += 1 while old_line <= old_size && old_skipped[old_line]
-        new_line += 1 while new_line <= new_size && new_skipped[new_line]
+        while old_line <= old_size && old_skipped[old_line]
+          old_line += 1
+        end
+        while new_line <= new_size && new_skipped[new_line]
+          new_line += 1
+        end
         old_done = old_line > old_size
         new_done = new_line > new_size
         break if old_done && new_done
