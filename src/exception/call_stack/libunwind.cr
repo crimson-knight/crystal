@@ -8,6 +8,15 @@ require "../lib_unwind"
 struct Exception::CallStack
   skip(__FILE__)
 
+  # On ELF targets the compiler writes `@` in a symbol name as this escape
+  # (`Crystal::ELF_AT_SIGN_ESCAPE`), because an ELF linker reads
+  # `name@text` as a symbol version. Frames print the name with `@`.
+  private ELF_AT_SIGN_ESCAPE = "~at~"
+
+  # Whether symbol names in this program carry `ELF_AT_SIGN_ESCAPE`
+  # (the same targets as `Crystal::Codegen::Target#elf?`).
+  private ELF_SYMBOL_NAMES = {{ flag?(:linux) || flag?(:bsd) || flag?(:android) || flag?(:solaris) }}
+
   {% if flag?(:gnu) && flag?(:i386) %}
     # This is only used for the workaround described in `Exception.unwind`
     @@makecontext_range : Range(Void*, Void*)?
@@ -123,7 +132,8 @@ struct Exception::CallStack
     {% end %}
 
     unsafe_decode_frame(repeated_frame.ip) do |offset, sname, fname|
-      Crystal::System.print_error "%s +%lld in %s", sname, offset.to_i64, fname
+      print_symbol_name(sname)
+      Crystal::System.print_error " +%lld in %s", offset.to_i64, fname
       return
     end
 
@@ -132,10 +142,44 @@ struct Exception::CallStack
 
   protected def self.decode_frame(ip)
     decode_frame(ip) do |offset, symbol, file|
-      symbol = symbol ? String.new(symbol) : "??"
+      symbol = symbol ? unescape_symbol_name(String.new(symbol)) : "??"
       file = file ? String.new(file) : "??"
       {offset, symbol, file}
     end
+  end
+
+  # *name* with every `ELF_AT_SIGN_ESCAPE` read back as `@`.
+  protected def self.unescape_symbol_name(name : String) : String
+    if ELF_SYMBOL_NAMES && name.includes?(ELF_AT_SIGN_ESCAPE)
+      name.gsub(ELF_AT_SIGN_ESCAPE, '@')
+    else
+      name
+    end
+  end
+
+  # Prints the C string *name* as `.unescape_symbol_name` reads it, without
+  # allocating memory (the SIGSEGV handler prints frames too).
+  private def self.print_symbol_name(name : UInt8*) : Nil
+    length = LibC.strlen(name).to_i
+    unless ELF_SYMBOL_NAMES
+      Crystal::System.print_error Slice.new(name, length)
+      return
+    end
+
+    escape = ELF_AT_SIGN_ESCAPE.to_slice
+    start = 0
+    index = 0
+    while index < length
+      if index + escape.size <= length && LibC.memcmp(name + index, escape.to_unsafe, escape.size) == 0
+        Crystal::System.print_error Slice.new(name + start, index - start) if index > start
+        Crystal::System.print_error "@"
+        index += escape.size
+        start = index
+      else
+        index += 1
+      end
+    end
+    Crystal::System.print_error Slice.new(name + start, length - start) if length > start
   end
 
   # variant of `.decode_frame` that returns the C strings directly instead of

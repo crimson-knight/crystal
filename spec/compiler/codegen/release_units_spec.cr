@@ -78,6 +78,15 @@ private def symbol_names(nm, executable)
   Process.capture([nm, executable]).lines.map { |line| line.split(' ', 3).last.chomp }
 end
 
+# The names of the functions (text symbols, `T` or `t`) in an executable.
+private def function_symbol_names(nm, executable)
+  Process.capture([nm, executable]).lines.compact_map do |line|
+    if match = line.chomp.match(/^\S*\s+[Tt]\s+(.+)$/)
+      match[1]
+    end
+  end
+end
+
 describe "Compiler#release_units" do
   it "defaults to emitting the optimized module as eight parts" do
     Crystal::Compiler.new.release_units.should eq(8)
@@ -160,7 +169,16 @@ describe "Compiler#release_units" do
       list_of_crystal_method_symbols = single_symbols.select(&.includes?("Counter::bump"))
       list_of_crystal_method_symbols.should_not be_empty
       (list_of_crystal_method_symbols - parts_symbols).should be_empty
-      (parts_symbols - list_of_private_symbols).size.should be_close(single_symbols.size, single_symbols.size // 10)
+
+      # Only functions are compared by count. The single-object build keeps
+      # local data symbols (`$Slice:N` literals, constant tables such as
+      # Mica's encoding tables) that the parted build promotes to
+      # `__crystal_private.` names and then strips, so data symbols differ by
+      # an amount that depends on how much constant data the standard library
+      # carries, not on what the parts link.
+      list_of_single_functions = function_symbol_names(nm, single_executable)
+      list_of_parts_functions = function_symbol_names(nm, parts_executable).reject(&.includes?("__crystal_private."))
+      list_of_parts_functions.size.should be_close(list_of_single_functions.size, list_of_single_functions.size // 10)
     end
   end
 
