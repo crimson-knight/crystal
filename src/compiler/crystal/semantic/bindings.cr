@@ -1,96 +1,102 @@
 module Crystal
   # Specialized container for ASTNodes to use for bindings tracking.
   #
-  # The average number of elements in both dependencies and observers is below 2
-  # for ASTNodes. This struct holds the first two elements inline, so a node
-  # with up to two dependencies or observers allocates nothing for them, and it
-  # costs two pointers (16 bytes) per list. The second slot holds either the
-  # second element or, from the third element on, an array with every element
-  # after the first. Since this is a struct, we need to be careful with mutation.
+  # Most nodes have no dependencies or observers, or exactly one, so this
+  # struct is a single pointer (8 bytes per list): nothing, the only element,
+  # a `NodePair` holding two, or an array once there are three or more.
+  # Since this is a struct, we need to be careful with mutation.
   struct SmallNodeList
     include Enumerable(ASTNode)
 
-    @first : ASTNode?
-    @rest : ASTNode | Array(ASTNode) | Nil
+    # The two elements of a list that holds exactly two.
+    class NodePair
+      property first : ASTNode
+      property second : ASTNode
 
+      def initialize(@first : ASTNode, @second : ASTNode)
+      end
+    end
+
+    @items : ASTNode | NodePair | Array(ASTNode) | Nil
+
+    # Elements pushed while the block runs are yielded too: the list is read
+    # again before every element.
     def each(& : ASTNode ->)
-      yield @first || return
-      rest = @rest
-      if rest.is_a?(ASTNode)
-        yield rest
-        # The block may have pushed more elements: they now live in an array
-        # whose first element is the one just yielded.
-        rest = @rest
-        if rest.is_a?(Array(ASTNode))
-          index = 1
-          while index < rest.size
-            yield rest.unsafe_fetch(index)
-            index += 1
-          end
+      index = 0
+      while true
+        case items = @items
+        when Nil
+          return
+        when ASTNode
+          return if index >= 1
+          yield items
+        when NodePair
+          return if index >= 2
+          yield index == 0 ? items.first : items.second
+        else
+          return if index >= items.size
+          yield items.unsafe_fetch(index)
         end
-      elsif rest.is_a?(Array(ASTNode))
-        rest.each { |node| yield node }
+        index += 1
       end
     end
 
     def size
-      if @first.nil?
-        0
-      else
-        rest = @rest
-        if rest.is_a?(Array(ASTNode))
-          1 + rest.size
-        elsif rest
-          2
-        else
-          1
-        end
+      case items = @items
+      when Nil      then 0
+      when ASTNode  then 1
+      when NodePair then 2
+      else               items.size
       end
     end
 
     def empty? : Bool
-      @first.nil?
+      @items.nil?
     end
 
     def first : ASTNode
-      @first || raise Enumerable::EmptyError.new
+      case items = @items
+      when Nil      then raise Enumerable::EmptyError.new
+      when ASTNode  then items
+      when NodePair then items.first
+      else               items.first
+      end
     end
 
     def push(node : ASTNode) : self
-      if @first.nil?
-        @first = node
-      else
-        rest = @rest
-        if rest.is_a?(Array(ASTNode))
-          rest.push(node)
-        elsif rest
-          @rest = [rest, node] of ASTNode
-        else
-          @rest = node
-        end
+      case items = @items
+      when Nil      then @items = node
+      when ASTNode  then @items = NodePair.new(items, node)
+      when NodePair then @items = [items.first, items.second, node] of ASTNode
+      else               items.push(node)
       end
       self
     end
 
     def reject!(& : ASTNode ->) : self
-      first = @first || return self
-      rest = @rest
-      if rest.is_a?(Array(ASTNode))
-        rest.reject! { |node| yield node }
-        if yield first
-          @first = rest.shift?
-        end
-        case rest.size
-        when 0 then @rest = nil
-        when 1 then @rest = rest.unsafe_fetch(0)
+      case items = @items
+      when Nil
+        # nothing to remove
+      when ASTNode
+        @items = nil if yield items
+      when NodePair
+        first = items.first
+        second = items.second
+        drop_first = yield first
+        drop_second = yield second
+        if drop_first && drop_second
+          @items = nil
+        elsif drop_first
+          @items = second
+        elsif drop_second
+          @items = first
         end
       else
-        if rest && yield rest
-          @rest = rest = nil
-        end
-        if yield first
-          @first = rest
-          @rest = nil
+        items.reject! { |node| yield node }
+        case items.size
+        when 0 then @items = nil
+        when 1 then @items = items.unsafe_fetch(0)
+        when 2 then @items = NodePair.new(items.unsafe_fetch(0), items.unsafe_fetch(1))
         end
       end
       self
@@ -105,22 +111,34 @@ module Crystal
     # every other element where it is, and says whether it found one. An
     # iteration that is under way stays valid.
     def replace_first(old : ASTNode, new : ASTNode) : Bool
-      if @first.same?(old)
-        @first = new
-        return true
-      end
-      rest = @rest
-      if rest.is_a?(Array(ASTNode))
-        index = rest.index { |node| node.same?(old) }
-        return false unless index
-        rest[index] = new
+      case items = @items
+      when Nil
+        false
+      when ASTNode
+        return false unless items.same?(old)
+        @items = new
         true
-      elsif rest.same?(old)
-        @rest = new
+      when NodePair
+        if items.first.same?(old)
+          items.first = new
+        elsif items.second.same?(old)
+          items.second = new
+        else
+          return false
+        end
         true
       else
-        false
+        index = items.index { |node| node.same?(old) }
+        return false unless index
+        items[index] = new
+        true
       end
+    end
+
+    # The heap objects this list allocated (memory census only).
+    def census_allocation : NodePair | Array(ASTNode) | Nil
+      items = @items
+      items.is_a?(ASTNode) ? nil : items
     end
   end
 

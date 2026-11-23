@@ -190,8 +190,11 @@ module Crystal
     end
 
     def owned_bytes(value : SmallNodeList) : Int64
-      rest = value.@rest
-      rest.is_a?(Array(ASTNode)) ? owned_bytes(rest) : 0_i64
+      case allocation = value.census_allocation
+      when Array(ASTNode) then owned_bytes(allocation)
+      when SmallNodeList::NodePair then gc_bytes(allocation.as(Void*))
+      else 0_i64
+      end
     end
 
     def owned_bytes(value : Call::RareFields | Def::RareFields) : Int64
