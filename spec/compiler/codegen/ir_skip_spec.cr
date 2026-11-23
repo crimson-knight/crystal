@@ -145,11 +145,12 @@ private class SkipProgram
     File.touch(File.join(@directory, name), Time.utc + (@edit_count * 5).seconds)
   end
 
-  def build(verify : Bool = false) : Crystal::IrSkip::Stats
+  def build(verify : Bool = false, line_patch : Bool = true) : Crystal::IrSkip::Stats
     compiler = Crystal::Compiler.new
     compiler.incremental = true
     compiler.n_threads = 2
     compiler.ir_skip_verify = verify
+    compiler.line_patch = line_patch
     ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
     compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
     compiler.last_ir_skip_stats || raise "the build kept no keys"
@@ -285,7 +286,8 @@ describe "Code gen: skipping IR generation for unchanged modules" do
   it "tells a module in which only source positions changed from the others" do
     with_skip_program("ir_skip_lines") do |skip_program|
       skip_program.edit("user.cr", "class User\n", "# One line.\n# Two lines.\nclass User\n")
-      stats = skip_program.build
+      # Without line patching (see `line_patch_spec.cr`).
+      stats = skip_program.build(line_patch: false)
 
       regenerated?(stats, "User").should be_true
       regenerated?(stats, "Bystander").should be_false
