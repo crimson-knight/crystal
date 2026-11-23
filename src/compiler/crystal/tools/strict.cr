@@ -138,6 +138,9 @@ module Crystal
       getter left_ordinary_reason : String?
       property? in_program = false
 
+      # The method the build blamed when the file could not be strict.
+      property blamed_method : String?
+
       def initialize(@filename : String)
         @original_text = File.read(@filename)
         @text = @original_text
@@ -521,7 +524,9 @@ module Crystal
             end
             outcome.override = true if applied && plan.needs_override?
             unless outcome.typed?
-              if rejection = plan.rejection
+              if @ordinary_files.includes?(file.filename) && plan.writes_types?
+                outcome.reason = "its types are not written because its file stays an ordinary file"
+              elsif rejection = plan.rejection
                 outcome.reason = "the build fails when it is typed once: #{rejection}"
               elsif reason = plan.reason
                 outcome.reason = reason
@@ -640,7 +645,11 @@ module Crystal
           @rejections[{file.filename, plan.ordinal}] = "the build fails when it is typed once: #{message}"
         else
           @ordinary_files << file.filename
-          file.leave_ordinary("the build fails when the file is strict: #{message}")
+          if method = file.blamed_method
+            file.leave_ordinary("#{method}, whose types are already written, fails once it is typed once: #{message}")
+          else
+            file.leave_ordinary("the build fails when the file is strict: #{message}")
+          end
         end
       end
 
@@ -692,7 +701,9 @@ module Crystal
           _, filename, line, column = frame
           file = @file_by_name[filename]? || next
           marker = units.find { |unit| unit.active? && unit.marker? && unit.file.same?(file) }
-          return [marker] if marker
+          next unless marker
+          file.blamed_method = method_at(file, line, column)
+          return [marker]
         end
         [] of Unit
       end
@@ -720,6 +731,19 @@ module Crystal
           next false if edited_only && !plan.writes_types?
           location_key(plan.location) == key
         end
+      end
+
+      # The description of the planned method whose def holds *line*:*column*
+      # in the text of *file* now on disk.
+      private def method_at(file : FileState, line : Int32, column : Int32) : String?
+        edited_defs = file_defs(File.read(file.filename), file.filename).values
+        index = edited_defs.index do |a_def|
+          start = a_def.location.not_nil!
+          finish = a_def.end_location || start
+          start.line_number - 1 <= line <= finish.line_number
+        end
+        return nil unless index
+        file.plans.find { |plan| plan.ordinal == index }.try(&.description)
       end
 
       # Each frame of *error* from the outermost call to the error itself.

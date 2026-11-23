@@ -402,6 +402,7 @@ module Crystal::StrictTool
       owner.ancestors.each do |ancestor|
         list = ancestor.defs.try(&.[signature.name]?) || next
         list.each do |existing|
+          next unless @recorder.declared_def_ids.includes?(existing.def.object_id)
           other_def = planned[existing.def]? || existing.def
           other = DefWithMetadata.new(other_def)
           return true if item.compare_strictness(other, owner, other_owner: ancestor) == 0

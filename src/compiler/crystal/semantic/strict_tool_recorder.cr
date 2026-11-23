@@ -35,7 +35,13 @@ module Crystal
       filename.is_a?(String) && @filenames.includes?(filename)
     end
 
+    # Every def a declaration added, in any file (by object id): the defs the
+    # strict checks compare against, as opposed to the `new` and `initialize`
+    # the compiler adds later.
+    getter declared_def_ids = Set(UInt64).new
+
     def record_declaration(a_def : Def, owner : ModuleType, replaced : Def?) : Nil
+      declared_def_ids << a_def.object_id
       return unless records?(a_def)
       declarations << Declaration.new(a_def, owner, replaced)
     end
