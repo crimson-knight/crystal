@@ -31,7 +31,12 @@ module Crystal
     end
 
     def materialize_into(owner : Def) : Nil
-      @program.lazy_def_bodies.materialized += 1
+      lazy_def_bodies = @program.lazy_def_bodies
+      lazy_def_bodies.materialized += 1
+      if LazyDefBodies.trace? && lazy_def_bodies.materialized <= 40
+        STDERR.puts "lazy def bodies: making #{owner.name} again from"
+        caller.first(14).each { |frame| STDERR.puts "  #{frame}" }
+      end
       owner.body = LazyDefBodies.parse_body(@program, owner, @virtual_file, @byte_offset, @bytesize)
     end
   end
@@ -47,6 +52,10 @@ module Crystal
 
     def self.enabled_by_env? : Bool
       ENV["CRYSTAL_LAZY_DEF_BODIES"]? != "0"
+    end
+
+    def self.trace? : Bool
+      ENV["CRYSTAL_LAZY_DEF_BODIES_TRACE"]? == "1"
     end
 
     def self.verify? : Bool
@@ -151,7 +160,7 @@ module Crystal
     end
 
     private def without_fresh_names(text : String) : String
-      text.gsub(/__temp_\d+/, "__temp")
+      text.gsub(/__temp_\d+/, "__temp").gsub(/__arg\d+/, "__arg")
     end
 
     # The byte offset where each line of *source* starts.
