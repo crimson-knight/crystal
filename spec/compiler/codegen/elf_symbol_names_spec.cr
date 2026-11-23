@@ -85,9 +85,9 @@ describe "Code generation: symbol names on ELF targets" do
         executable = build_inheritor_program(directory, 40, 8)
         Process.capture(executable).should eq("#{inheritor_sum(40, 8)}\n")
 
-        # Before the escape this program defined 320 versions, one per
-        # inherited function; the overflow needs 32,767, and every inherited
-        # method of any program adds one.
+        # Before the escape GNU ld gave this program 2,058 version
+        # definitions, one per distinct text after an `@` (320 for the steps
+        # alone). The start-up failure needs more than 32,767.
         versions = Process.capture([readelf, "-V", "-W", executable])
         versions.should_not contain("Version definition section")
         versions.should_not contain("Ancestor#step")
