@@ -66,6 +66,27 @@ class Crystal::CodeGenVisitor
     if func = typed_fun_in_segments?(first_module_info, mangled_name)
       return declares_in_current_module ? declare_in_current_module(mangled_name, func) : nil
     end
+    # Deep in a chain of functions that each call the next, every module of
+    # the chain is pinned (`codegen_fun` holds values of it), however large
+    # it is. From `DEFERRED_GENERATION_DEPTH` on, a new function is only
+    # declared here, from its signature, and generated once the outermost
+    # function is done (see `generate_deferred_funs`).
+    if defers_generation_of?(target_def)
+      func = declare_deferred_fun(mangled_name, target_def, self_type)
+      if @deferred_fun_names.add?(mangled_name)
+        @list_of_deferred_funs << DeferredFun.new(mangled_name, target_def, self_type, first_module_info)
+        @module_spill.try &.record_deferred_fun
+      end
+      return declares_in_current_module ? declare_in_current_module(mangled_name, func) : nil
+    end
+
+    declared_fun = generate_target_def_fun(mangled_name, target_def, self_type, first_module_info, declares_in_current_module)
+    generate_deferred_funs if @codegen_fun_depth == 0
+    declared_fun
+  end
+
+  private def generate_target_def_fun(mangled_name, target_def, self_type, first_module_info : ModuleInfo,
+                                      declares_in_current_module : Bool, deferred : Bool = false) : LLVMTypedFunction?
     self_type_module_info = segment_for_next_fun(first_module_info, mangled_name)
 
     # A module that matches the build before gets no code: the function is
@@ -76,11 +97,12 @@ class Crystal::CodeGenVisitor
     end
     if invalidation_count != @ir_skip_invalidation_count
       # Modules were generated after all in the meantime, and this function
-      # may be among what they generated.
-      if existing_declaration = declaration_of_known_fun?(mangled_name, declares_in_current_module)
+      # may be among what they generated. A deferred function is known by
+      # its signature until it is generated.
+      if !deferred && (existing_declaration = declaration_of_known_fun?(mangled_name, declares_in_current_module))
         return existing_declaration[0]
       end
-      if func = typed_fun_in_segments?(first_module_info, mangled_name)
+      if (func = typed_fun_in_segments?(first_module_info, mangled_name)) && !func.func.basic_blocks.empty?
         return declares_in_current_module ? declare_in_current_module(mangled_name, func) : nil
       end
     end
@@ -94,6 +116,78 @@ class Crystal::CodeGenVisitor
     declared_fun = declares_in_current_module ? check_mod_fun(self_type_module_info, mangled_name, func) : nil
     unpin_module(self_type_module_info)
     declared_fun
+  end
+
+  # A function whose generation was put off (see `defers_generation_of?`).
+  record DeferredFun, mangled_name : String, target_def : Def, self_type : Type, first_module_info : ModuleInfo
+
+  # The nesting depth of `codegen_fun` from which new functions are
+  # deferred. A Grant app of 300 models chains 300 of them (a function of
+  # each model calls one of the next model), which pinned 860 MB of IR.
+  DEFERRED_GENERATION_DEPTH = 8
+
+  @list_of_deferred_funs = Deque(DeferredFun).new
+  @deferred_fun_names = Set(String).new
+  @codegen_fun_depth = 0
+  @generates_deferred_funs = false
+
+  # Whether `CRYSTAL_DEFER_DEEP_CODEGEN=0` turned deferring off.
+  class_getter?(defers_deep_generation : Bool) { ENV["CRYSTAL_DEFER_DEEP_CODEGEN"]? != "0" }
+
+  private def defers_generation_of?(target_def) : Bool
+    return false unless @module_spill && CodeGenVisitor.defers_deep_generation?
+    return false if @single_module || @debug.variables? || target_def.is_a?(External)
+    @codegen_fun_depth >= DEFERRED_GENERATION_DEPTH
+  end
+
+  # Declares the function of *target_def* in the function-signature module,
+  # from which callers declare it, without generating it.
+  private def declare_deferred_fun(mangled_name, target_def, self_type) : LLVMTypedFunction
+    if known_signature = known_fun_signature?(mangled_name)
+      return known_signature
+    end
+
+    signatures = fun_signatures
+    old_llvm_mod = @llvm_mod
+    old_module_info = @module_info
+    old_llvm_context = @llvm_context
+    old_llvm_typer = @llvm_typer
+    begin
+      with_cloned_context do
+        @llvm_mod = signatures.mod
+        @module_info = signatures
+        @llvm_context = @llvm_mod.context
+        @llvm_typer = signatures.typer
+        codegen_fun_signature(mangled_name, target_def, self_type, false, false)
+        LLVMTypedFunction.new(context.fun_type, context.fun)
+      end
+    ensure
+      @llvm_mod = old_llvm_mod
+      @module_info = old_module_info
+      @llvm_context = old_llvm_context
+      @llvm_typer = old_llvm_typer
+    end
+  end
+
+  # Generates the deferred functions, and the ones they defer in turn.
+  # Called when no function is being generated, and before IR generation
+  # finishes.
+  def generate_deferred_funs : Nil
+    return if @generates_deferred_funs || @list_of_deferred_funs.empty?
+
+    @generates_deferred_funs = true
+    begin
+      while deferred = @list_of_deferred_funs.shift?
+        # Generated in the meantime (`codegen_fun` forgets it).
+        next unless @deferred_fun_names.includes?(deferred.mangled_name)
+
+        generate_target_def_fun(deferred.mangled_name, deferred.target_def, deferred.self_type,
+          deferred.first_module_info, declares_in_current_module: false, deferred: true)
+        @deferred_fun_names.delete(deferred.mangled_name)
+      end
+    ensure
+      @generates_deferred_funs = false
+    end
   end
 
   # Declares *func* in the module code is being generated into, unless that
@@ -186,8 +280,10 @@ class Crystal::CodeGenVisitor
     # holds values of it.
     fun_module_info.list_of_generated_fun_names << mangled_name
     pin_module(fun_module_info)
-    @generated_fun_count += 1
-    trace_peak("functions") if @generated_fun_count % 5000 == 0
+    @deferred_fun_names.delete(mangled_name)
+    @codegen_fun_depth += 1
+    @peak_trace_fun_count += 1
+    trace_peak("functions") if @peak_trace_fun_count % 5000 == 0
 
     # Proc literals and closures are numbered within their function.
     @proc_counts.delete(mangled_name)
@@ -364,6 +460,7 @@ class Crystal::CodeGenVisitor
 
     end_ir_trace_frame(ir_trace_frame, mangled_name, fun_module_info) unless inherits_ir_trace_frame
     unpin_module(fun_module_info)
+    @codegen_fun_depth -= 1
 
     # Proc literals can be generated more than once (a block inlined at
     # several `yield`s), so only plain method defs are released.
@@ -645,7 +742,14 @@ class Crystal::CodeGenVisitor
 
   def setup_context_fun(mangled_name, target_def, llvm_args_types, llvm_return_type) : Nil
     fun_type = LLVM::Type.function(llvm_args_types, llvm_return_type, target_def.varargs?)
-    typed_fun = add_typed_fun(@llvm_mod, mangled_name, fun_type)
+    # A deferred function may be declared in its own module already, by a
+    # function of that module that called it before it was generated.
+    existing_declaration = typed_fun?(@llvm_mod, mangled_name)
+    typed_fun = if existing_declaration && existing_declaration.func.basic_blocks.empty?
+                  existing_declaration
+                else
+                  add_typed_fun(@llvm_mod, mangled_name, fun_type)
+                end
     context.fun = typed_fun.func
     context.fun_type = typed_fun.type
 

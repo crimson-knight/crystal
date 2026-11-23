@@ -626,6 +626,7 @@ module Crystal
     end
 
     def finish
+      generate_deferred_funs
       trace_peak("finish begins")
       clear_current_debug_location if @debug.line_numbers?
       codegen_return @main_ret_type

@@ -1916,6 +1916,7 @@ module Crystal
            "#{module_spill.hash_time.total_seconds.round(1)} s hashing it, #{module_spill.write_time.total_seconds.round(1)} s putting it in files"
       puts " - modules made of several parts: #{module_spill.multi_part_module_count}"
       puts " - function signatures recorded: #{module_spill.recorded_signature_count}"
+      puts " - functions generated after the chain of calls that asked for them: #{module_spill.deferred_fun_count}"
       STDOUT.flush
     end
 
