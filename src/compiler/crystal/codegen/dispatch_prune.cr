@@ -301,7 +301,11 @@ module Crystal
       # hold a created type.
       private def branch_live?(call : Call, a_def : Def) : Bool
         return true if a_def.type_once?
-        unless call.super?
+        if call.super?
+          # The target of a `super` runs with a receiver of a subclass, so
+          # its owner says nothing about the receiver: it never gets a stub.
+          @super_targets << a_def.object_id
+        else
           return false unless live?(a_def.owner)
         end
         call.args.each_with_index do |arg, index|
