@@ -1206,6 +1206,15 @@ module Crystal
         # Grant300's 7,759 objects (notes/rebuild-30s.md), so it stays.
         link_flags = use_modern_linker(link_flags) unless program.has_flag?("darwin")
 
+        # The system linker warns once per object file built for a newer
+        # macOS than it links for, and Clang's default for the link differs
+        # from the version in our target triple (macOS 26.0 against 26.5 on
+        # one host, 27.2 against 28.0 on another). Linking for the triple's
+        # version keeps the two in step.
+        if (macos_version = program.codegen_target.environment.lchop?("macosx")) && !macos_version.empty? && !link_flags.includes?("version-min")
+          link_flags += " -mmacosx-version-min=#{macos_version}"
+        end
+
         {DEFAULT_LINKER, %(#{DEFAULT_LINKER} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{program.lib_flags(@cross_compile)}), object_names}
       end
     end

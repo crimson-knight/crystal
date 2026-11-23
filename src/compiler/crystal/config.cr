@@ -89,11 +89,11 @@ module Crystal
             triple = "#{target.architecture}-#{target.vendor}-macosx#{min_version}"
             target = Crystal::Codegen::Target.new(triple)
           elsif target.environment.starts_with?("darwin") && (product_version = macos_product_version)
-            # Without those options Clang uses the running system's version.
-            # LLVM derives one from the Darwin kernel version instead, and
+            # LLVM derives the version from the Darwin kernel version and
             # gets it wrong for releases it predates: LLVM 21 reads Darwin
-            # 27.2 (macOS 27.2) as macOS 28.0, and every object file linked
-            # with Apple's linker then gets the warning above.
+            # 27.2 (macOS 27.2) as macOS 28.0. The running system's version
+            # is the right one; the link passes it on as
+            # `-mmacosx-version-min` (`Compiler#linker_command`).
             triple = "#{target.architecture}-#{target.vendor}-macosx#{product_version}"
             target = Crystal::Codegen::Target.new(triple)
           end
