@@ -57,15 +57,15 @@ module Crystal
       Check
     end
 
-    # The mode from the program's flags: `-Dprune_dispatch` turns pruning
-    # on, `-Dprune_dispatch_check` turns on check mode, and
-    # `-Dno_prune_dispatch` turns it off.
+    # The mode from the program's flags: pruning is on unless
+    # `-Dno_prune_dispatch` turns it off; `-Dprune_dispatch_check` turns on
+    # check mode. (`-Dprune_dispatch`, which turned it on before it was the
+    # default, is still accepted.)
     def self.mode_for(program : Program) : Mode
       return Mode::Off if program.has_flag?("no_prune_dispatch")
       return Mode::Check if program.has_flag?("prune_dispatch_check")
-      return Mode::On if program.has_flag?("prune_dispatch")
 
-      Mode::Off
+      Mode::On
     end
 
     # `CRYSTAL_PRUNE_DISPATCH_STATS=1` prints what the analysis found, and

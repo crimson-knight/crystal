@@ -61,13 +61,13 @@ ensure
 end
 
 describe "Code gen: dispatch pruning" do
-  it "is off without the flag" do
+  it "is off with -Dno_prune_dispatch" do
     code = GREETERS + %(
       list = Pointer(Greeter).malloc(1_u64)
       list.value = Plain.new
       list.value.greet
       )
-    generated_function_names(code, flags: nil).any?(&.includes?("NeverMade#greet")).should be_true
+    generated_function_names(code, flags: "no_prune_dispatch").any?(&.includes?("NeverMade#greet")).should be_true
   end
 
   it "leaves out the includer of a module that nothing creates" do
