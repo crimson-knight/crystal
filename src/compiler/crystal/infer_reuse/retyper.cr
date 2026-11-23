@@ -38,6 +38,10 @@ module Crystal::InferReuse
     def initialize(@kept : KeptProgram, @request : BuildRequest)
     end
 
+    # The load time in seconds and the file size in bytes when the kept
+    # program came from a snapshot in the cache folder (`InferPersist`).
+    property loaded_from_snapshot : {Float64, Int64}? = nil
+
     def program : Program
       @kept.program
     end
@@ -70,6 +74,9 @@ module Crystal::InferReuse
       report.retyped_instances = @retyped_instance_count
       report.new_typed_defs = @new_typed_def_count
       report.build_child_footprint_bytes = Footprint.of(::Process.pid)
+      if loaded = @loaded_from_snapshot
+        report.snapshot_load_seconds, report.snapshot_bytes = loaded
+      end
       if decision.reused? && ENV[VERIFY_VARIABLE]? == "1"
         verify(report)
       else

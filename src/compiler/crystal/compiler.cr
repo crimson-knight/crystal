@@ -380,6 +380,16 @@ module Crystal
     # `InferReuse::TypedProgramDigest`), for a verification of a reused build.
     property infer_reuse_digest_filename : String? = nil
 
+    # The command line of this build, for a snapshot of its typed program
+    # (`InferPersist`); `nil` turns snapshots off for this compiler.
+    property infer_persist_argv : Array(String)? = nil
+
+    # Whether this build reads and writes a type-inference snapshot in its
+    # cache folder (`InferPersist`).
+    def persists_type_inference? : Bool
+      InferPersist.enabled? && @incremental && !@no_cache && !@no_codegen && @infer_reuse_handoff.nil? && !@infer_persist_argv.nil?
+    end
+
     # Program that was created for the last compilation.
     property! program : Program
 
@@ -459,40 +469,53 @@ module Crystal
       end
 
       unless compilation_skipped
+        persist = persists_type_inference? ? InferPersist::Session.for(self, CacheDir.instance.directory_for(source)) : nil
+        if persist && (loaded = persist.load(program))
+          program, node = loaded
+          @program = program
+          yield program
+        else
+          begin
+            node = program.semantic node, cleanup: !no_cleanup?
+          rescue ex : SkipMacroCodeCoverageException
+            program.macro_expansion_error_hook.try &.call(ex.cause)
+          end
+        end
+        persist.try &.save(program, node)
+        build_succeeded = false
         begin
-          node = program.semantic node, cleanup: !no_cleanup?
-        rescue ex : SkipMacroCodeCoverageException
-          program.macro_expansion_error_hook.try &.call(ex.cause)
-        end
-
-        if digest_filename = @infer_reuse_digest_filename
-          File.write(digest_filename, InferReuse::TypedProgramDigest.new(program, node).to_json)
-        end
-
-        if (handoff = @infer_reuse_handoff) && (record = program.infer_reuse_record) && !@no_codegen
-          # Returns in the process that generates code; the program it typed
-          # stays with the build server. A later build may come back here
-          # with an edit re-typed in a copy of this program.
-          node = InferReuse::Holder.new(handoff).after_semantic(self, program, node, record)
-          if @incremental && !@no_cache
-            @current_cached_data = IncrementalCache.load(
-              CacheDir.instance.directory_for(source), Config.version, @codegen_target.to_s, @flags, @prelude
-            )
+          if digest_filename = @infer_reuse_digest_filename
+            File.write(digest_filename, InferReuse::TypedProgramDigest.new(program, node).to_json)
           end
-        end
 
-        unless @no_codegen
-          release_semantic_only_data(program, node)
-          units = codegen program, node, source, output_filename
-        end
+          if (handoff = @infer_reuse_handoff) && (record = program.infer_reuse_record) && !@no_codegen
+            # Returns in the process that generates code; the program it typed
+            # stays with the build server. A later build may come back here
+            # with an edit re-typed in a copy of this program.
+            node = InferReuse::Holder.new(handoff).after_semantic(self, program, node, record)
+            if @incremental && !@no_cache
+              @current_cached_data = IncrementalCache.load(
+                CacheDir.instance.directory_for(source), Config.version, @codegen_target.to_s, @flags, @prelude
+              )
+            end
+          end
 
-        if @incremental
-          @progress_tracker.stage("Signatures") do
-            extract_and_compare_signatures(program)
+          unless @no_codegen
+            release_semantic_only_data(program, node)
+            units = codegen program, node, source, output_filename
           end
-          @progress_tracker.stage("Cache save") do
-            save_incremental_cache(program, CacheDir.instance.directory_for(source))
+
+          if @incremental
+            @progress_tracker.stage("Signatures") do
+              extract_and_compare_signatures(program)
+            end
+            @progress_tracker.stage("Cache save") do
+              save_incremental_cache(program, CacheDir.instance.directory_for(source))
+            end
           end
+          build_succeeded = true
+        ensure
+          persist.try &.finish(build_succeeded)
         end
       end
 
@@ -563,7 +586,7 @@ module Crystal
       program.flags.concat @flags
       program.wants_doc = wants_doc?
       program.color = color?
-      program.infer_reuse_record = InferReuse::SourceRecord.new if @infer_reuse_handoff
+      program.infer_reuse_record = InferReuse::SourceRecord.new if @infer_reuse_handoff || persists_type_inference?
       program.stdout = stdout
       program.show_error_trace = show_error_trace?
       program.progress_tracker = @progress_tracker

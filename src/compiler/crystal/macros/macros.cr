@@ -24,7 +24,7 @@ class Crystal::Program
 
     record = infer_reuse_record
     if record
-      record.method_list_frames.push(call.location, record.declarations_complete?, -> { expand_macro(a_macro, call, scope, path_lookup, a_def)[0] })
+      record.method_list_frames.push(call.location, record.declarations_complete?, InferReuse::MacroRerun.new(self, a_macro, call, nil, scope, path_lookup, nil, a_def))
     end
     output = nil
     begin
@@ -47,7 +47,7 @@ class Crystal::Program
   def expand_macro(node : ASTNode, scope : Type, path_lookup : Type? = nil, free_vars = nil, a_def : Def? = nil)
     record = infer_reuse_record
     if record
-      record.method_list_frames.push(node.location, record.declarations_complete?, -> { expand_macro(node, scope, path_lookup, free_vars, a_def)[0] })
+      record.method_list_frames.push(node.location, record.declarations_complete?, InferReuse::MacroRerun.new(self, nil, nil, node, scope, path_lookup, free_vars, a_def))
     end
     output = nil
     begin

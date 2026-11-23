@@ -200,6 +200,51 @@ struct Crystal::Location
     {% end %}
   end
 
+  # The filename table, the overflow table and the line shifts, which give
+  # location words their meaning. A snapshot of a typed program
+  # (`InferPersist`) stores them, and the process that loads it restores
+  # them before it reads a location, so the words in its nodes keep their
+  # meaning. A virtual file the table no longer held is `nil`.
+  record Tables,
+    list_of_files : Array(String | VirtualFile | Nil),
+    file_indexes : Hash(String, UInt32),
+    list_of_overflows : Array({UInt32, Int32, Int32}),
+    line_shift_by_file_index : Hash(UInt32, LineShift),
+    first_index_by_file_index : Hash(UInt32, UInt32),
+    has_line_shifts : Bool
+
+  def self.tables : Tables
+    synchronize do
+      list_of_files = @@files.map do |file|
+        file.is_a?(WeakRef(VirtualFile)) ? file.value : file
+      end
+      Tables.new(list_of_files, @@file_indexes.dup, @@overflow.dup, @@line_shift_by_file_index.dup,
+        @@first_index_by_file_index.dup, @@has_line_shifts)
+    end
+  end
+
+  # Replaces the tables with *tables*. Only a process that has made no
+  # location of its own yet may do this.
+  def self.restore(tables : Tables) : Nil
+    synchronize do
+      @@files = tables.list_of_files.map do |file|
+        file.is_a?(VirtualFile) ? WeakRef.new(file) : file
+      end
+      @@file_indexes = tables.file_indexes
+      @@overflow = tables.list_of_overflows
+      @@line_shift_by_file_index = tables.line_shift_by_file_index
+      @@first_index_by_file_index = tables.first_index_by_file_index
+      @@has_line_shifts = tables.has_line_shifts
+      @@last_filename = nil
+      @@last_file_index = 0_u32
+    end
+  end
+
+  # Whether a location was made in this process.
+  def self.any_made? : Bool
+    synchronize { @@files.size > 2 || !@@overflow.empty? }
+  end
+
   # Registers *file* in the filename table and returns its index. The table
   # holds the file weakly: whoever creates a `VirtualFile` keeps it alive for
   # as long as its locations are in use (the program does, for the files of
