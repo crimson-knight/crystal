@@ -85,12 +85,8 @@ class Crystal::Program
     parser.fun_nest = 1 if current_def && current_def.is_a?(External)
     parser.type_nest = 1 if inside_type
     parser.wants_doc = @program.wants_doc?
-    notes_defs = @program.lazy_def_bodies_enabled? && current_def.nil? && !@program.top_level_semantic_complete?
-    pragma_offsets = macro_expansion_pragmas.try(&.keys) if notes_defs
     generated_node = yield parser
-    normalized = normalize(generated_node, inside_exp: inside_exp, current_def: current_def)
-    @program.lazy_def_bodies.note(normalized, generated_source, virtual_file, pragma_offsets) if notes_defs
-    normalized
+    normalize(generated_node, inside_exp: inside_exp, current_def: current_def)
   end
 
   record MacroRunResult, stdout : String, stderr : String, status : Process::Status

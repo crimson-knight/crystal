@@ -564,8 +564,6 @@ module Crystal
       program.wants_doc = wants_doc?
       program.color = color?
       program.infer_reuse_record = InferReuse::SourceRecord.new if @infer_reuse_handoff
-      # The build server keeps the untyped program between builds; docs read every body.
-      program.lazy_def_bodies_enabled = LazyDefBodies.enabled_by_env? && !@infer_reuse_handoff && !wants_doc?
       program.stdout = stdout
       program.show_error_trace = show_error_trace?
       program.progress_tracker = @progress_tracker

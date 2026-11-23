@@ -62,8 +62,7 @@ module Crystal
           list.each do |def_with_metadata|
             untyped_def = def_with_metadata.def
             next if untyped_def.is_a?(External)
-            held = untyped_def.body_as_held
-            next if held.is_a?(Primitive) || held.is_a?(Nop)
+            next if untyped_def.body.is_a?(Primitive) || untyped_def.body.is_a?(Nop)
             untyped_def.body = Nop.new
             on_release.call
           end
