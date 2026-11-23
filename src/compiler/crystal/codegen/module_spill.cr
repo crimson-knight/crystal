@@ -711,16 +711,14 @@ module Crystal
     # allocations. Every `ModuleSpill#malloc_relief_bytes` of estimated IR
     # freed, it is asked to hand its free pages back to the OS.
     private def return_freed_ir_memory_to_os(freed_ir_bytes : Int64) : Nil
-      {% if flag?(:darwin) %}
-        relief_bytes = @module_spill.try(&.malloc_relief_bytes) || 0_i64
-        return unless relief_bytes > 0
+      relief_bytes = @module_spill.try(&.malloc_relief_bytes) || 0_i64
+      return unless relief_bytes > 0
 
-        @ir_bytes_freed_since_relief += freed_ir_bytes
-        if @ir_bytes_freed_since_relief >= relief_bytes
-          @ir_bytes_freed_since_relief = 0_i64
-          LibDarwinMalloc.malloc_zone_pressure_relief(nil, 0)
-        end
-      {% end %}
+      @ir_bytes_freed_since_relief += freed_ir_bytes
+      if @ir_bytes_freed_since_relief >= relief_bytes
+        @ir_bytes_freed_since_relief = 0_i64
+        CAllocator.return_free_memory
+      end
     end
 
     # Gives *module_info*, whose parts are all on disk, a new part in memory.
