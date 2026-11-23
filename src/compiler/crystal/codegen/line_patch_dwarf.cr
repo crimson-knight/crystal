@@ -206,12 +206,12 @@ module Crystal::LinePatch
         end
         abbreviations = Abbreviations.parse(abbrev_contents, abbrev_offset.to_i32)
 
-        table = nil.as(LineTable?)
+        table : LineTable? = nil
         while cursor.position < unit_end
           code = cursor.uleb
           next if code == 0
           abbreviation = abbreviations[code]? || raise Refusal.new("an unknown abbreviation code #{code}")
-          file_index = nil.as(UInt64?)
+          file_index : UInt64? = nil
           abbreviation.list_of_attributes.each do |(attribute, form, implicit_value)|
             value_offset = cursor.position
             case attribute
@@ -478,8 +478,8 @@ module Crystal::LinePatch
       private def read_v5_entries(cursor : Cursor) : Array({String?, Int32?})
         list_of_formats = Array({UInt64, UInt64}).new(cursor.u8.to_i32) { {cursor.uleb, cursor.uleb} }
         Array({String?, Int32?}).new(cursor.uleb.to_i32) do
-          path = nil.as(String?)
-          directory_index = nil.as(Int32?)
+          path : String? = nil
+          directory_index : Int32? = nil
           list_of_formats.each do |(content_type, form)|
             case form
             when 0x08_u64 # DW_FORM_string
