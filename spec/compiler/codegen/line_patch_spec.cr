@@ -309,6 +309,50 @@ describe "Code gen: patching the lines of modules whose source only moved" do
     end
   end
 
+  describe "the main module" do
+    it "patches the main module's object when only lines of the top-level code moved" do
+      with_line_patch_program("line_patch_main") do |line_patch_program|
+        line_patch_program.edit("program.cr", "require \"./bystander\"\n", "require \"./bystander\"\n\n# Added one.\n# Added two.\n")
+        stats, _ = line_patch_program.build
+
+        stats.main_module_outcome.should eq("lines moved, cached object patched")
+        line_patch_program.output.should eq(EXPECTED_OUTPUT)
+        {% if flag?(:darwin) || flag?(:linux) %}
+          line = line_patch_program.line_of("program.cr", "puts model.boom")
+          line_patch_program.error_output("boom").should contain("program.cr:#{line}:")
+        {% end %}
+
+        # Unchanged since: the patched object is reused as it is.
+        line_patch_program.edit("bystander.cr", "ARGV.size &+ 7", "ARGV.size &+ 7 ")
+        stats, _ = line_patch_program.build
+        stats.main_module_outcome.should be_nil
+        line_patch_program.output.should eq(EXPECTED_OUTPUT)
+      end
+    end
+
+    it "patches the main module's object as a fresh build writes it" do
+      with_line_patch_program("line_patch_main_verify") do |line_patch_program|
+        line_patch_program.edit("program.cr", "mode = ARGV[0]? || \"\"\n", "\n\nmode = ARGV[0]? || \"\"\n")
+        stats, compiler = line_patch_program.build(verify: true)
+
+        stats.main_module_outcome.to_s.should start_with("compiled for verification")
+        verification = compiler.last_line_patch_verification || raise "nothing was verified"
+        verification[1].should be_empty
+        line_patch_program.output.should eq(EXPECTED_OUTPUT)
+      end
+    end
+
+    it "compiles the main module when a position of its code is on an edited line" do
+      with_line_patch_program("line_patch_main_edited") do |line_patch_program|
+        line_patch_program.edit("program.cr", "puts Bystander.new.answer", "\nputs Bystander.new.answer &+ 1")
+        stats, _ = line_patch_program.build
+
+        stats.main_module_outcome.to_s.should start_with("compiled: a position on an edited line")
+        line_patch_program.output.should eq("6\n42\n3\n0\n8\n")
+      end
+    end
+  end
+
   describe "verification" do
     it "passes when the patched objects match the fresh ones" do
       with_line_patch_program("line_patch_verify") do |line_patch_program|

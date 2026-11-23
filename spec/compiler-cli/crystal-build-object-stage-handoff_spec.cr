@@ -52,6 +52,28 @@ describe "`crystal build` with the object stage handoff" do
     end
   end
 
+  {% if flag?(:darwin) %}
+    it "writes the debug companion of an incremental build in the background" do
+      with_tempfile("handoff-dsymutil-cache") do |cache_dir|
+        with_temp_executable "handoff-dsymutil" do |output_path|
+          build = build_with_four_threads("multi-type.cr", output_path, cache_dir, "-O1", "--incremental").should(be_success)
+          build.output.should contain(HANDOFF_STATS_LINE)
+
+          dwarf_path = "#{output_path}.dwarf"
+          deadline = Time.instant + 60.seconds
+          until File.exists?(dwarf_path) || Time.instant > deadline
+            sleep 0.1.seconds
+          end
+          File.exists?(dwarf_path).should be_true
+          File.exists?("#{dwarf_path}.tmp").should be_false
+          Process.capture_result(output_path)
+            .should(be_success)
+            .output.should(eq(MULTI_TYPE_OUTPUT))
+        end
+      end
+    end
+  {% end %}
+
   it "hands over modules that IR generation spilled to disk in several parts" do
     with_tempfile("handoff-spill-cache") do |cache_dir|
       with_temp_executable "handoff-spill" do |output_path|
