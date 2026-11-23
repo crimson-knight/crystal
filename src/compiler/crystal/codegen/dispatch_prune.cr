@@ -162,7 +162,6 @@ module Crystal
         # Code generation only asks about types: drop what only the walk needs.
         @list_of_waiting_branches = [] of {Call, Def}
         @list_of_pending_defs = [] of Def
-        @reached_defs = Set(UInt64).new
         @walked_consts = Set(UInt64).new
         @walked_class_var_initializers = Set(UInt64).new
         @conjured = Set(UInt64).new
@@ -196,15 +195,29 @@ module Crystal
         end
       end
 
-      # A typed def is typed for the static types of its arguments, so each
-      # argument value it ever receives has one of their concrete types: a
-      # def with an argument type nothing creates never runs, like a def
-      # owned by a class nothing creates (see `owner_live?`).
+      # Whether *a_def* can run. A def owned by a class nothing creates
+      # never runs (see `owner_live?`). A def that no walked call reaches,
+      # with an argument type nothing creates, never runs either. A def the
+      # walk reached always counts as live: a typed def can serve calls
+      # whose argument types differ from its own (infer reuse binds a
+      # re-typed call to an existing copy), so the walk judges the
+      # arguments at each call instead (see `call_arguments_live?`).
       private def def_live?(a_def : Def) : Bool
         return false unless owner_live?(a_def)
         return true if a_def.type_once?
+        return true if @reached_defs.includes?(a_def.object_id)
 
         a_def.args.all? do |arg|
+          arg_type = arg.type?
+          arg_type.nil? || live?(arg_type)
+        end
+      end
+
+      # Whether every argument *call* passes can hold a created type. An
+      # argument whose static type has no created type never produces a
+      # value, so the call after it never happens.
+      private def call_arguments_live?(call : Call) : Bool
+        call.args.all? do |arg|
           arg_type = arg.type?
           arg_type.nil? || live?(arg_type)
         end
@@ -236,7 +249,7 @@ module Crystal
           return true
         end
 
-        def_live?(a_def)
+        owner_live?(a_def) && call_arguments_live?(call)
       end
 
       private def waiting_live?(call : Call, a_def : Def) : Bool
