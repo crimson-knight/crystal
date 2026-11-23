@@ -47,6 +47,7 @@ module Crystal::InferReuse
         else
           listener.close
           status_writer.close
+          InferReuse.mark_in_parallel
           return kept.node
         end
       end
