@@ -905,6 +905,17 @@ module Crystal
     def lookup_def_instance(key)
       def_instances[key]?
     end
+
+    # Yields each key and typed def of `#def_instances`, without creating
+    # the table.
+    def each_def_instance(& : DefInstanceKey, Def ->) : Nil
+      @def_instances.try &.each { |key, typed_def| yield key, typed_def }
+    end
+
+    # Forgets the typed def kept under *key*.
+    def delete_def_instance(key : DefInstanceKey) : Nil
+      @def_instances.try &.delete(key)
+    end
   end
 
   # Base type for all module-like types (modules, classes, structs, enums).

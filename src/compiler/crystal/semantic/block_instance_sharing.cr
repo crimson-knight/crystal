@@ -323,6 +323,14 @@ module Crystal
       list << typed_def
     end
 
+    # Yields each key and typed def of `#block_def_instances`, without
+    # creating the table.
+    def each_block_def_instance(& : DefInstanceKey, Def ->) : Nil
+      @block_def_instances.try &.each do |key, list_of_typed_defs|
+        list_of_typed_defs.each { |typed_def| yield key, typed_def }
+      end
+    end
+
     def lookup_block_def_instances(key : DefInstanceKey) : Array(Def)?
       @block_def_instances.try &.[key]?
     end

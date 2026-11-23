@@ -237,7 +237,7 @@ module Crystal::InferReuse
       new_typed_defs = program.infer_reuse_new_typed_defs = [] of Def
 
       list_of_removals.each { |(program_def, _)| remove_def(program_def) }
-      list_of_removed_instances.each { |(container, key)| container.@def_instances.try &.delete(key) }
+      list_of_removed_instances.each { |(container, key)| container.delete_def_instance(key) }
       @removed_def_count = list_of_removals.size
 
       list_of_added = @list_of_file_edits.flat_map(&.list_of_added_defs).map { |added| add_def(added) }
@@ -375,9 +375,7 @@ module Crystal::InferReuse
       roots.each do |root|
         each_type(root, visited) do |type|
           next unless type.is_a?(DefInstanceContainer)
-          container = type
-          list_of_block_instances = container.@block_def_instances
-          container.@def_instances.try &.each_value do |typed_def|
+          type.each_def_instance do |_, typed_def|
             next unless names.includes?(typed_def.name)
             typed_def.each_observer do |observer|
               next unless observer.is_a?(Call) && seen.add?(observer.object_id)
@@ -386,10 +384,8 @@ module Crystal::InferReuse
               result << {observer, typed_def.name}
             end
           end
-          list_of_block_instances.try &.each_value do |list_of_typed_defs|
-            list_of_typed_defs.each do |typed_def|
-              raise Refusal.new("a method named '#{typed_def.name}' is typed with blocks") if names.includes?(typed_def.name)
-            end
+          type.each_block_def_instance do |_, typed_def|
+            raise Refusal.new("a method named '#{typed_def.name}' is typed with blocks") if names.includes?(typed_def.name)
           end
         end
       end
@@ -568,10 +564,10 @@ module Crystal::InferReuse
       roots.each do |root|
         each_type(root, visited) do |type|
           next unless type.is_a?(DefInstanceContainer)
-          type.@def_instances.try &.each do |key, typed_def|
+          type.each_def_instance do |key, typed_def|
             result << {type, key, typed_def} if key.def_object_id == program_def.object_id
           end
-          type.@block_def_instances.try &.each_key do |key|
+          type.each_block_def_instance do |key, _|
             raise Refusal.new("method '#{program_def.name}' has instances typed with a block") if key.def_object_id == program_def.object_id
           end
         end
