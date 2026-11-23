@@ -369,6 +369,29 @@ end
     ), "return `self` from every exit of 'other!'"
   end
 
+it "keeps one copy per instance when a method called on an instance variable holding a generic instance reads its parameter as a type" do
+  assert_warning BOX + %(
+    class Box(T)
+      def check(value : Record) : Bool
+        value.is_a?(T)
+      end
+    end
+
+    @[TypeBound(T, Record)]
+    class Outer(T)
+      def initialize(@box : Box(T))
+      end
+
+      @[TypeOnce]
+      def ok : Bool
+        @box.check(Record.new)
+      end
+    end
+
+    Outer(First).new(Box(First).new(1)).ok
+    ), "call on @box only methods typed once for every instance of Box(T)"
+end
+
   it "types a class method once for every instance" do
     copies(BOX + %(
       class Box(T)

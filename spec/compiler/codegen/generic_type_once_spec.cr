@@ -220,6 +220,27 @@ it "reads an instance variable whose type is the bounded parameter" do
     )).to_string.should eq("post@posts admin@admins")
 end
 
+it "calls methods on an instance variable that holds another bounded generic instance" do
+  code = MODELS + %(
+    @[TypeBound(M, Model)]
+    class Printer(M)
+      def initialize(@query : Query(M))
+      end
+
+      @[TypeOnce]
+      def print : String
+        "<" + @query.sql("SELECT") + ">"
+      end
+    end
+
+    Printer(Post).new(Query(Post).new(1)).print + Printer(Admin).new(Query(Admin).new(2)).print
+    )
+  run(code).to_string.should eq("<SELECT posts LIMIT 1><SELECT admins LIMIT 2>")
+  program = semantic(code).program
+  generic = program.types["Printer"].as(Crystal::GenericClassType)
+  generic.instantiated_types.sum { |instance| instance.as(Crystal::DefInstanceContainer).def_instances.count { |_, typed_def| typed_def.name == "print" } }.should eq(1)
+end
+
   it "runs a class method typed once for every instance" do
     run(MODELS + %(
       class Query(M)

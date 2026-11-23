@@ -122,6 +122,9 @@ module Crystal
       property reason : String?
       # Instance variables the def and the methods it reaches on `self` use.
       getter instance_vars = Set(String).new
+      # Instance variables used only as the receiver of calls, with the names
+      # of the methods called on each.
+      getter instance_var_receivers = Hash(String, Set(String)).new
       # Instance variables the scanned methods assign (other than to `nil`).
       getter instance_vars_written = Set(String).new
       # Instance variables the scanned methods only set to `nil`.
@@ -274,6 +277,61 @@ module Crystal
       end
     end
 
+    # Instance variables used only as receivers (`@query.order_fields`) whose
+    # type is an instance of a bounded generic class (`Builder(Post)` in the
+    # instance, `Builder(Grant::Base+)` in the erased one): the calls on them
+    # are typed against that erased instance, so each method called must be
+    # one that can be typed once for every instance of it, and its result may
+    # not be the receiver.
+    @@receiver_checks = Set({UInt64, UInt64}).new
+
+    def self.instance_var_receivers_mismatch(instance : GenericClassInstanceType, erased : GenericClassInstanceType, scan : Scan, metaclass : Bool) : String?
+      return nil if metaclass || scan.instance_var_receivers.empty?
+      program = instance.program
+      instance_vars = instance.all_instance_vars
+      erased_vars = erased.all_instance_vars
+      scan.instance_var_receivers.each do |name, called|
+        next if scan.instance_vars.includes?(name) # read as a value: checked above
+        var_type = instance_vars[name]?.try(&.type?) || return "declare the type of #{name}"
+        erased_type = erased_vars[name]?.try(&.type?) || return "declare the type of #{name}"
+        next if var_type.same?(erased_type) || widened_value?(var_type, erased_type, instance)
+        if scan.instance_vars_written.includes?(name)
+          return "assign #{name} only in methods typed for each instance: its type depends on the type argument (#{var_type} in #{instance})"
+        end
+        held = receiver_instance(var_type)
+        held_erased = receiver_instance(erased_type)
+        unless held && held_erased && var_type.is_a?(VirtualType) == erased_type.is_a?(VirtualType) &&
+               erased_instance(program, held).same?(held_erased)
+          return "read #{name} through a method typed for each instance: its type depends on the type argument (#{var_type} in #{instance})"
+        end
+        called.each do |method_name|
+          defs = held_erased.lookup_defs(method_name)
+          return "call on #{name} only methods of #{held_erased.generic_type}" if defs.empty?
+          defs.each do |callee|
+            return_type = callee.return_type
+            unless return_type && !return_type.is_a?(Self)
+              return "give '#{method_name}', called on #{name}, a return type other than `self`"
+            end
+            # A check already under way for this method and receiver (the
+            # classes refer to each other) is assumed to hold: every method on
+            # the cycle is still checked once.
+            next unless @@receiver_checks.add?({held.object_id, callee.object_id})
+            callee_scan = program.generic_type_once_scan(callee, held_erased) do
+              result = Scan.new
+              Scanner.new(program, held_erased, false, result, Set(UInt64).new).scan_def(callee, entry: true)
+              result
+            end
+            reason = callee_scan.reason || receiver_mismatch(var_type, held, held_erased, callee_scan, callee)
+            @@receiver_checks.delete({held.object_id, callee.object_id})
+            if reason
+              return "call on #{name} only methods typed once for every instance of #{held_erased.generic_type} ('#{method_name}': #{reason})"
+            end
+          end
+        end
+      end
+      nil
+    end
+
     # Whether an instance variable of type *var_type* in an instance can be
     # read, never written, as *erased_type* in the erased instance: its type
     # is the bounded parameter itself (`@owner : Owner`, maybe nilable), so
@@ -347,6 +405,10 @@ module Crystal
             return "give #{name} a type with the same layout in every instance (it is #{var_type} in #{instance} and #{erased_type} in #{erased})"
           end
         end
+      end
+
+      if reason = instance_var_receivers_mismatch(instance, erased, scan, metaclass)
+        return reason
       end
 
       # A subclass of the instance shares the copy only when it overrides none
@@ -609,7 +671,11 @@ module Crystal
         obj = node.obj
         self_call = obj.nil? || self_valued?(obj)
         @self_valued_allowed << obj.object_id if obj && self_call
-        obj.accept self if obj
+        if obj.is_a?(InstanceVar)
+          (@scan.instance_var_receivers[obj.name] ||= Set(String).new) << node.name
+        elsif obj
+          obj.accept self
+        end
         node.args.each &.accept(self)
         node.named_args.try &.each &.value.accept(self)
         node.block.try &.accept(self)
