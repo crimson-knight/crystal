@@ -103,4 +103,63 @@ module Compress::Deflate
       end
     end
   end
+
+  # An IO without `peek`: the reader then reads it one byte at a time.
+  private class UnpeekableIO < IO
+    def initialize(@bytes : Bytes)
+      @offset = 0
+    end
+
+    def read(slice : Bytes) : Int32
+      count = Math.min(slice.size, @bytes.size - @offset)
+      slice.copy_from(@bytes[@offset, count].to_unsafe, count)
+      @offset += count
+      count
+    end
+
+    def write(slice : Bytes) : NoReturn
+      raise IO::Error.new("read-only")
+    end
+  end
+
+  describe "Reader and Writer" do
+    it "round-trips at every level, through flushes" do
+      content = String.build { |io| 3_000.times { |index| io << "line " << index << ", " << (index * 7919 % 1000) << "\n" } }.to_slice
+      (Compress::Deflate::DEFAULT_COMPRESSION..Compress::Deflate::BEST_COMPRESSION).each do |level|
+        io = IO::Memory.new
+        Writer.open(io, level: level) do |writer|
+          writer.write(content[0, 10_000])
+          writer.flush
+          writer.write(content[10_000, content.size - 10_000])
+        end
+        io.rewind
+        Reader.new(io).getb_to_end.should eq(content)
+      end
+    end
+
+    it "leaves the bytes after the stream in the underlying IO" do
+      content = ("Hello Crystal! " * 500).to_slice
+      stream = IO::Memory.new
+      Writer.open(stream, &.write(content))
+      trailer = "TRAILER".to_slice
+      joined = IO::Memory.new
+      joined.write(stream.to_slice)
+      joined.write(trailer)
+
+      joined.rewind
+      Reader.new(joined).getb_to_end.should eq(content)
+      joined.getb_to_end.should eq(trailer)
+
+      unpeekable = UnpeekableIO.new(joined.to_slice)
+      Reader.new(unpeekable).getb_to_end.should eq(content)
+      unpeekable.getb_to_end.should eq(trailer)
+    end
+
+    it "raises Compress::Deflate::Error on an invalid stream" do
+      # Block type 3 is reserved.
+      expect_raises(Compress::Deflate::Error, /^deflate: /) do
+        Reader.new(IO::Memory.new(Bytes[0x07, 0x00])).getb_to_end
+      end
+    end
+  end
 end

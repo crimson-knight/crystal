@@ -71,4 +71,13 @@ describe Digest::Adler32 do
     combined = Digest::Adler32.combine(adler1, adler2, " world!".size)
     Digest::Adler32.checksum("hello world!").should eq(combined)
   end
+
+  it "combines checksums of pieces of every size" do
+    content = Bytes.new(70_000) { |index| (index * 31 + index // 7).to_u8! }
+    {0, 1, 2, 3, 100, 5_552, 65_521, 69_999}.each do |split|
+      first, second = content[0, split], content[split, content.size - split]
+      Digest::Adler32.combine(Digest::Adler32.checksum(first), Digest::Adler32.checksum(second), second.size)
+        .should eq(Digest::Adler32.checksum(content))
+    end
+  end
 end
