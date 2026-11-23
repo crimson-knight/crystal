@@ -179,7 +179,21 @@ module Crystal
         return false if @gave_up || @mode.off?
         return false if @super_targets.includes?(a_def.object_id)
 
-        !def_live?(a_def)
+        stubbed = !def_live?(a_def)
+        explain_stub(a_def) if stubbed && self.class.explain_stubs?
+        stubbed
+      end
+
+      # `CRYSTAL_PRUNE_DISPATCH_EXPLAIN_STUBS=1` prints each def that gets a
+      # stub, with the owner and argument types that decided it.
+      class_getter? explain_stubs : Bool = ENV["CRYSTAL_PRUNE_DISPATCH_EXPLAIN_STUBS"]? == "1"
+
+      private def explain_stub(a_def : Def) : Nil
+        STDERR.puts "prune dispatch: stub for #{a_def.owner?}##{a_def.name} (owner live: #{owner_live?(a_def)})"
+        a_def.args.each do |arg|
+          next unless arg_type = arg.type?
+          STDERR.puts "  argument #{arg.name} : #{arg_type} live: #{live?(arg_type)}, same program: #{arg_type.program.same?(@program)}"
+        end
       end
 
       # A typed def is typed for the static types of its arguments, so each
