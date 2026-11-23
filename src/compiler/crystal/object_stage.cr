@@ -82,13 +82,18 @@ module Crystal
         getter list_of_warnings : Array(String)
         getter? error_on_warnings : Bool
 
+        # Patched objects to compare with the fresh ones once the objects
+        # are built (see `LinePatch::Verification`).
+        getter list_of_line_patch_checks : Array(LinePatch::Verification::Check) = [] of LinePatch::Verification::Check
+
         def initialize(*, @worker_executable, @settings, @list_of_jobs, @thread_count, @memory_budget_bytes,
                        @linker_name, @linker_command, @list_of_linker_arguments, @output_directory,
                        @output_filename, @writes_dwarf_companion, @cleans_cache_directory,
                        @lock_file_descriptor, @verbose, @color, @stats, @progress, @stage_number,
                        @stage_started_at_unix_ms, @stage_progress, @stage_progress_total,
                        @list_of_unit_summaries, @stats_report_before_codegen, @stats_report_after_codegen,
-                       @pending_incremental_cache_filename, @list_of_warnings, @error_on_warnings)
+                       @pending_incremental_cache_filename, @list_of_warnings, @error_on_warnings,
+                       @list_of_line_patch_checks = [] of LinePatch::Verification::Check)
         end
 
         # A compiler that builds objects, links and reports as the one this
@@ -129,6 +134,7 @@ module Crystal
         @compiler.progress_tracker = @progress_tracker
 
         build_object_files
+        @compiler.verify_line_patches(@handoff.list_of_line_patch_checks)
         @compiler.link_object_files(@handoff.linker_name, @handoff.linker_command,
           @handoff.list_of_linker_arguments, @handoff.output_filename, @handoff.output_directory)
         write_dwarf_companion
