@@ -2139,10 +2139,18 @@ module Crystal
 
     # Phase 6: Extract top-level signatures from all required files and
     # compare with cached signatures to classify changes.
+    # Whether an incremental build parses every required file again after
+    # code generation to classify the edit (body-only or structural) for
+    # `--stats`. Nothing else reads the result, and the second parse took
+    # 0.35 to 0.6 s of every Grant300 rebuild, so it is opt-in:
+    # `CRYSTAL_SIGNATURE_TRACKING=1`.
+    property? signature_tracking : Bool = ENV["CRYSTAL_SIGNATURE_TRACKING"]? == "1"
+
     private def extract_and_compare_signatures(program)
       @last_body_only_count = 0
       @last_structural_count = 0
       @last_isolated_body_only_count = 0
+      return unless signature_tracking?
 
       new_signatures, file_contents = extract_file_signatures(program)
       @last_file_signatures = new_signatures

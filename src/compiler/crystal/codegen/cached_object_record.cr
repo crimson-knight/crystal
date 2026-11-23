@@ -80,10 +80,25 @@ module Crystal
     def initialize(@module_hash, @list_of_object_stamps)
     end
 
+    # The records this process read, with the stamp of their file. An
+    # incremental build reads the record of every unit twice (before IR
+    # generation, and again once the cache is locked); the second read of an
+    # unchanged file is a `stat` instead of a parse (7,759 records on
+    # Grant300).
+    @@read_records = {} of String => {CachedObjectRecord, FileStamp}
+    @@read_records_mutex = Mutex.new
+
     # The record in the file named *filename*, or `nil` when there is none
     # that can be read.
     def self.read?(filename : String) : CachedObjectRecord?
-      from_json(File.read(filename))
+      stamp = FileStamp.of?(filename) || return nil
+      if read_record = @@read_records_mutex.synchronize { @@read_records[filename]? }
+        return read_record[0] if read_record[1] == stamp
+      end
+
+      record = from_json(File.read(filename))
+      @@read_records_mutex.synchronize { @@read_records[filename] = {record, stamp} }
+      record
     rescue File::Error | JSON::ParseException
       nil
     end
