@@ -62,24 +62,27 @@ class Crystal::CodeGenVisitor
     # it is generated now, into the type's newest module. Reading a function
     # to declare it does not count as a use of its module: a module is kept
     # in memory for the functions it is about to get, not for the ones it has.
-    first_module_info = @single_module ? @main_module_info : type_module_info(self_type)
-    if func = typed_fun_in_segments?(first_module_info, mangled_name)
+    existing_module_info = @single_module ? @main_module_info : existing_type_module_info?(self_type)
+    if existing_module_info && (func = typed_fun_in_segments?(existing_module_info, mangled_name))
       return declares_in_current_module ? declare_in_current_module(mangled_name, func) : nil
     end
     # Deep in a chain of functions that each call the next, every module of
     # the chain is pinned (`codegen_fun` holds values of it), however large
     # it is. From `DEFERRED_GENERATION_DEPTH` on, a new function is only
     # declared here, from its signature, and generated once the outermost
-    # function is done (see `generate_deferred_funs`).
+    # function is done (see `generate_deferred_funs`). The type's module is
+    # made then too: a module made now would stay in memory, empty, until
+    # its first function.
     if defers_generation_of?(target_def)
       func = declare_deferred_fun(mangled_name, target_def, self_type)
       if @deferred_fun_names.add?(mangled_name)
-        @list_of_deferred_funs << DeferredFun.new(mangled_name, target_def, self_type, first_module_info)
+        @list_of_deferred_funs << DeferredFun.new(mangled_name, target_def, self_type)
         @module_spill.try &.record_deferred_fun
       end
       return declares_in_current_module ? declare_in_current_module(mangled_name, func) : nil
     end
 
+    first_module_info = existing_module_info || type_module_info(self_type)
     declared_fun = generate_target_def_fun(mangled_name, target_def, self_type, first_module_info, declares_in_current_module)
     generate_deferred_funs if @codegen_fun_depth == 0
     declared_fun
@@ -119,7 +122,7 @@ class Crystal::CodeGenVisitor
   end
 
   # A function whose generation was put off (see `defers_generation_of?`).
-  record DeferredFun, mangled_name : String, target_def : Def, self_type : Type, first_module_info : ModuleInfo
+  record DeferredFun, mangled_name : String, target_def : Def, self_type : Type
 
   # The nesting depth of `codegen_fun` from which new functions are
   # deferred. A Grant app of 300 models chains 300 of them (a function of
@@ -134,8 +137,14 @@ class Crystal::CodeGenVisitor
   # Whether `CRYSTAL_DEFER_DEEP_CODEGEN=0` turned deferring off.
   class_getter?(defers_deep_generation : Bool) { ENV["CRYSTAL_DEFER_DEEP_CODEGEN"]? != "0" }
 
+  # Not in an incremental build: there a module is compared with the build
+  # before by the order its functions were asked for in, and a build that
+  # skips unchanged modules nests calls to other depths than the build
+  # before did, so deferring would change that order and nothing would be
+  # reused.
   private def defers_generation_of?(target_def) : Bool
     return false unless @module_spill && CodeGenVisitor.defers_deep_generation?
+    return false if ir_skip_session || @program.stable_numbering
     return false if @single_module || @debug.variables? || target_def.is_a?(External)
     @codegen_fun_depth >= DEFERRED_GENERATION_DEPTH
   end
@@ -182,7 +191,7 @@ class Crystal::CodeGenVisitor
         next unless @deferred_fun_names.includes?(deferred.mangled_name)
 
         generate_target_def_fun(deferred.mangled_name, deferred.target_def, deferred.self_type,
-          deferred.first_module_info, declares_in_current_module: false, deferred: true)
+          type_module_info(deferred.self_type), declares_in_current_module: false, deferred: true)
         @deferred_fun_names.delete(deferred.mangled_name)
       end
     ensure
@@ -959,16 +968,24 @@ class Crystal::CodeGenVisitor
     module_info
   end
 
+  # The module of *type* if it was made already (see `type_module_info`).
+  private def existing_type_module_info?(type) : ModuleInfo?
+    @types_to_modules[type]? || @modules[module_type_name(type)]?.try { |module_info| @types_to_modules[type] = module_info }
+  end
+
+  private def module_type_name(type) : String
+    type = type.remove_typedef
+    case type
+    when Nil, Program, LibType
+      ""
+    else
+      type.instance_type.to_s
+    end
+  end
+
   private def type_module_info(type) : ModuleInfo
     @types_to_modules[type] ||= begin
-      type = type.remove_typedef
-      case type
-      when Nil, Program, LibType
-        type_name = ""
-      else
-        type_name = type.instance_type.to_s
-      end
-
+      type_name = module_type_name(type)
       @modules[type_name] ||= new_module_info(type_name)
     end
   end

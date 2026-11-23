@@ -41,6 +41,12 @@ private def function_names(mod : LLVM::Module, prefix : String) : Array(String)
   list_of_names.sort!
 end
 
+# The module of `Counter`, where the functions of its proc literals are.
+private def counter_module(code : String, debug : Crystal::Debug = Crystal::Debug::None) : LLVM::Module
+  result = semantic(code, inject_primitives: true)
+  result.program.codegen(result.node, debug: debug)["Counter"].mod
+end
+
 private PROC_LITERALS = <<-CRYSTAL
   class Counter
     def steps
@@ -330,7 +336,7 @@ describe "Code generation: stable numbering" do
 
   describe "proc literal functions" do
     it "names them after the function they are in and their turn in it" do
-      mod = codegen(PROC_LITERALS)
+      mod = counter_module(PROC_LITERALS)
 
       function_names(mod, "~proc").should eq([
         "~proc2Proc(Int32, Int32)~in~*Counter#steps:Int32",
@@ -340,7 +346,7 @@ describe "Code generation: stable numbering" do
     end
 
     it "never names the function they are in after an @" do
-      mod = codegen(PROC_LITERALS)
+      mod = counter_module(PROC_LITERALS)
       list_of_function_names = Set(String).new
       mod.functions.each { |function| list_of_function_names << function.name }
 
@@ -360,8 +366,8 @@ describe "Code generation: stable numbering" do
     end
 
     it "keeps their names when lines are added above them" do
-      names = function_names(codegen(PROC_LITERALS, debug: Crystal::Debug::Default), "~proc")
-      names_after_new_lines = function_names(codegen("# one\n# two\n\n#{PROC_LITERALS}", debug: Crystal::Debug::Default), "~proc")
+      names = function_names(counter_module(PROC_LITERALS, debug: Crystal::Debug::Default), "~proc")
+      names_after_new_lines = function_names(counter_module("# one\n# two\n\n#{PROC_LITERALS}", debug: Crystal::Debug::Default), "~proc")
 
       names_after_new_lines.should eq(names)
       names.size.should eq(3)
