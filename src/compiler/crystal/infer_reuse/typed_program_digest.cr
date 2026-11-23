@@ -20,6 +20,12 @@ module Crystal::InferReuse
     @[JSON::Field(ignore: true)]
     @seen = Set(Def).new.compare_by_identity
 
+    # With `CRYSTAL_INFER_REUSE_DIGEST_TEXT` set to a directory, the text each
+    # digest was made from goes to `<directory>/<pid>.txt`, for comparing two
+    # programs by hand when a verification fails.
+    @[JSON::Field(ignore: true)]
+    @text : IO::Memory? = ENV["CRYSTAL_INFER_REUSE_DIGEST_TEXT"]?.try { IO::Memory.new }
+
     def initialize(program : Program, node : ASTNode)
       @digests_by_def_name = {} of String => Array(String)
       digest_root(node)
@@ -30,9 +36,13 @@ module Crystal::InferReuse
 
       while typed_def = @pending.shift?
         name = TypedProgramDigest.def_name(typed_def)
+        @text.try { |io| io << "== " << name << "\n" }
         (@digests_by_def_name[name] ||= [] of String) << digest_of(typed_def.body)
       end
       @digests_by_def_name.each_value &.sort!
+      if (text = @text) && (directory = ENV["CRYSTAL_INFER_REUSE_DIGEST_TEXT"]?)
+        File.write(File.join(directory, "#{::Process.pid}.txt"), text.to_s)
+      end
     end
 
     # The names of the defs whose digests differ, or that only one of the
@@ -56,13 +66,13 @@ module Crystal::InferReuse
     end
 
     # A location as two processes that expand the same macros print it: a
-    # macro expansion is named by its macro and where it was expanded, not by
-    # the memory address its virtual file name holds.
+    # macro expansion is named by where it was expanded, not by its virtual
+    # file's name, which holds a memory address.
     def self.stable_location(location : Location?, io : IO) : Nil
       return unless location
       filename = location.filename
       if filename.is_a?(VirtualFile)
-        io << filename.macro.name << " expanded at "
+        io << "macro expanded at "
         stable_location(filename.expanded_location, io)
         io << " line " << location.line_number << ":" << location.column_number
       else
@@ -71,6 +81,7 @@ module Crystal::InferReuse
     end
 
     private def digest_root(node : ASTNode) : Nil
+      @text.try { |io| io << "== <root>\n" }
       (@digests_by_def_name["<root>"] ||= [] of String) << digest_of(node)
     end
 
@@ -97,7 +108,7 @@ module Crystal::InferReuse
     end
 
     private def digest_of(node : ASTNode) : String
-      digester = BodyDigester.new
+      digester = BodyDigester.new(@text)
       node.accept digester
       digester.list_of_target_defs.each do |target_def|
         @pending << target_def if @seen.add?(target_def)
@@ -111,6 +122,9 @@ module Crystal::InferReuse
 
       @digest = Crystal::Digest::SHA1.new
 
+      def initialize(@text : IO?)
+      end
+
       def final : String
         @digest.final.hexstring
       end
@@ -118,7 +132,10 @@ module Crystal::InferReuse
       def visit(node : ASTNode) : Bool
         text = String.build do |io|
           io << node.class.name << ' ' << node.type? << ' '
-          if location = node.location
+          # An `Expressions` gets a location or not depending on how its file
+          # was parsed (an incremental build parses differently); code
+          # generation does not use it.
+          if !node.is_a?(Expressions) && (location = node.location)
             io << location.line_number << ':' << location.column_number
           end
           io << ' '
@@ -126,6 +143,7 @@ module Crystal::InferReuse
           io << '\n'
         end
         @digest.update(text.to_slice)
+        @text.try { |io| io << text }
 
         if node.is_a?(Call)
           node.each_target_def do |target_def|
@@ -136,7 +154,10 @@ module Crystal::InferReuse
         if node.responds_to?(:expanded) && (expanded = node.expanded)
           expanded.accept self if expanded.is_a?(ASTNode)
         end
-        true
+        # A method or macro definition in the program's source is not code:
+        # its typed instances are digested on their own, from the calls that
+        # reach them.
+        !node.is_a?(Def) && !node.is_a?(Macro)
       end
 
       private def label(node : ASTNode, io : IO) : Nil
@@ -151,6 +172,8 @@ module Crystal::InferReuse
           io << node
         when Path
           io << node.names.join("::")
+        when Def, Macro
+          io << node.name
         end
       end
     end

@@ -39,7 +39,13 @@ class Crystal::Call
     elsif defs.is_a?(Array)
       defs.map! { |a_def| a_def.same?(old_def) ? new_def : a_def }
     end
-    replace_dependency(old_def, new_def)
+    # The call observes its target defs even where it no longer lists them
+    # as dependencies (type inference released those edges), so the next
+    # build server finds it as a caller of *new_def*.
+    unless replace_dependency(old_def, new_def)
+      old_def.remove_observer(self)
+      new_def.add_observer(self)
+    end
   end
 
   # Yields each def this call resolved to, without building an array.
