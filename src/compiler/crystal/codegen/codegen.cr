@@ -2861,6 +2861,25 @@ module Crystal
     end
   end
 
+  # Stands for `@` in symbol names on ELF targets (see `.safe_mangling`).
+  # `Exception::CallStack` turns it back into `@` when it prints a frame.
+  # Identifiers and type names never contain `~at~` (`~` is only an
+  # operator method name, followed by `<`, `:` or `'`), so the escape
+  # reads back exactly; only a quoted named tuple key, which can hold any
+  # text and already any `@`, could carry it.
+  ELF_AT_SIGN_ESCAPE = "~at~"
+
+  # The symbol name of *name* on the target of *program*.
+  #
+  # On ELF targets `@` is replaced with `ELF_AT_SIGN_ESCAPE`. A method
+  # inherited from another type is named `*Owner@Ancestor#method...`, and
+  # an ELF linker reads such a name as symbol `*Owner` at version
+  # `Ancestor#method...`. Exported with `-rdynamic`, every distinct text
+  # after an `@` becomes a version definition of the executable. The
+  # `.gnu.version` index has 15 bits, so past 32,767 versions the index of
+  # the C library's own versions (`memmove@GLIBC_2.17`) wraps onto one of
+  # those definitions and the program stops at start with
+  # "symbol lookup error: undefined symbol: memmove, version ...".
   def self.safe_mangling(program, name)
     if program.has_flag?("msvc")
       String.build do |str|
@@ -2874,6 +2893,8 @@ module Crystal
           end
         end
       end
+    elsif program.codegen_target.elf? && name.includes?('@')
+      name.gsub('@', ELF_AT_SIGN_ESCAPE)
     else
       name
     end

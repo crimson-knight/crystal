@@ -73,6 +73,60 @@ describe "Backtrace" do
     end
   {% end %}
 
+  # A method a type inherits is named `*Owner@Ancestor#method...`. ELF
+  # symbol names carry `~at~` for that `@` (see `Crystal.safe_mangling`); a
+  # backtrace without debug info reads the name from the dynamic symbol table
+  # and still prints it with `@`.
+  it "names an inherited method with its owner in a backtrace without debug info", tags: %w[slow] do
+    _, output, _ = compile_and_run_source(<<-CRYSTAL, %w(--no-debug))
+      abstract class InheritedBase
+        def fail_here(value : Int32) : Int32
+          raise "boom" if value > 0
+          value
+        end
+      end
+
+      class InheritedChild < InheritedBase
+      end
+
+      begin
+        InheritedChild.new.fail_here(1)
+      rescue ex
+        puts ex.backtrace.join('\n')
+      end
+      CRYSTAL
+
+    output.should contain("InheritedChild@InheritedBase#fail_here<Int32>:Int32")
+    output.should_not contain("~at~")
+  end
+
+  {% unless flag?(:openbsd) %}
+    it "names an inherited method with its owner in a crash backtrace without debug info", tags: %w[slow] do
+      _, _, error = compile_and_run_source(<<-CRYSTAL, %w(--no-debug))
+        abstract class CrashBase
+          # The faulting function itself is not in the trace that the
+          # signal handler walks; its caller is.
+          def crash_here(value : Int32) : Int32
+            read_at(value) &+ 1
+          end
+
+          def read_at(value : Int32) : Int32
+            Pointer(Int32).new(value.to_u64).value
+          end
+        end
+
+        class CrashChild < CrashBase
+        end
+
+        CrashChild.new.crash_here(0)
+        CRYSTAL
+
+      error.should contain("Invalid memory access")
+      error.should contain("CrashChild@CrashBase#crash_here<Int32>:Int32")
+      error.should_not contain("~at~")
+    end
+  {% end %}
+
   # Do not test this on platforms that cannot remove the current working
   # directory of the process:
   #

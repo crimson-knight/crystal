@@ -209,6 +209,13 @@ class Crystal::Codegen::Target
     @environment.starts_with?("wasi")
   end
 
+  # Whether programs for this target are ELF files linked by an ELF linker
+  # (GNU ld, lld, mold), which read `name@version` in a symbol name as a
+  # symbol version.
+  def elf?
+    linux? || bsd? || android? || solaris?
+  end
+
   def bsd?
     freebsd? || netbsd? || openbsd? || dragonfly?
   end
