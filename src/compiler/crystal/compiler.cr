@@ -1004,10 +1004,15 @@ module Crystal
       return unless dsymutil
 
       @progress_tracker.stage("dsymutil") do
-        script = %("$1" --flat -o "$2.dwarf.tmp" "$2" && mv -f "$2.dwarf.tmp" "$2.dwarf" || rm -f "$2.dwarf.tmp")
+        # The script first closes every inherited descriptor but the lock:
+        # a pipe a caller waits on (the build server's status pipe, a
+        # client's socket) must not stay open until dsymutil ends.
+        script = %(for fd in $(ls /dev/fd); do if [ "$fd" -gt 2 ] && [ "$fd" != "$3" ]; then eval "exec $fd>&-"; fi; done 2>/dev/null; ) +
+                 %("$1" --flat -o "$2.dwarf.tmp" "$2" && mv -f "$2.dwarf.tmp" "$2.dwarf" || rm -f "$2.dwarf.tmp")
+        lock_descriptor = build_lock.try(&.fd) || -1
         build_lock.try &.close_on_exec = false
         begin
-          Process.new("/bin/sh", ["-c", script, "sh", dsymutil, filename],
+          Process.new("/bin/sh", ["-c", script, "sh", dsymutil, filename, lock_descriptor.to_s],
             input: Process::Redirect::Close, output: Process::Redirect::Close, error: Process::Redirect::Close)
         ensure
           build_lock.try &.close_on_exec = true
