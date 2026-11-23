@@ -574,6 +574,9 @@ class Crystal::Call
         # Later calls can reach this copy with narrower types than it declares.
         typed_def.type_once = match.def.type_once?
         program.type_once_typed += 1 if typed_once
+        if recorder = program.strict_tool_recorder
+          recorder.record_instance(match.def, self_type || match_owner, match.arg_types, named_args_types, block_arg_type, typed_def)
+        end
         if records = program.instantiation_records
           records[typed_def.object_id] = InstantiationRecord.new(match.def, self_type || match_owner, match.arg_types, named_args_types, block_type, !use_cache)
         end

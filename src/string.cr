@@ -1,7 +1,10 @@
 require "c/string"
 require "crystal/small_deque"
-{% unless flag?(:without_iconv) %}
+{% if flag?(:without_iconv) %}
+{% elsif flag?(:use_libiconv) || flag?(:use_iconv) %}
   require "crystal/iconv"
+{% else %}
+  require "crystal/mica_encoding"
 {% end %}
 require "float/fast_float"
 
@@ -194,9 +197,13 @@ class String
   # String.new(slice, "GB2312") # => "好"
   # ```
   def self.new(bytes : Bytes, encoding : String, invalid : Symbol? = nil) : String
-    String.build do |str|
-      String.encode(bytes, encoding, "UTF-8", str, invalid)
-    end
+    {% if flag?(:without_iconv) || flag?(:use_libiconv) || flag?(:use_iconv) %}
+      String.build do |str|
+        String.encode(bytes, encoding, "UTF-8", str, invalid)
+      end
+    {% else %}
+      Crystal::MicaEncoding.decode(bytes, encoding, invalid)
+    {% end %}
   end
 
   # Creates a `String` from a pointer. `Bytes` will be copied from the pointer.
@@ -1807,38 +1814,46 @@ class String
   # "好".bytes            # => [229, 165, 189]
   # ```
   def encode(encoding : String, invalid : Symbol? = nil) : Bytes
-    io = IO::Memory.new
-    String.encode(to_slice, "UTF-8", encoding, io, invalid)
-    io.to_slice
+    {% if flag?(:without_iconv) || flag?(:use_libiconv) || flag?(:use_iconv) %}
+      io = IO::Memory.new
+      String.encode(to_slice, "UTF-8", encoding, io, invalid)
+      io.to_slice
+    {% else %}
+      Crystal::MicaEncoding.encode(to_slice, encoding, invalid)
+    {% end %}
   end
 
   # :nodoc:
   def self.encode(slice, from, to, io, invalid)
-    IO::EncodingOptions.check_invalid(invalid)
+    {% if flag?(:without_iconv) || flag?(:use_libiconv) || flag?(:use_iconv) %}
+      IO::EncodingOptions.check_invalid(invalid)
 
-    inbuf_ptr = slice.to_unsafe
-    inbytesleft = LibC::SizeT.new(slice.size)
-    outbuf = uninitialized UInt8[1024]
+      inbuf_ptr = slice.to_unsafe
+      inbytesleft = LibC::SizeT.new(slice.size)
+      outbuf = uninitialized UInt8[1024]
 
-    Crystal::Iconv.new(from, to, invalid) do |iconv|
-      while inbytesleft > 0
+      Crystal::Iconv.new(from, to, invalid) do |iconv|
+        while inbytesleft > 0
+          outbuf_ptr = outbuf.to_unsafe
+          outbytesleft = LibC::SizeT.new(outbuf.size)
+          err = iconv.convert(pointerof(inbuf_ptr), pointerof(inbytesleft), pointerof(outbuf_ptr), pointerof(outbytesleft))
+          if err == Crystal::Iconv::ERROR
+            iconv.handle_invalid(pointerof(inbuf_ptr), pointerof(inbytesleft))
+          end
+          io.write(outbuf.to_slice[0, outbuf.size - outbytesleft])
+        end
+
         outbuf_ptr = outbuf.to_unsafe
         outbytesleft = LibC::SizeT.new(outbuf.size)
-        err = iconv.convert(pointerof(inbuf_ptr), pointerof(inbytesleft), pointerof(outbuf_ptr), pointerof(outbytesleft))
+        err = iconv.convert(Pointer(UInt8*).null, Pointer(LibC::SizeT).null, pointerof(outbuf_ptr), pointerof(outbytesleft))
         if err == Crystal::Iconv::ERROR
           iconv.handle_invalid(pointerof(inbuf_ptr), pointerof(inbytesleft))
         end
         io.write(outbuf.to_slice[0, outbuf.size - outbytesleft])
       end
-
-      outbuf_ptr = outbuf.to_unsafe
-      outbytesleft = LibC::SizeT.new(outbuf.size)
-      err = iconv.convert(Pointer(UInt8*).null, Pointer(LibC::SizeT).null, pointerof(outbuf_ptr), pointerof(outbytesleft))
-      if err == Crystal::Iconv::ERROR
-        iconv.handle_invalid(pointerof(inbuf_ptr), pointerof(inbytesleft))
-      end
-      io.write(outbuf.to_slice[0, outbuf.size - outbytesleft])
-    end
+    {% else %}
+      Crystal::MicaEncoding.transcode(slice, from, to, io, invalid)
+    {% end %}
   end
 
   # Interprets this string as containing a sequence of hexadecimal values
