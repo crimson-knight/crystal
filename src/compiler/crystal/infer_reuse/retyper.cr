@@ -312,7 +312,9 @@ module Crystal::InferReuse
       {program_def.body, changed.old_def.body, changed.new_def.body}.each do |body|
         checker = BodyChecker.new
         body.accept checker
-        refuse.call(checker.reason.not_nil!) if checker.reason
+        if reason = checker.reason
+          refuse.call(reason)
+        end
       end
     end
 
@@ -515,8 +517,8 @@ module Crystal::InferReuse
       matches.matches.try(&.any?(&.def.same?(a_def))) || false
     rescue ex : Refusal
       raise ex
-    rescue
-      true
+    rescue ex
+      raise Refusal.new("looking up the call to '#{call.name}' again raised #{ex.class}: #{ex.message}")
     end
 
     # Adds a method the new text defines to the type its classes and modules
@@ -529,7 +531,11 @@ module Crystal::InferReuse
       raise Refusal.new("new method #{name} is a top-level method") if added.list_of_scopes.empty?
       scope_type = program.as(Type)
       added.list_of_scopes.each do |scope|
-        path, type_vars = scope.is_a?(ClassDef) ? {scope.name, scope.type_vars} : {scope.as(ModuleDef).name, scope.as(ModuleDef).type_vars}
+        path, type_vars = case scope
+                          when ClassDef  then {scope.name, scope.type_vars}
+                          when ModuleDef then {scope.name, scope.type_vars}
+                          else                refuse.call("is inside a #{scope.class_desc}")
+                          end
         refuse.call("belongs to a generic type") if type_vars
         current = path.global? ? program.as(Type) : scope_type
         path.names.each do |part|
@@ -561,7 +567,9 @@ module Crystal::InferReuse
       checker = BodyChecker.new
       a_def.body.accept checker
       a_def.args.each { |arg| arg.default_value.try &.accept checker }
-      refuse.call(checker.reason.not_nil!) if checker.reason
+      if reason = checker.reason
+        refuse.call(reason)
+      end
       check_name_not_queried(a_def.name, target, refuse)
 
       normalized = program.normalize(a_def).as?(Def) || refuse.call("does not normalize to a method")

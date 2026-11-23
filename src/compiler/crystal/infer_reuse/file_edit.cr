@@ -209,7 +209,11 @@ module Crystal::InferReuse
 
       key = String.build do |io|
         list_of_scopes.each do |scope|
-          io << (scope.is_a?(ClassDef) ? scope.name : scope.as(ModuleDef).name) << "::"
+          case scope
+          when ClassDef  then io << scope.name
+          when ModuleDef then io << scope.name
+          end
+          io << "::"
         end
         (first_line..header_last_line).each { |line| io << list_of_lines[line - 1]?.try(&.strip) << '\n' }
       end
