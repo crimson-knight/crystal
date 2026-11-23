@@ -2,11 +2,7 @@ require "socket"
 require "../client"
 require "../headers"
 require "base64"
-{% if flag?(:without_openssl) %}
-  require "crystal/digest/sha1"
-{% else %}
-  require "openssl/sha1"
-{% end %}
+require "crystal/digest/sha1"
 require "uri"
 
 # :nodoc:
@@ -376,11 +372,9 @@ class HTTP::WebSocket::Protocol
     raise ArgumentError.new("No host or path specified which are required.")
   end
 
+  # The handshake hash (RFC 6455, section 1.3) uses the standard library's own
+  # SHA-1, so a WebSocket server or client links no OpenSSL for it.
   def self.key_challenge(key : String) : String
-    {% if flag?(:without_openssl) %}
-      ::Crystal::Digest::SHA1.base64digest(key + GUID)
-    {% else %}
-      Base64.strict_encode(OpenSSL::SHA1.hash(key + GUID))
-    {% end %}
+    ::Crystal::Digest::SHA1.base64digest(key + GUID)
   end
 end
