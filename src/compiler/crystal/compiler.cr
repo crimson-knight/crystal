@@ -1259,7 +1259,8 @@ module Crystal
       # Incremental optimization: skip linking when all .o files were reused
       # from cache and the output binary already exists. The linker inputs are
       # identical, so the output would be byte-for-byte the same.
-      all_reused = @incremental && !@no_cache && units.all?(&.reused_previous_compilation?)
+      # An object with patched lines is reused, but not as the link saw it.
+      all_reused = @incremental && !@no_cache && units.all? { |unit| unit.reused_previous_compilation? && !unit.patched_lines? }
       @link_skipped = all_reused && File.exists?(output_filename)
 
       if @link_skipped
@@ -2501,6 +2502,7 @@ module Crystal
                      list_of_spilled_part_hashes : Array(String) = [] of String,
                      list_of_carried_part_hashes : Array(String)? = nil,
                      @patched_object : LinePatch::PatchedObject? = nil)
+        @patched_object_filename = @patched_object.try(&.pending_filename)
         @original_name = @name == "" ? "_main" : @name
         @name = CompilationUnit.file_basename(@name, @compiler.optimization_mode)
         @object_extension = compiler.codegen_target.object_extension
@@ -2814,8 +2816,13 @@ module Crystal
       # matched this unit with moved lines.
       @patched_object : LinePatch::PatchedObject?
 
-      # Whether this unit's object is the cached one with patched lines.
-      getter? patched_lines = false
+      # Whether this unit's object is the cached one with patched lines: it
+      # is reused, but the executable must be linked again.
+      def patched_lines? : Bool
+        !@patched_object_filename.nil?
+      end
+
+      @patched_object_filename : String?
 
       # Puts the patched object in place of the cached one, with the record
       # of what it stands for. The cache directory is locked by now.
@@ -2823,7 +2830,6 @@ module Crystal
         patched_object = @patched_object
         return unless patched_object
         @patched_object = nil
-        @patched_lines = true
         pending_filename = patched_object.pending_filename
         return unless pending_filename
 
