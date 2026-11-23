@@ -73,9 +73,19 @@ module Crystal::InferReuse
     # removed can change what it answers.
     getter responds_to_names = Set(String).new
 
-    # Types whose list of methods a macro read (`methods`, `has_method?` and
-    # the like), by object id.
-    getter method_list_read_type_by_id = {} of UInt64 => Type
+    # Types a macro asked `overrides?` about, by object id.
+    getter overrides_read_type_by_id = {} of UInt64 => Type
+
+    # Every macro expansion that read a list of methods (`methods`,
+    # `all_methods`, `has_method?`), to run again when a method is added or
+    # removed (see `MethodListReplay`).
+    getter list_of_method_list_expansions = [] of MethodListExpansion
+    getter method_list_frames = MethodListFrames.new
+    # Set while a build server runs an expansion again.
+    property method_list_replay : MethodListReplay? = nil
+    # Whether every type and method of the program was declared (the
+    # `finished` hooks and type inference run after that).
+    property? declarations_complete = false
 
     def add_line_read(location : Location?) : Nil
       return unless location
@@ -96,8 +106,18 @@ module Crystal::InferReuse
       @responds_to_names << name
     end
 
-    def add_method_list_read(type : Type) : Nil
-      @method_list_read_type_by_id[type.object_id] ||= type
+    def add_overrides_read(type : Type) : Nil
+      @overrides_read_type_by_id[type.object_id] ||= type
+    end
+
+    def add_method_list_read(read : MethodListRead) : Nil
+      expansion = @method_list_frames.current
+      unless expansion
+        block("a macro read the methods of #{read.type} outside a macro expansion")
+        return
+      end
+      @list_of_method_list_expansions << expansion if expansion.list_of_reads.empty?
+      expansion.list_of_reads << read
     end
 
     # Moves the recorded lines of *filename* to their place in its new text.

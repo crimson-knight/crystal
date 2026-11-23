@@ -2152,16 +2152,17 @@ module Crystal
           TypeNode.has_constant?(type, value)
         end
       when "methods"
-        interpreter.@program.infer_reuse_record.try &.add_method_list_read(type)
-        interpret_check_args { TypeNode.methods(type) }
+        interpret_check_args do
+          InferReuse.methods_for_macro(interpreter.@program, type, "methods") { TypeNode.methods(type) }
+        end
       when "all_methods"
-        interpreter.@program.infer_reuse_record.try &.add_method_list_read(type)
-        interpret_check_args { TypeNode.all_methods(type) }
+        interpret_check_args do
+          InferReuse.methods_for_macro(interpreter.@program, type, "all_methods") { TypeNode.all_methods(type) }
+        end
       when "has_method?"
-        interpreter.@program.infer_reuse_record.try &.add_method_list_read(type)
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#has_method?'")
-          TypeNode.has_method?(type, value)
+          InferReuse.has_method_for_macro(interpreter.@program, type, value) { TypeNode.has_method?(type, value) }
         end
       when "annotation"
         fetch_annotation(self, method, args, named_args, block) do |type|
@@ -2268,7 +2269,7 @@ module Crystal
           BoolLiteral.new(!!value)
         end
       when "overrides?"
-        interpreter.@program.infer_reuse_record.try &.add_method_list_read(type)
+        interpreter.@program.infer_reuse_record.try &.add_overrides_read(type)
         interpret_check_args do |arg1, arg2|
           unless arg1.is_a?(TypeNode)
             raise "TypeNode##{method} expects TypeNode as a first argument, not #{arg1.class_desc}"

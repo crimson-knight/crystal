@@ -30,6 +30,7 @@ module Crystal::InferReuse
     @added_def_count = 0
     @candidate_call_count = 0
     @candidate_seconds = 0.0
+    @replayed_expansion_count = 0
     @removed_def_count = 0
     @retyped_instance_count = 0
     @new_typed_def_count = 0
@@ -64,6 +65,7 @@ module Crystal::InferReuse
       report.added_methods = @added_def_count
       report.candidate_calls = @candidate_call_count
       report.candidate_seconds = @candidate_seconds
+      report.replayed_expansions = @replayed_expansion_count
       report.removed_methods = @removed_def_count
       report.retyped_instances = @retyped_instance_count
       report.new_typed_defs = @new_typed_def_count
@@ -244,6 +246,7 @@ module Crystal::InferReuse
       list_of_added = @list_of_file_edits.flat_map(&.list_of_added_defs).map { |added| add_def(added) }
       @added_def_count = list_of_added.size
       check_calls_keep_their_targets(list_of_candidate_calls, list_of_added)
+      check_method_listings(list_of_added, list_of_removals.map { |(program_def, _)| program_def })
 
       list_of_retypes.each do |(program_def, changed)|
         new_body = program.normalize(changed.new_def.clone).as(Def).body
@@ -342,18 +345,76 @@ module Crystal::InferReuse
     LIFECYCLE_NAMES = {"initialize", "new", "finalize", "allocate", "method_missing", "previous_def", "super"}
 
     # Refuses when something the kept program computed asked whether a method
-    # named *name* exists: a `responds_to?`, a macro that listed the methods
+    # named *name* exists: a `responds_to?`, a macro that asked `overrides?`
     # of a type related to *owner*, or a call typed without the instance
-    # cache (the scan in `#candidate_calls` would not see it).
+    # cache (the scan in `#candidate_calls` would not see it). Macros that
+    # listed methods are run again (`#check_method_listings`).
     private def check_name_not_queried(name : String, owner : Type, refuse : String ->) : Nil
       record = @kept.record
       refuse.call("is named in a responds_to?") if record.responds_to_names.includes?(name)
       refuse.call("has the name of a method typed once per call") if record.uncached_call_names.includes?(name)
       owner_instance = owner.metaclass? ? owner.instance_type : owner
-      record.method_list_read_type_by_id.each_value do |read_type|
+      record.overrides_read_type_by_id.each_value do |read_type|
         read_instance = read_type.metaclass? ? read_type.instance_type : read_type
-        refuse.call("belongs to #{owner_instance}, whose methods a macro listed (#{read_type})") if related?(read_instance, owner_instance)
+        refuse.call("belongs to #{owner_instance}, which a macro asked overrides? about (#{read_type})") if related?(read_instance, owner_instance)
       end
+    end
+
+    # Runs again every macro expansion that listed methods of a type whose
+    # list the added or removed methods change, with each read answered as
+    # the original build would have answered it with the edit, and refuses
+    # unless each produces the text it produced before.
+    private def check_method_listings(list_of_added : Array(Def), list_of_removed : Array(Def)) : Nil
+      return if list_of_added.empty? && list_of_removed.empty?
+      record = @kept.record
+      record.list_of_method_list_expansions.each do |expansion|
+        affected_added = list_of_added.select do |added_def|
+          declared_before?(added_def, expansion) && expansion.list_of_reads.any? { |read| read_includes?(read, added_def) }
+        end
+        affected_removed = list_of_removed.select do |removed_def|
+          expansion.list_of_reads.any? do |read|
+            read.list_of_defs.any?(&.same?(removed_def)) || (read.kind == "has_method?" && read.name == removed_def.name)
+          end
+        end
+        next if affected_added.empty? && affected_removed.empty?
+
+        place = expansion.site.try(&.expanded_location)
+        output = expansion.output || raise Refusal.new("a macro that listed methods (#{place}) left no output")
+        record.method_list_replay = MethodListReplay.new(expansion.list_of_reads, affected_added, affected_removed)
+        new_output = begin
+          expansion.rerun
+        rescue ex : Refusal
+          raise ex
+        rescue ex
+          raise Refusal.new("a macro that listed methods (#{place}) raised when run again: #{ex.message}")
+        ensure
+          record.method_list_replay = nil
+        end
+        unless new_output == output
+          raise Refusal.new("a macro that listed methods (#{place}) writes other code with the edit")
+        end
+        @replayed_expansion_count += 1
+      end
+    end
+
+    # Whether a list of methods *read* would hold *a_def*.
+    private def read_includes?(read : MethodListRead, a_def : Def) : Bool
+      if read.kind == "has_method?"
+        read.name == a_def.name && MethodListReplay.lists?(read.type, "all_methods", a_def.owner)
+      else
+        MethodListReplay.lists?(read.type, read.kind, a_def.owner)
+      end
+    end
+
+    # Whether *a_def* was declared when *expansion* ran: always during type
+    # inference; at the top level, when it comes before the expansion in the
+    # same file (a method in another file counts as declared).
+    private def declared_before?(a_def : Def, expansion : MethodListExpansion) : Bool
+      return true if expansion.after_top_level?
+      site = expansion.site.try(&.expanded_location) || return true
+      location = a_def.location || return true
+      return true unless site.filename == location.filename
+      location.line_number < site.line_number
     end
 
     private def related?(type : Type, other : Type) : Bool

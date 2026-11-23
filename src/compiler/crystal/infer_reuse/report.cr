@@ -15,6 +15,7 @@ module Crystal::InferReuse
     property removed_methods : Int32? = nil
     property candidate_calls : Int32? = nil
     property candidate_seconds : Float64? = nil
+    property replayed_expansions : Int32? = nil
     property retyped_instances : Int32? = nil
     property new_typed_defs : Int32? = nil
     property build_child_footprint_bytes : UInt64? = nil

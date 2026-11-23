@@ -128,7 +128,7 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
       expect_build(project, "Hello world\n11\n0\n", reused: false)
       project.write("helper.cr", HELPER.sub("def self.value : Int32\n", "def self.value(offset : Int32 = 0) : Int32\n"))
       report = expect_build(project, "Hello world\n11\n0\n", reused: false)
-      report["reason"].as_s.should contain("outside a method body")
+      report["reason"].as_s.should contain("removed method 'value' is still called")
     end
   end
 
@@ -215,14 +215,22 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
     end
   end
 
-  it "types the whole program again for a new method in a type whose methods a macro lists" do
+  it "runs again the macros that list methods, and reuses when they write the same code" do
     with_project("infer-reuse-method-list") do |project|
-      main = MAIN + "puts {{ Counter.methods.size }}\n"
+      main = MAIN + "puts {{ Counter.methods.select(&.name.starts_with?(\"to\")).size }}\nputs {{ Counter.methods.size }}\n"
       project.write("main.cr", main)
-      expect_build(project, "Hello world\n11\n0\n3\n", reused: false)
+      expect_build(project, "Hello world\n11\n0\n1\n3\n", reused: false)
+      # One listing writes the same code with the new method, the other does not.
       project.write("main.cr", main.sub("  def total : Int32\n", "  def bonus : Int32\n    5\n  end\n\n  def total : Int32\n"))
-      report = expect_build(project, "Hello world\n11\n0\n4\n", reused: false)
-      report["reason"].as_s.should contain("whose methods a macro listed")
+      report = expect_build(project, "Hello world\n11\n0\n1\n4\n", reused: false)
+      report["reason"].as_s.should contain("writes other code with the edit")
+
+      selective = MAIN + "puts {{ Counter.methods.select(&.name.starts_with?(\"to\")).size }}\n"
+      project.write("main.cr", selective)
+      expect_build(project, "Hello world\n11\n0\n1\n", reused: false)
+      project.write("main.cr", selective.sub("  def total : Int32\n", "  def bonus : Int32\n    5\n  end\n\n  def total : Int32\n"))
+      report = expect_build(project, "Hello world\n11\n0\n1\n", reused: true)
+      report["replayed_expansions"].as_i.should eq(1)
     end
   end
 

@@ -93,8 +93,11 @@ describe Crystal::InferReuse::FileEdit do
     edit.line_shift.apply(12).should eq(8)
   end
 
-  it "refuses a change to a method header" do
-    refusal_of(OLD_TEXT.sub("def greet(name : String) : String", "def greet(name : String) : String?")).should contain("outside a method body")
+  it "reads a changed method header as a method removed and one added" do
+    edit = compare(OLD_TEXT.sub("def greet(name : String) : String", "def greet(name : String) : String?"))
+    edit.list_of_removed_defs.map(&.old_def.name).should eq(["greet"])
+    edit.list_of_added_defs.map(&.new_def.name).should eq(["greet"])
+    edit.list_of_changed_defs.should be_empty
   end
 
   it "refuses a change outside every method" do
