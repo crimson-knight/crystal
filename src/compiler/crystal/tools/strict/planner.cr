@@ -400,6 +400,9 @@ module Crystal::StrictTool
     private def overrides_inherited?(signature : Def, owner : ModuleType, planned : Hash(Def, Def)) : Bool
       item = DefWithMetadata.new(signature)
       owner.ancestors.each do |ancestor|
+        # The strict checks look at plain classes and modules only, not at
+        # generic instances an owner inherits from; so does this.
+        next unless ancestor.is_a?(ModuleType)
         list = ancestor.defs.try(&.[signature.name]?) || next
         list.each do |existing|
           next unless @recorder.declared_def_ids.includes?(existing.def.object_id)

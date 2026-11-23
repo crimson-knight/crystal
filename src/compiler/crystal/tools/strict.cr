@@ -448,6 +448,9 @@ module Crystal
       # stay as they are in later rounds.
       @rejections = {} of {String, Int32} => String
 
+      # Methods the build says override nothing (same key as `@rejections`).
+      @unmarked = Set({String, Int32}).new
+
       # Files the verification build could not make strict.
       @ordinary_files = Set(String).new
 
@@ -510,6 +513,10 @@ module Crystal
           file.plans << plan
         end
         planner.mark_overrides(@files.flat_map(&.plans))
+
+        @files.each do |file|
+          file.plans.each { |plan| plan.needs_override = false if @unmarked.includes?({file.filename, plan.ordinal}) }
+        end
       end
 
       # The defs of *file*'s current text, parsed once per text.
@@ -633,7 +640,7 @@ module Crystal
             return nil
           end
 
-          next write_units(units) if add_missing_override(units, result) || widen_return_type(units, result)
+          next write_units(units) if add_missing_override(units, result) || remove_wrong_override(units, result) || widen_return_type(units, result)
           blamed = blame(units, result)
           blamed = bisect(units) if blamed.empty?
           return nil if blamed.empty?
@@ -674,6 +681,22 @@ module Crystal
           unit = unit_at(units, filename, line, column, edited_only: false)
           if unit && (plan = unit.plan) && !plan.needs_override?
             plan.needs_override = true
+            return true
+          end
+        end
+        false
+      end
+
+      # The build says a method the planner marked overrides nothing: drop the
+      # mark and build again.
+      private def remove_wrong_override(units : Array(Unit), error : CodeError) : Bool
+        error_frames(error).reverse_each do |frame|
+          message, filename, line, column = frame
+          next unless message.includes?("is marked @[Override], but")
+          unit = unit_at(units, filename, line, column, edited_only: false)
+          if unit && (plan = unit.plan) && plan.needs_override?
+            plan.needs_override = false
+            @unmarked << {unit.file.filename, plan.ordinal}
             return true
           end
         end
