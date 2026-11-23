@@ -258,8 +258,8 @@ module Crystal
       # target whose libraries are not on this machine.
       if answers = @program.macro_shell_answers_by_command
         if answer = answers[cmd]?
-          @last = MacroId.new(answer)
-          return
+          # The dispatcher treats a nil result as an unknown macro method.
+          return @last = MacroId.new(answer)
         end
       end
 
