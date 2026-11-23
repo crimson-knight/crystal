@@ -74,7 +74,11 @@ module Crystal::InferPersist
           GC.enable
         end
         Location.restore(roots.location_tables)
-        {"loaded", roots, (Time.instant - started).total_seconds, bytesize}
+        seconds = (Time.instant - started).total_seconds
+        if @compiler.progress_tracker.stats?
+          STDOUT.puts "Semantic (infer persist): loaded #{bytesize} bytes in #{seconds.round(2)} s, GC heap #{(GC.stats.heap_size // 1_000_000)} MB"
+        end
+        {"loaded", roots, seconds, bytesize}
       end
     rescue ex
       # A damaged or truncated file can fail in any way while it is decoded;
