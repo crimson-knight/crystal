@@ -285,23 +285,23 @@ module Crystal::LinePatch
 
     private def skip_form(cursor : Cursor, form : UInt64, address_size : UInt8, version : UInt16) : Nil
       case form
-      when 0x01_u64                                                                                then cursor.skip(address_size.to_i32)
-      when 0x03_u64                                                                                then cursor.skip(cursor.u16.to_i32)
-      when 0x04_u64                                                                                then cursor.skip(cursor.u32.to_i32)
-      when 0x05_u64, 0x12_u64, 0x26_u64, 0x2a_u64                                                  then cursor.skip(2)
+      when 0x01_u64                                                                                 then cursor.skip(address_size.to_i32)
+      when 0x03_u64                                                                                 then cursor.skip(cursor.u16.to_i32)
+      when 0x04_u64                                                                                 then cursor.skip(cursor.u32.to_i32)
+      when 0x05_u64, 0x12_u64, 0x26_u64, 0x2a_u64                                                   then cursor.skip(2)
       when 0x06_u64, 0x0e_u64, 0x13_u64, 0x17_u64, 0x1c_u64, 0x1d_u64, 0x1f_u64, 0x28_u64, 0x2c_u64 then cursor.skip(4)
-      when 0x07_u64, 0x14_u64, 0x20_u64, 0x24_u64                                                  then cursor.skip(8)
-      when 0x08_u64                                                                                then cursor.c_string
-      when 0x09_u64, 0x18_u64                                                                      then cursor.skip(cursor.uleb.to_i32)
-      when 0x0a_u64                                                                                then cursor.skip(cursor.u8.to_i32)
-      when 0x0b_u64, 0x0c_u64, 0x11_u64, 0x25_u64, 0x29_u64                                        then cursor.skip(1)
-      when 0x0d_u64                                                                                then cursor.sleb
-      when 0x0f_u64, 0x15_u64, 0x1a_u64, 0x1b_u64, 0x22_u64, 0x23_u64, 0x1f01_u64, 0x1f02_u64      then cursor.uleb
-      when 0x10_u64                                                                                then cursor.skip(version <= 2 ? address_size.to_i32 : 4)
-      when 0x16_u64                                                                                then skip_form(cursor, cursor.uleb, address_size, version)
-      when 0x19_u64, DW_FORM_IMPLICIT_CONST                                                        then nil
-      when 0x1e_u64                                                                                then cursor.skip(16)
-      when 0x27_u64, 0x2b_u64                                                                      then cursor.skip(3)
+      when 0x07_u64, 0x14_u64, 0x20_u64, 0x24_u64                                                   then cursor.skip(8)
+      when 0x08_u64                                                                                 then cursor.c_string
+      when 0x09_u64, 0x18_u64                                                                       then cursor.skip(cursor.uleb.to_i32)
+      when 0x0a_u64                                                                                 then cursor.skip(cursor.u8.to_i32)
+      when 0x0b_u64, 0x0c_u64, 0x11_u64, 0x25_u64, 0x29_u64                                         then cursor.skip(1)
+      when 0x0d_u64                                                                                 then cursor.sleb
+      when 0x0f_u64, 0x15_u64, 0x1a_u64, 0x1b_u64, 0x22_u64, 0x23_u64, 0x1f01_u64, 0x1f02_u64       then cursor.uleb
+      when 0x10_u64                                                                                 then cursor.skip(version <= 2 ? address_size.to_i32 : 4)
+      when 0x16_u64                                                                                 then skip_form(cursor, cursor.uleb, address_size, version)
+      when 0x19_u64, DW_FORM_IMPLICIT_CONST                                                         then nil
+      when 0x1e_u64                                                                                 then cursor.skip(16)
+      when 0x27_u64, 0x2b_u64                                                                       then cursor.skip(3)
       else
         raise Refusal.new("an unknown attribute form 0x#{form.to_s(16)}")
       end

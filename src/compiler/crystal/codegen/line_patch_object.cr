@@ -124,16 +124,16 @@ module Crystal::LinePatch
   # section, then the relocations, the symbol table and the string table.
   class MachOFile < ObjectFile
     MAGIC_64              = 0xfeedfacf_u32
-    LC_SEGMENT_64         = 0x19_u32
-    LC_SYMTAB             =  0x2_u32
-    LC_DYSYMTAB           =  0xb_u32
-    LC_DATA_IN_CODE       = 0x29_u32
-    LC_LINKER_OPTIMIZE    = 0x2e_u32
-    LC_BUILD_VERSION      = 0x32_u32
-    LC_LINKER_OPTION      = 0x2d_u32
+    LC_SEGMENT_64         =       0x19_u32
+    LC_SYMTAB             =        0x2_u32
+    LC_DYSYMTAB           =        0xb_u32
+    LC_DATA_IN_CODE       =       0x29_u32
+    LC_LINKER_OPTIMIZE    =       0x2e_u32
+    LC_BUILD_VERSION      =       0x32_u32
+    LC_LINKER_OPTION      =       0x2d_u32
     LIST_OF_VERSION_MINS  = [0x24_u32, 0x25_u32, 0x2f_u32, 0x30_u32]
-    SECTION_HEADER_SIZE   = 80
-    SEGMENT_COMMAND_SIZE  = 72
+    SECTION_HEADER_SIZE   =       80
+    SEGMENT_COMMAND_SIZE  =       72
     SECTION_TYPE_MASK     = 0xff_u32
     ZEROFILL_SECTION_TYPE = [0x1_u32, 0xc_u32, 0x12_u32]
 
