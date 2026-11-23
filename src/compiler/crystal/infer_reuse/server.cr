@@ -127,8 +127,8 @@ module Crystal::InferReuse
       client.close
 
       if handed_over
-        # The build child serves from now on, with the newer program.
-        @listener.close
+        # The build child serves from now on, with the newer program, on the
+        # same socket: closing the listener here would remove its file.
         exit 0
       end
       nil
@@ -191,7 +191,7 @@ module Crystal::InferReuse
       status_writer.close_on_exec = false
       env = request.env.dup
       env["CRYSTAL_WORKERS"] = "1"
-      env[HANDOFF_VARIABLE] = "#{@listener.fd},#{status_writer.fd}"
+      env[HANDOFF_VARIABLE] = "#{@listener.fd},#{status_writer.fd},#{@socket_path}"
       executable = ::Process.executable_path || raise Error.new("can't find the compiler executable")
       ::Process.exec(executable, request.argv, env: env, clear_env: true, chdir: request.working_directory)
     end

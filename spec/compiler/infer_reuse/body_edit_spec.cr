@@ -67,7 +67,7 @@ describe Crystal::InferReuse::BodyEdit do
   end
 
   it "refuses a new method or a different line count" do
-    refusal_of(OLD_TEXT.sub("  # A comment\n", "").sub("class Greeter\n", "class Greeter\n  def other; end\n")).should contain("added, removed or moved")
+    refusal_of(OLD_TEXT.sub("# A comment\n", "").sub("class Greeter\n", "class Greeter\n  def other; end\n")).should contain("added, removed or moved")
     refusal_of(OLD_TEXT.sub("    \"Hello", "    1\n    \"Hello")).should contain("lines")
   end
 end

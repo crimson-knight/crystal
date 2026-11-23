@@ -6,8 +6,8 @@ module Crystal::InferReuse
   #
   # * the same argument list, working directory and environment (apart from
   #   `PER_BUILD_VARIABLES`) as the build that typed the program;
-  # * no macro that ran a program or a shell command, and every environment
-  #   variable, file and file check a macro read reading the same;
+  # * no macro that ran a program (`run`), and every command, environment
+  #   variable, file and file check a macro read giving the same answer;
   # * no warning from the kept build (a reused build would repeat it);
   # * every `require` finding the same files, and every changed file a
   #   `BodyEdit` of methods `#check_eligible` accepts;
@@ -125,6 +125,15 @@ module Crystal::InferReuse
       record.content_by_read_file.each do |filename, content|
         current = File.exists?(filename) ? File.read(filename) : nil
         raise Refusal.new("a macro read #{filename}, which changed") unless current == content
+      end
+      record.output_by_command.each do |command, output|
+        current = begin
+          text = `#{command}`
+          $?.success? ? text : nil
+        rescue
+          nil
+        end
+        raise Refusal.new("a macro ran `#{command}`, whose output changed") unless current == output
       end
       record.existence_by_checked_file.each do |filename, exists|
         raise Refusal.new("a macro checked #{filename}, which changed") unless File.exists?(filename) == exists

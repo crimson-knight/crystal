@@ -50,7 +50,23 @@ module Crystal::InferReuse
         if block_arg = typed_def.block_arg
           io << " &" << block_arg.type?
         end
-        io << " : " << typed_def.type? << " @ " << typed_def.location
+        io << " : " << typed_def.type? << " @ "
+        stable_location(typed_def.location, io)
+      end
+    end
+
+    # A location as two processes that expand the same macros print it: a
+    # macro expansion is named by its macro and where it was expanded, not by
+    # the memory address its virtual file name holds.
+    def self.stable_location(location : Location?, io : IO) : Nil
+      return unless location
+      filename = location.filename
+      if filename.is_a?(VirtualFile)
+        io << filename.macro.name << " expanded at "
+        stable_location(filename.expanded_location, io)
+        io << " line " << location.line_number << ":" << location.column_number
+      else
+        io << filename << ":" << location.line_number << ":" << location.column_number
       end
     end
 

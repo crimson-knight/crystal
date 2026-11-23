@@ -3,11 +3,6 @@ lib LibC
   fun setsid : PidT
 end
 
-lib LibGC
-  # Starts the parallel marker threads again in a forked child (Boehm GC).
-  fun start_mark_threads = GC_start_mark_threads : Void
-end
-
 module Crystal::InferReuse
   # Forks this process and returns the child's process id in the parent and
   # `nil` in the child.
@@ -16,7 +11,9 @@ module Crystal::InferReuse
   # `Server`), so the forked child, which keeps only the calling thread, has
   # every scheduler it needs. The child gets a new event loop, its own signal
   # pipe and an empty child-process table, as `Process.fork` gives a program
-  # built without multithreading, and starts the collector's marker threads.
+  # built without multithreading. The collector marks on one thread in the
+  # child (Boehm GC turns parallel marking off in a forked child; starting
+  # the marker threads again deadlocked a collection after a second fork).
   def self.fork_process : LibC::PidT?
     STDOUT.flush
     STDERR.flush
@@ -33,7 +30,6 @@ module Crystal::InferReuse
       pid = LibC.fork
       errno = Errno.value
       if pid == 0
-        LibGC.start_mark_threads
         Crystal::EventLoop.current.after_fork
         Crystal::System::Signal.after_fork
         Crystal::System::SignalChildHandler.after_fork

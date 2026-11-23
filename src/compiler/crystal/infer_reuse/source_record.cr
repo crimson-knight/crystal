@@ -13,6 +13,7 @@ module Crystal::InferReuse
     getter env_value_by_name = {} of String => String?
     getter content_by_read_file = {} of String => String?
     getter existence_by_checked_file = {} of String => Bool
+    getter output_by_command = {} of String => String?
 
     # Why no later build may reuse this program (a macro ran a program, or
     # read something this record cannot compare), or `nil`.
@@ -36,6 +37,12 @@ module Crystal::InferReuse
 
     def add_file_check(filename : String, exists : Bool) : Nil
       @existence_by_checked_file[filename] = exists unless @existence_by_checked_file.has_key?(filename)
+    end
+
+    # The output of a command a macro ran (`nil` when it failed); a later
+    # build runs it again and compares.
+    def add_command_output(command : String, output : String?) : Nil
+      @output_by_command[command] = output unless @output_by_command.has_key?(command)
     end
 
     def block(reason : String) : Nil

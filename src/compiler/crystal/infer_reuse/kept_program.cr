@@ -30,7 +30,7 @@ module Crystal::InferReuse
       listener.close_on_exec = true
       status_writer = IO::FileDescriptor.new(@handoff.status_fd)
       status_writer.close_on_exec = true
-      socket_path = listener.local_address.path
+      socket_path = @handoff.socket_path
 
       argv = compiler.infer_reuse_argv || [] of String
       kept = KeptProgram.new(compiler, program, node, record, argv, Dir.current, ENV.to_h)

@@ -48,7 +48,7 @@ module Crystal::InferReuse
   # Environment variables that may differ between two builds that reuse the
   # same typed program: none of them is read by type inference.
   PER_BUILD_VARIABLES = {
-    "TMPDIR", "PWD", "OLDPWD", "SHLVL", "_", REPORT_VARIABLE, VERIFY_VARIABLE,
+    "TMPDIR", "PWD", "OLDPWD", "SHLVL", "_", "CRYSTAL_WORKERS", REPORT_VARIABLE, VERIFY_VARIABLE,
     "CRYSTAL_IR_SKIP_REPORT", "CRYSTAL_IR_SKIP_VERIFY",
   }
 
@@ -94,11 +94,11 @@ module Crystal::InferReuse
 
   # The listening socket and status pipe a fresh compiler process got from
   # the server that started it.
-  record Handoff, listening_fd : Int32, status_fd : Int32 do
+  record Handoff, listening_fd : Int32, status_fd : Int32, socket_path : String do
     def self.take_from_env : Handoff?
       value = ENV.delete(HANDOFF_VARIABLE) || return nil
-      listening, status = value.split(',', 2)
-      Handoff.new(listening.to_i, status.to_i)
+      listening, status, socket_path = value.split(',', 3)
+      Handoff.new(listening.to_i, status.to_i, socket_path)
     end
   end
 end

@@ -252,7 +252,6 @@ module Crystal
         @last.to_macro_id
       end
       cmd = cmd.join " "
-      @program.infer_reuse_record.try &.block("a macro ran the command `#{cmd}`")
 
       begin
         result = `#{cmd}`
@@ -263,6 +262,8 @@ module Crystal
       rescue exc
         node.raise "error executing command: #{cmd}: #{exc.message}"
       end
+
+      @program.infer_reuse_record.try &.add_command_output(cmd, $?.success? ? result : nil)
 
       if $?.success?
         @last = MacroId.new(result)
