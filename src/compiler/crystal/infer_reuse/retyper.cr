@@ -375,7 +375,9 @@ module Crystal::InferReuse
       roots.each do |root|
         each_type(root, visited) do |type|
           next unless type.is_a?(DefInstanceContainer)
-          type.@def_instances.try &.each_value do |typed_def|
+          container = type
+          list_of_block_instances = container.@block_def_instances
+          container.@def_instances.try &.each_value do |typed_def|
             next unless names.includes?(typed_def.name)
             typed_def.each_observer do |observer|
               next unless observer.is_a?(Call) && seen.add?(observer.object_id)
@@ -384,8 +386,10 @@ module Crystal::InferReuse
               result << {observer, typed_def.name}
             end
           end
-          type.@block_def_instances.try &.each_value do |typed_def|
-            raise Refusal.new("a method named '#{typed_def.name}' is typed with blocks") if names.includes?(typed_def.name)
+          list_of_block_instances.try &.each_value do |list_of_typed_defs|
+            list_of_typed_defs.each do |typed_def|
+              raise Refusal.new("a method named '#{typed_def.name}' is typed with blocks") if names.includes?(typed_def.name)
+            end
           end
         end
       end
