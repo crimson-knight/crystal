@@ -244,8 +244,8 @@ describe "Code gen: typed once for every instance of a generic class" do
     generic.instantiated_types.sum { |instance| instance.as(Crystal::DefInstanceContainer).def_instances.count { |_, typed_def| typed_def.name == "print" } }.should eq(1)
   end
 
-it "calls methods on an instance variable whose generic class has a generic subclass" do
-  run(MODELS + %(
+  it "calls methods on an instance variable whose generic class has a generic subclass" do
+    run(MODELS + %(
     class Query(M)
     end
 
@@ -265,7 +265,21 @@ it "calls methods on an instance variable whose generic class has a generic subc
 
     Printer(Post).new(Query(Post).new(1)).print + Printer(Admin).new(ScopedQuery(Admin).new(2)).print
     )).to_string.should eq("<SELECT posts LIMIT 1><SELECT admins LIMIT 2>")
-end
+  end
+
+  it "reads a bounded parameter inside a proc literal" do
+    run(MODELS + %(
+      class Query(M)
+        @[TypeOnce]
+        def quoter : String
+          quote = ->(name : String) { M.table + "." + name }
+          quote.call("id")
+        end
+      end
+
+      Query(Post).new(1).quoter + " " + Query(Admin).new(2).quoter
+      )).to_string.should eq("posts.id admins.id")
+  end
 
   it "runs a class method typed once for every instance" do
     run(MODELS + %(

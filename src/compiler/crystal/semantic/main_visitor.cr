@@ -289,6 +289,9 @@ module Crystal
           # instance: its value is read from the receiver at run time.
           node.type = virtual.metaclass
           node.syntax_replacement = ErasedTypeVar.new(erased_owner, node.names.first, node.type)
+          # Read from `self`: a proc literal or captured block that reads it
+          # captures `self`.
+          check_self_closured
         else
           node.type = check_type_in_type_args(type.remove_alias_if_simple).devirtualize
         end
