@@ -59,6 +59,12 @@ module Crystal
         return match unless call_receiver.same?(context.instantiated_type) || call_receiver.same?(receiver)
       end
 
+      # A method of a generic class with a bounded type parameter is typed once
+      # for every instance (see `generic_type_once.cr`).
+      if generic_match = generic_type_once_match(match)
+        return generic_match
+      end
+
       instantiated_type = type_once_self_type(a_def, context.instantiated_type)
       lookup_self_type = instantiated_type.instance_type
       defining_type = context.defining_type

@@ -320,6 +320,7 @@ module Crystal
       types["TargetFeature"] = @target_feature_annotation = AnnotationType.new self, self, "TargetFeature"
       types["TypeOnce"] = @type_once_annotation = AnnotationType.new self, self, "TypeOnce"
       types["Override"] = @override_annotation = AnnotationType.new self, self, "Override"
+      types["TypeBound"] = @type_bound_annotation = AnnotationType.new self, self, "TypeBound"
 
       define_crystal_constants
 
@@ -607,7 +608,7 @@ module Crystal
                      always_inline_annotation naked_annotation returns_twice_annotation
                      raises_annotation primitive_annotation call_convention_annotation
                      flags_annotation link_annotation extern_annotation deprecated_annotation experimental_annotation
-                     type_once_annotation override_annotation) %}
+                     type_once_annotation override_annotation type_bound_annotation) %}
       def {{name.id}}
         @{{name.id}}.not_nil!
       end

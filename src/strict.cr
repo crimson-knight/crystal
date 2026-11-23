@@ -30,4 +30,4 @@
 # freely. The compiler reads the `require` itself; this file is intentionally
 # empty. A compiler without strict files builds the same code with the
 # `strict` shard (`compat/strict` in the compiler's repository), which
-# declares the two annotations at this path.
+# declares the three annotations at this path.

@@ -2,7 +2,7 @@
 # without strict files.
 #
 # A compiler with strict files reads `require "strict"`, the first line
-# `# crystal: strict` and the two annotations itself. Every other compiler
+# `# crystal: strict` and the three annotations itself. Every other compiler
 # needs only the names to exist, and this file declares them:
 #
 # ```
@@ -23,4 +23,8 @@ end
 
 # Types a method once, against the types its signature declares.
 annotation TypeOnce
+end
+
+# Declares the bound of a type parameter of a generic class (`@[TypeBound(Model, Record)]`).
+annotation TypeBound
 end

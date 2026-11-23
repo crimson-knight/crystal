@@ -183,6 +183,8 @@ module Crystal::InferReuse
           io << node
         when Path
           io << node.names.join("::")
+        when ErasedTypeVar
+          io << node.owner << '.' << node.name
         end
       end
 
