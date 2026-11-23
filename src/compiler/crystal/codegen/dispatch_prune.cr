@@ -114,7 +114,14 @@ module Crystal
       def run(node : ASTNode) : self
         started_at = Time.instant
         mark_created(@program.string)
+        # Code generation itself types and runs `raise "..."` (a closure
+        # passed to C) and, with an old prelude, `raise TypeCastError.new`.
+        mark_created(@program.exception)
+        @program.types["TypeCastError"]?.try { |type| mark_created(type) }
         node.accept self
+        # Code generation runs the `macro finished` expansions after the
+        # main program.
+        @program.process_finished_hooks(self)
         loop do
           @stats.rounds += 1
           drain_pending_defs
