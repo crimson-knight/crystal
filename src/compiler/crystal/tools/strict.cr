@@ -421,8 +421,12 @@ module Crystal
         end
         recorder = StrictToolRecorder.new(@file_by_name.keys.to_set)
         sources = @entries.map { |entry| Compiler::Source.new(entry, File.read(entry)) }
-        compiler.compile_configure_program(sources, "strict-tool") do |program|
+        result = compiler.compile_configure_program(sources, "strict-tool") do |program|
           program.strict_tool_recorder = recorder
+        end
+        required = result.program.requires
+        @files.each do |file|
+          file.in_program = true if required.includes?(file.filename) || @entries.includes?(file.filename)
         end
         @last_warnings = compiler.warnings.infos.count(&.includes?("strict file:"))
         @last_typed_once = recorder.declarations.count(&.a_def.type_once?)

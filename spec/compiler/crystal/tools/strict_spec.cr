@@ -350,4 +350,15 @@ describe "crystal tool strict" do
 
     converted.should eq("# crystal: strict\ndef twice(value : Int32) : Int32\n  value\nend\n\ntwice(1)\n")
   end
+  it "adds the marker to a file without methods" do
+    _, converted, report = run_strict_tool(<<-CRYSTAL)
+      class Empty
+      end
+
+      Empty
+      CRYSTAL
+
+    converted.should eq("# crystal: strict\nclass Empty\nend\n\nEmpty\n")
+    report.should contain("0 methods typed")
+  end
 end
