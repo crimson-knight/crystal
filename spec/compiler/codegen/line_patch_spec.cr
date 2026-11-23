@@ -344,7 +344,7 @@ describe "Code gen: patching the lines of modules whose source only moved" do
 
     it "compiles the main module when a position of its code is on an edited line" do
       with_line_patch_program("line_patch_main_edited") do |line_patch_program|
-        line_patch_program.edit("program.cr", "puts Bystander.new.answer\n", "\nputs Bystander.new.answer &+ 1\n")
+        line_patch_program.edit("program.cr", "puts Bystander.new.answer", "\nputs Bystander.new.answer &+ 1")
         stats, _ = line_patch_program.build
 
         stats.main_module_outcome.to_s.should start_with("compiled: a position on an edited line")
