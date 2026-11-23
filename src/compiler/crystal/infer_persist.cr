@@ -43,7 +43,7 @@ module Crystal::InferPersist
   # generation fills in, which the loading process makes again when it needs
   # it (lazy getters on `Program`), and the macro text store, whose texts
   # move into their virtual files.
-  DROPPED = %w(Crystal::MacroSourceStore Crystal::LLVMTyper Crystal::LLVMId Crystal::StableNumbering)
+  DROPPED = %w(Crystal::MacroSourceStore Crystal::LLVMTyper Crystal::LLVMId Crystal::StableNumbering LLVM::TargetMachine)
 
   class Error < Crystal::Error
   end

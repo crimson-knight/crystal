@@ -76,7 +76,9 @@ module Crystal::InferPersist
         Location.restore(roots.location_tables)
         {"loaded", roots, (Time.instant - started).total_seconds, bytesize}
       end
-    rescue ex : JSON::ParseException | IO::Error | Error | TypeCastError | IndexError
+    rescue ex
+      # A damaged or truncated file can fail in any way while it is decoded;
+      # every failure means the same thing: type the program fresh.
       {"the snapshot could not be read: #{ex.message}", nil, 0.0, 0_i64}
     end
 
@@ -124,7 +126,13 @@ module Crystal::InferPersist
 
       if ENV[SAVE_MODE_VARIABLE]? == "sync"
         started = Time.instant
-        write_file(temporary_filename, roots)
+        begin
+          write_file(temporary_filename, roots)
+        rescue ex
+          STDERR.puts "Warning: the type-inference snapshot was not written: #{ex.message}"
+          File.delete?(temporary_filename)
+          @temporary_filename = nil
+        end
         @save_seconds = (Time.instant - started).total_seconds
         return
       end

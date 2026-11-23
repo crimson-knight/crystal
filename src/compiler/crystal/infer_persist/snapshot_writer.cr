@@ -28,6 +28,8 @@ module Crystal::InferPersist
     @dropped_type_ids = Set(Int32).new
     @list_of_class_indexes = [] of Int32
     getter object_count = 0
+    # What the snapshot could not hold; the write fails when any is found.
+    getter list_of_problems = Set(String).new
     getter string_count = 0
 
     def initialize(@roots : Roots, @compiler : Compiler)
@@ -44,6 +46,9 @@ module Crystal::InferPersist
         discover_object(pointer)
       end
       @addresses.freeze
+      unless @list_of_problems.empty?
+        raise Error.new("snapshot: can't persist #{@list_of_problems.join(", ")}")
+      end
 
       each_object { |object| @list_of_class_indexes << class_index(object) }
       @object_count = @list_of_class_indexes.size
@@ -78,6 +83,9 @@ module Crystal::InferPersist
       end
       write_ref(@roots)
       output.flush
+      unless @list_of_problems.empty?
+        raise Error.new("snapshot: can't persist #{@list_of_problems.join(", ")}")
+      end
     end
 
     protected def register_class(type_id : Int32, index : Int32, hash : Bool) : Nil
@@ -124,7 +132,8 @@ module Crystal::InferPersist
       return false if external_code(object)
       return false if @dropped_type_ids.includes?(object.crystal_type_id)
       if class_index(Pointer(Void).new(object.object_id)) < 0
-        raise Error.new("snapshot: can't persist an object of #{object.class}")
+        @list_of_problems << "an object of #{object.class}" unless @list_of_problems.size > 50
+        return false
       end
       address = object.object_id
       if AddressSet.aligned?(address)
@@ -363,7 +372,7 @@ module Crystal::InferPersist
         {% end %}
       {% elsif T < Proc || T.stringify.starts_with?("Pointer(") || T.stringify.starts_with?("LLVM::") || T.stringify.starts_with?("LibLLVM::") || T.stringify.starts_with?("Atomic(") %}
         {% if T < Proc %}
-          raise Error.new("snapshot: can't persist a proc (#{ {{T.stringify}} })")
+          @list_of_problems << "a proc (#{ {{T.stringify}} })" unless @list_of_problems.size > 50
         {% end %}
         # Handles to LLVM or memory: never valid in another process; read as zero.
       {% elsif T < Struct %}

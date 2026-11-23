@@ -191,9 +191,9 @@ module Crystal
 
     def owned_bytes(value : SmallNodeList) : Int64
       case allocation = value.census_allocation
-      when Array(ASTNode) then owned_bytes(allocation)
+      when Array(ASTNode)          then owned_bytes(allocation)
       when SmallNodeList::NodePair then gc_bytes(allocation.as(Void*))
-      else 0_i64
+      else                              0_i64
       end
     end
 

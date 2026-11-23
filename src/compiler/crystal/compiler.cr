@@ -384,6 +384,9 @@ module Crystal
     # (`InferPersist`); `nil` turns snapshots off for this compiler.
     property infer_persist_argv : Array(String)? = nil
 
+    # The snapshot session of the build running now, if any.
+    @infer_persist_session : InferPersist::Session? = nil
+
     # Whether this build reads and writes a type-inference snapshot in its
     # cache folder (`InferPersist`).
     def persists_type_inference? : Bool
@@ -470,6 +473,7 @@ module Crystal
 
       unless compilation_skipped
         persist = persists_type_inference? ? InferPersist::Session.for(self, CacheDir.instance.directory_for(source)) : nil
+        @infer_persist_session = persist
         if persist && (loaded = persist.load(program))
           program, node = loaded
           @program = program
@@ -1593,6 +1597,13 @@ module Crystal
         )
         handoff_filename = File.join(output_dir, "object-stage-handoff.json")
         File.write(handoff_filename, handoff.to_json)
+
+        # The new image does not come back here: the type-inference snapshot,
+        # whose program typed without errors, goes in place now.
+        if session = @infer_persist_session
+          @infer_persist_session = nil
+          session.finish(true)
+        end
 
         # The new image inherits the locked file, so the build stays locked.
         build_lock.close_on_exec = false
