@@ -393,6 +393,9 @@ module Crystal::InferReuse
         unless new_output == output
           raise Refusal.new("a macro that listed methods (#{place}) writes other code with the edit")
         end
+        # The next edit compares against the lists this build would have read.
+        replay = MethodListReplay.new(expansion.list_of_reads, affected_added, affected_removed)
+        expansion.list_of_reads.map! { |read| replay.edited(read) }
         @replayed_expansion_count += 1
       end
     end

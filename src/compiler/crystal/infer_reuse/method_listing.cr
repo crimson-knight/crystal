@@ -92,12 +92,21 @@ module Crystal::InferReuse
     end
 
     def methods(type : Type, kind : String) : Array(Def)
-      read = next_read(type, kind)
+      edited(next_read(type, kind)).list_of_defs
+    end
+
+    # *read* as the original build would have made it with the edit.
+    def edited(read : MethodListRead) : MethodListRead
+      if read.kind == "has_method?"
+        name = read.name
+        added = @list_of_added.any? { |added_def| added_def.name == name && MethodListReplay.lists?(read.type, "all_methods", added_def.owner) }
+        return added ? MethodListRead.new(read.type, read.kind, read.list_of_defs, name, true) : read
+      end
       list_of_defs = read.list_of_defs.reject { |a_def| @list_of_removed.any?(&.same?(a_def)) }
       @list_of_added.each do |added_def|
-        list_of_defs << added_def if MethodListReplay.lists?(type, kind, added_def.owner)
+        list_of_defs << added_def if MethodListReplay.lists?(read.type, read.kind, added_def.owner)
       end
-      list_of_defs
+      MethodListRead.new(read.type, read.kind, list_of_defs, read.name, read.answer)
     end
 
     def has_method?(type : Type, name : String) : Bool
