@@ -3,6 +3,7 @@ require "file_utils"
 require "colorize"
 require "crystal/digest/md5"
 require "./incremental_cache"
+require "./c_allocator"
 require "./codegen/cached_object_record"
 require "./tools/require_graph_discoverer"
 {% if flag?(:msvc) %}
@@ -13,15 +14,6 @@ require "./tools/require_graph_discoverer"
 {% end %}
 
 module Crystal
-  {% if flag?(:darwin) %}
-    # :nodoc:
-    lib LibDarwinMalloc
-      # With a null zone and a goal of 0, every malloc zone returns as much
-      # free memory as it can. Returns the number of bytes released.
-      fun malloc_zone_pressure_relief(zone : Void*, goal : LibC::SizeT) : LibC::SizeT
-    end
-  {% end %}
-
   # This exception describes an error in the compiler.
   # It usually leads to an unsuccessful process exit.
   class CompilerError < Exception
@@ -1439,9 +1431,7 @@ module Crystal
     # allocates with `malloc`, and the allocator otherwise keeps most of what
     # a disposed context frees for later allocations.
     private def return_free_malloc_memory_to_os : Nil
-      {% if flag?(:darwin) %}
-        LibDarwinMalloc.malloc_zone_pressure_relief(nil, 0)
-      {% end %}
+      CAllocator.return_free_memory
     end
 
     # The linker to run from *output_dir* to link *object_names* into

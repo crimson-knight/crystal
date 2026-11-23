@@ -4,18 +4,6 @@ require "./codegen"
   lib LibC
     fun system(command : UInt8*) : Int
   end
-
-  # :nodoc:
-  lib LibDarwinMallocStatistics
-    struct MallocStatistics
-      blocks_in_use : UInt32
-      size_in_use : LibC::SizeT
-      max_size_in_use : LibC::SizeT
-      size_allocated : LibC::SizeT
-    end
-
-    fun malloc_zone_statistics(zone : Void*, stats : MallocStatistics*)
-  end
 {% end %}
 
 module Crystal
@@ -46,23 +34,11 @@ module Crystal
     # The bytes the C allocator has handed out and not got back. LLVM
     # allocates there.
     def self.malloc_bytes_in_use : Int64
-      {% if flag?(:darwin) %}
-        stats = uninitialized LibDarwinMallocStatistics::MallocStatistics
-        LibDarwinMallocStatistics.malloc_zone_statistics(nil, pointerof(stats))
-        stats.size_in_use.to_i64
-      {% else %}
-        0_i64
-      {% end %}
+      CAllocator.bytes_in_use
     end
 
     def self.malloc_bytes_allocated : Int64
-      {% if flag?(:darwin) %}
-        stats = uninitialized LibDarwinMallocStatistics::MallocStatistics
-        LibDarwinMallocStatistics.malloc_zone_statistics(nil, pointerof(stats))
-        stats.size_allocated.to_i64
-      {% else %}
-        0_i64
-      {% end %}
+      CAllocator.bytes_allocated
     end
 
     # With `CRYSTAL_PEAK_TRACE=1`, IR generation prints the collector's
@@ -168,9 +144,7 @@ module Crystal
           LibGC.set_force_unmap_on_gcollect(1)
           3.times { GC.collect }
           LibGC.set_force_unmap_on_gcollect(0)
-          {% if flag?(:darwin) %}
-            LibDarwinMalloc.malloc_zone_pressure_relief(nil, 0)
-          {% end %}
+          CAllocator.return_free_memory
           PeakProbe.record(io, "after unmapping free heap blocks")
           report_live_nodes_with_edges(io)
         {% end %}
