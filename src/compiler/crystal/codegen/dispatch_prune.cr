@@ -467,8 +467,23 @@ module Crystal
       private def walk_def(a_def : Def) : Nil
         old_def = @current_def
         @current_def = a_def
+        relabel_type_once_types(a_def) if a_def.type_once?
         a_def.body.accept self
         @current_def = old_def
+      end
+
+      # A def typed once for several owners (`@[TypeOnce]`) runs with `self`
+      # and arguments of other types than it was typed with: a caller
+      # passes its own instance as the bound type, so values typed exactly
+      # as the def's owner or argument types exist without being created
+      # as such. Those types count as created.
+      private def relabel_type_once_types(a_def : Def) : Nil
+        old_origin = @origin
+        @origin = a_def
+        a_def.owner?.try { |owner| conjure(owner) }
+        a_def.args.each { |arg| arg.type?.try { |arg_type| conjure(arg_type) } }
+        a_def.type?.try { |return_type| conjure(return_type) }
+        @origin = old_origin
       end
 
       private def walk_const(const : Const) : Nil
