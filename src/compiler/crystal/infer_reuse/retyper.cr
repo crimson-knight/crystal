@@ -705,6 +705,12 @@ module Crystal::InferReuse
     private def retype(program_def : Def, container : DefInstanceContainer, key : DefInstanceKey, old_typed_def : Def) : Nil
       raise Refusal.new("method '#{program_def.name}' has an instance with named arguments") if key.named_args
       raise Refusal.new("method '#{program_def.name}' has an instance typed with a block") if key.block_type
+      if erased_instance?(old_typed_def.owner)
+        # One copy serves every instance of the generic class, as checked by
+        # scans of the bodies it reaches (`GenericTypeOnce::Scan`); a new body
+        # may no longer be right for every instance.
+        raise Refusal.new("method '#{program_def.name}' is typed once for every instance of #{old_typed_def.owner}")
+      end
 
       list_of_callers = [] of Call
       old_typed_def.each_observer do |observer|
@@ -761,6 +767,13 @@ module Crystal::InferReuse
 
       list_of_callers.each(&.retarget(old_typed_def, typed_def))
       program.infer_reuse_new_typed_defs.try &.<< typed_def
+    end
+
+    # Whether *type* is an erased instance (or its metaclass) that methods
+    # typed once for every instance of a generic class are typed against.
+    private def erased_instance?(type : Type) : Bool
+      type = type.instance_type if type.metaclass?
+      type.is_a?(GenericClassInstanceType) && program.erased_type_vars_by_instance.has_key?(type.object_id)
     end
 
     # New types with instance variable initializers get the cleanup every
