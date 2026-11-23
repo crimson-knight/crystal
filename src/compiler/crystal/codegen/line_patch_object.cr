@@ -75,6 +75,10 @@ module Crystal::LinePatch
     # the addend of a relocation there (ELF), or the stored value.
     abstract def relocated_u32(section : Section, offset : Int32) : UInt32
 
+    # Writes *value* where `relocated_u32` reads it, in *bytes* (a copy of
+    # this file with the same layout).
+    abstract def write_relocated_u32(bytes : Bytes, section : Section, offset : Int32, value : UInt32) : Nil
+
     # A new file with *section*'s contents replaced by *new_contents*, and the
     # relocations of the section moved by *translate_offset* (an offset in
     # the old contents to the one in the new contents).
@@ -186,6 +190,10 @@ module Crystal::LinePatch
     # Mach-O object files keep DWARF offsets between sections unrelocated.
     def relocated_u32(section : Section, offset : Int32) : UInt32
       u32(section.file_offset + offset)
+    end
+
+    def write_relocated_u32(bytes : Bytes, section : Section, offset : Int32, value : UInt32) : Nil
+      ObjectFile.put_u32(bytes, section.file_offset + offset, value)
     end
 
     def with_section_contents(section : Section, new_contents : Bytes,
@@ -390,6 +398,19 @@ module Crystal::LinePatch
       else
         u32(section.file_offset + offset)
       end
+    end
+
+    def write_relocated_u32(bytes : Bytes, section : Section, offset : Int32, value : UInt32) : Nil
+      relocation_section_indexes(section.index).each do |relocation_index|
+        relocation_section = @list_of_sections[relocation_index]
+        (relocation_section.size // 24).times do |entry|
+          entry_offset = relocation_section.file_offset + entry * 24
+          next unless u64(entry_offset).to_i64 == offset
+          ObjectFile.put_u64(bytes, entry_offset + 16, value.to_u64)
+          return
+        end
+      end
+      ObjectFile.put_u32(bytes, section.file_offset + offset, value)
     end
 
     def with_section_contents(section : Section, new_contents : Bytes,

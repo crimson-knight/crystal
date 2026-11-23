@@ -102,10 +102,13 @@ private class LinePatchProgram
     index + 1
   end
 
-  def build(*, verify : Bool = false, line_patch : Bool = true) : {Crystal::IrSkip::Stats, Crystal::Compiler}
+  def build(*, verify : Bool = false, line_patch : Bool = true, resident_modules : Int32 = 0) : {Crystal::IrSkip::Stats, Crystal::Compiler}
     compiler = Crystal::Compiler.new
     compiler.incremental = true
     compiler.n_threads = 2
+    # With a limit, IR generation spills modules to disk in parts, and the
+    # object of a module holds one line table per part.
+    compiler.resident_modules = resident_modules
     compiler.line_patch = line_patch
     compiler.dsymutil = true
     ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
@@ -237,6 +240,31 @@ describe "Code gen: patching the lines of modules whose source only moved" do
       verification = compiler.last_line_patch_verification || raise "nothing was verified"
       verification[1].should be_empty
       line_patch_program.output.should eq(EXPECTED_OUTPUT)
+    end
+  end
+
+  it "patches an object built from parts, each with a line table of its own" do
+    with_tempfile("line_patch_parts") do |directory|
+      line_patch_program = LinePatchProgram.new(directory)
+      line_patch_program.build(resident_modules: 1)
+      line_patch_program.output.should eq(EXPECTED_OUTPUT)
+      Dir.glob(File.join(line_patch_program.cache_directory, "M-odel*.part1.bc")).should_not be_empty
+
+      # Sixty lines: every row of the parts after the first moves by more
+      # than a special opcode holds, and the first part's table grows.
+      line_patch_program.edit("model.cr", "# Comment line one.\n", "# Comment line one.\n" + "#\n" * 60)
+      stats, compiler = line_patch_program.build(verify: true, resident_modules: 1)
+
+      patched?(stats, "Model").should be_true
+      stats.patch_refusals_by_cause.should be_empty
+      verification = compiler.last_line_patch_verification || raise "nothing was verified"
+      verification[1].should be_empty
+      line_patch_program.output.should eq(EXPECTED_OUTPUT)
+
+      line_patch_program.edit("model.cr", "#\n" * 30, "")
+      stats, _ = line_patch_program.build(resident_modules: 1)
+      patched?(stats, "Model").should be_true
+      expect_exact_backtrace(line_patch_program)
     end
   end
 

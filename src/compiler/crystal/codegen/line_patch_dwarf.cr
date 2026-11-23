@@ -61,6 +61,7 @@ module Crystal::LinePatch
       if info_section && !rewriter.list_of_tables.empty?
         info_contents = bytes[info_section.file_offset, info_section.size]
         changed_attribute_count = patch_info(object, info_section, info_contents, rewriter.list_of_tables)
+        changed_attribute_count += move_line_table_offsets(object, info_section, bytes, rewriter.new_offsets_by_old_offset)
       end
       if rewriter.changed_row_count > 0
         patched_object = ObjectFile.parse(bytes)
@@ -125,6 +126,53 @@ module Crystal::LinePatch
         position += 1
       end
       position
+    end
+
+    # Points the `DW_AT_stmt_list` of each unit at the new place of its line
+    # table, when an earlier table changed length. Returns how many moved.
+    private def move_line_table_offsets(object : ObjectFile, info_section : Section, bytes : Bytes,
+                                        new_offsets_by_old_offset : Hash(Int64, Int64)) : Int32
+      return 0 if new_offsets_by_old_offset.all? { |old_offset, new_offset| old_offset == new_offset }
+      contents = bytes[info_section.file_offset, info_section.size]
+      abbrev_section = object.section?(SectionKind::DebugAbbrev) || raise Refusal.new("debug info without abbreviations")
+      abbrev_contents = object.contents(abbrev_section)
+      moved_count = 0
+      unit_offset = 0
+      while unit_offset < contents.size
+        cursor = Cursor.new(contents, unit_offset)
+        unit_length = cursor.u32
+        unit_end = unit_offset + 4 + unit_length.to_i32
+        version = cursor.u16
+        if version >= 5
+          cursor.u8
+          address_size = cursor.u8
+          abbrev_offset = object.relocated_u32(info_section, cursor.position)
+          cursor.u32
+        else
+          abbrev_offset = object.relocated_u32(info_section, cursor.position)
+          cursor.u32
+          address_size = cursor.u8
+        end
+        abbreviations = Abbreviations.parse(abbrev_contents, abbrev_offset.to_i32)
+        # The unit's own DIE comes first and holds the attribute.
+        code = cursor.uleb
+        abbreviation = abbreviations[code]? || raise Refusal.new("an unknown abbreviation code #{code}")
+        abbreviation.list_of_attributes.each do |(attribute, form, _)|
+          if attribute == DW_AT_STMT_LIST
+            raise Refusal.new("a line table offset in form 0x#{form.to_s(16)}") unless form == 0x17_u64 || form == 0x06_u64
+            old_offset = object.relocated_u32(info_section, cursor.position).to_i64
+            new_offset = new_offsets_by_old_offset[old_offset]? || raise Refusal.new("a unit whose line table was not found")
+            if new_offset != old_offset
+              object.write_relocated_u32(bytes, info_section, cursor.position, new_offset.to_u32)
+              moved_count += 1
+            end
+            break
+          end
+          skip_form(cursor, form, address_size, version)
+        end
+        unit_offset = unit_end
+      end
+      moved_count
     end
 
     # Rewrites `DW_AT_decl_line` and `DW_AT_call_line` in place. Returns
@@ -291,6 +339,8 @@ module Crystal::LinePatch
     class LineProgramRewriter
       getter list_of_tables = [] of {Int64, LineTable}
       getter changed_row_count = 0
+      # Where each line table starts in the new section, by its old offset.
+      getter new_offsets_by_old_offset = {} of Int64 => Int64
 
       # Runs of bytes copied unchanged: old offset, new offset, size.
       @list_of_copied_runs = [] of {Int64, Int64, Int64}
@@ -364,15 +414,13 @@ module Crystal::LinePatch
         @list_of_tables << {unit_offset.to_i64, table}
 
         unit_output_start = @output.pos
+        @new_offsets_by_old_offset[unit_offset.to_i64] = unit_output_start.to_i64
         # The header is copied; its length field is written again at the end.
         copy(unit_offset, program_start)
         encoding = Encoding.new(line_base, line_range, opcode_base.to_i64)
         rewrite_program(Cursor.new(@contents, program_start), unit_end, encoding, list_of_standard_lengths, table, address_size)
         new_unit_length = @output.pos - unit_output_start - 4
         if new_unit_length != unit_length
-          if unit_offset > 0 || unit_end < @contents.size
-            raise Refusal.new("several line tables, one of which changes length")
-          end
           saved_position = @output.pos
           @output.pos = unit_output_start
           @output.write_bytes(new_unit_length.to_u32, IO::ByteFormat::LittleEndian)
