@@ -361,4 +361,19 @@ describe "crystal tool strict" do
     converted.should eq("# crystal: strict\nclass Empty\nend\n\nEmpty\n")
     report.should contain("0 methods typed")
   end
+  it "leaves out a type only the program's entry defines" do
+    with_tempfile("strict_tool_library") do |directory|
+      library = File.join(directory, "library", "greeter.cr")
+      entry = File.join(directory, "app", "main.cr")
+      Dir.mkdir_p(File.dirname(library))
+      Dir.mkdir_p(File.dirname(entry))
+      File.write(library, "def greet(model)\n  model\nend\n")
+      File.write(entry, "require \"../library/greeter\"\n\nclass Model\nend\n\ngreet(Model.new)\n")
+
+      output = IO::Memory.new
+      Crystal::StrictTool::Command.new(["--prelude", "empty", "--entry", entry, library], output, IO::Memory.new).run.should eq(0)
+      File.read(library).should eq("# crystal: strict\ndef greet(model)\n  model\nend\n")
+      output.to_s.should contain("greet: parameter 'model' is Model, a type defined outside these files and the libraries they use")
+    end
+  end
 end

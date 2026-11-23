@@ -8,7 +8,10 @@ module Crystal::StrictTool
     # Defs a later definition with the same signature replaced.
     @replaced_defs = Set(Def).new.compare_by_identity
 
-    def initialize(@recorder : StrictToolRecorder, @unions : Bool)
+    # *visible_roots* are the directories whose types a converted file may name:
+    # the folder that holds the converted files and each entry of the
+    # compiler's path (the standard library and the project's shards).
+    def initialize(@recorder : StrictToolRecorder, @unions : Bool, @visible_roots : Array(String) = [] of String)
       @recorder.declarations.each do |declaration|
         if replaced = declaration.replaced
           @replaced_defs << replaced
@@ -270,12 +273,19 @@ module Crystal::StrictTool
       return Reason.new("no caller gives #{label} a type") if unique.empty?
       if unique.size == 1
         text = type_text(unique.first, scope)
-        return text || Reason.new("#{label} is #{unique.first}, which can't be written in the source")
+        return text if text
+        unless visible?(unique.first)
+          return Reason.new("#{label} is #{unique.first}, a type defined outside these files and the libraries they use")
+        end
+        return Reason.new("#{label} is #{unique.first}, which can't be written in the source")
       end
 
       merged = scope.program.type_merge(unique.map(&.as(Type?)))
       merged_text = merged.try { |type| type_text(type, scope) }
       unless merged_text
+        if merged && !visible?(merged)
+          return Reason.new("#{label} differs by caller (#{type_list(unique)}), types defined outside these files and the libraries they use")
+        end
         return Reason.new("#{label} differs by caller (#{type_list(unique)}) and the union can't be written in the source")
       end
       plan.unions << "#{label}: #{merged_text}"
@@ -339,9 +349,44 @@ module Crystal::StrictTool
         notation = proc_notation_text(type, scope)
         return notation ? "Proc(#{proc_type_args(type, scope)})" : nil
       end
+      return nil unless visible?(type)
       node = TypeToRestriction.new(scope).convert(type)
       return nil unless node
       RestrictionText.new(scope).render(node)
+    end
+
+    # Whether every type *type* names is defined in a file the converted files
+    # can see. A type the program's entry defines (an app's models, seen from a
+    # library) is not written into the library, even when every caller agrees.
+    def visible?(type : Type) : Bool
+      return true if @visible_roots.empty?
+      case type
+      when UnionType
+        type.union_types.all? { |member| visible?(member) }
+      when VirtualType
+        visible?(type.base_type)
+      when VirtualMetaclassType, MetaclassType, GenericClassInstanceMetaclassType, GenericModuleInstanceMetaclassType
+        visible?(type.instance_type)
+      when ProcInstanceType
+        type.arg_types.all? { |input| visible?(input) } && visible?(type.return_type)
+      when TupleInstanceType
+        type.tuple_types.all? { |member| visible?(member) }
+      when NamedTupleInstanceType
+        type.entries.all? { |entry| visible?(entry.type) }
+      when GenericInstanceType
+        visible_definition?(type.generic_type) && type.type_vars.values.all? { |type_var| (var_type = type_var.type?).nil? || visible?(var_type) }
+      else
+        visible_definition?(type)
+      end
+    end
+
+    private def visible_definition?(type : Type) : Bool
+      locations = type.locations
+      return true if locations.nil? || locations.empty?
+      locations.any? do |location|
+        filename = location.original_filename || location.filename
+        filename.is_a?(String) && @visible_roots.any? { |root| File.expand_path(filename).starts_with?(root) }
+      end
     end
 
     private def proc_type_args(type : ProcInstanceType, scope : Type) : String?

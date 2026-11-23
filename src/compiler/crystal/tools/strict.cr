@@ -490,9 +490,26 @@ module Crystal
         end
       end
 
+      # The folders whose types a converted file may name (see `Planner#visible?`).
+      private def visible_roots : Array(String)
+        @visible_roots ||= begin
+          common = @files.map { |file| File.dirname(file.filename) }.reduce do |first, second|
+            while !(second + "/").starts_with?(first + "/") && first != "/"
+              first = File.dirname(first)
+            end
+            first
+          end
+          roots = [File.join(common, "")]
+          CrystalPath.default_paths.each { |path| roots << File.join(File.expand_path(path), "") }
+          roots
+        end
+      end
+
+      @visible_roots : Array(String)?
+
       # Plans every declared def of the converted files from *recorder*.
       private def plan_round(recorder : StrictToolRecorder) : Nil
-        planner = Planner.new(recorder, unions: @unions)
+        planner = Planner.new(recorder, unions: @unions, visible_roots: visible_roots)
         @files.each(&.plans.clear)
         recorder.declarations.each do |declaration|
           location = declaration.a_def.location || next
