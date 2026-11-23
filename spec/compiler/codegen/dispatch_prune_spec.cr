@@ -12,8 +12,10 @@ private GREETERS = <<-CRYSTAL
   class Plain
     include Greeter
 
+    # Not a literal, so the def gets a function of its own.
     def greet : Int32
-      1
+      value = 1
+      value
     end
   end
 
@@ -103,7 +105,8 @@ describe "Code gen: dispatch pruning" do
         include Greeter
 
         def greet : Int32
-          10
+          value = 10
+          value
         end
       end
 
