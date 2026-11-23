@@ -252,6 +252,69 @@ describe "Semantic: typed once for every instance of a generic class" do
       ), "write the check is_a?(T) without T"
   end
 
+it "gives each caller its own instance back from a method that returns self" do
+  code = BOX + %(
+    class Box(T)
+      def bump : Nil
+        @count = @count + 1
+      end
+
+      @[TypeOnce]
+      def step! : self
+        bump
+        self
+      end
+
+      @[TypeOnce]
+      def twice! : self
+        step!.step!
+      end
+    end
+
+    Box(First).new(1).twice!
+    Box(Second).new(2).twice!
+    )
+  program = semantic(code, inject_primitives: true).program
+  typed_copies(program, "Box", "twice!").should eq(1)
+  typed_copies(program, "Box", "step!").should eq(1)
+  assert_type(code, inject_primitives: true) { generic_class("Box", types["Second"]) }
+end
+
+it "keeps one copy per instance when a method that returns self passes its result on" do
+  assert_warning BOX + %(
+    def take(value) : Int32
+      1
+    end
+
+    class Box(T)
+      @[TypeOnce]
+      def step! : self
+        self
+      end
+
+      @[TypeOnce]
+      def hand : Int32
+        take(step!)
+      end
+    end
+
+    Box(First).new(1).hand
+    ), "use the result of 'step!' (it is `self`) only to call methods on, or drop it"
+end
+
+it "keeps one copy per instance when a method that declares self returns something else" do
+  assert_warning BOX + %(
+    class Box(T)
+      @[TypeOnce]
+      def other! : self
+        Box(T).new(1)
+      end
+    end
+
+    Box(First).new(1).other!
+    ), "return `self` from every exit of 'other!'"
+end
+
   it "types a class method once for every instance" do
     copies(BOX + %(
       class Box(T)

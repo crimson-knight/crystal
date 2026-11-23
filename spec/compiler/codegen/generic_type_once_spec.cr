@@ -158,6 +158,26 @@ describe "Code gen: typed once for every instance of a generic class" do
       )).to_string.should eq("posts=1 users=2 admins=x")
   end
 
+it "returns the receiver from a method that returns self, typed as the caller's instance" do
+  run(MODELS + %(
+    class Query(M)
+      def grow : Nil
+        @limit = @limit + 1
+      end
+
+      @[TypeOnce]
+      def grow! : self
+        grow
+        self
+      end
+    end
+
+    post = Query(Post).new(1).grow!.grow!
+    admin = Query(Admin).new(10).grow!
+    post.sql("p") + " " + admin.sql("a") + " " + typeof(post).name
+    )).to_string.should eq("p posts LIMIT 3 a admins LIMIT 11 Query(Post)")
+end
+
   it "runs a class method typed once for every instance" do
     run(MODELS + %(
       class Query(M)
