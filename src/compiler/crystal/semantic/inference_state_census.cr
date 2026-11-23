@@ -118,9 +118,10 @@ module Crystal
       end
 
       stats = @program.inference_release_stats
-      io.printf("infer    release: visitors released %d, keeping their vars %d (with %d point vars); point vars spliced out %d, doing more than repeating one node %d, left bound %d; after vars restored %d\n",
+      io.printf("infer    release: visitors released %d, keeping their vars %d (with %d point vars); point vars spliced out %d, doing more than repeating one node %d, left bound %d; after vars restored %d; local var lists dropped %d\n",
         stats.released_visitors, stats.visitors_keeping_vars, stats.point_vars_of_keeping_visitors,
-        stats.spliced_point_vars, stats.kept_point_vars, stats.point_vars_left_bound, stats.restored_after_vars)
+        stats.spliced_point_vars, stats.kept_point_vars, stats.point_vars_left_bound, stats.restored_after_vars,
+        stats.dropped_local_var_lists)
 
       visitor_count = 0
       block_visitors = 0_i64

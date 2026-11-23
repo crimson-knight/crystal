@@ -540,6 +540,14 @@ module Crystal
     def initialize(@name : String, @type : Type? = nil)
     end
 
+    # Forgets the local vars, for a variable that can no longer become
+    # closured. Returns whether there were any.
+    def drop_local_vars : Bool
+      return false unless @local_vars
+      @local_vars = nil
+      true
+    end
+
     # Is this var a wrapper that only repeats one other var? It is bound to
     # that var alone, nothing reads it, and it says the same as the wrapped
     # var about being nil when read.
