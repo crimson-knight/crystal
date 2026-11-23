@@ -1383,7 +1383,8 @@ module Crystal
 
       def visit(node : Cast | NilableCast) : Bool
         enter(node)
-        mix_code_location(node.location) if node.is_a?(Cast)
+        # Only a cast that can fail puts its position in a message.
+        mix_code_location(node.location) if node.is_a?(Cast) && !node.upcast?
         mix_type(node.obj.type?)
         to_type = node.to.type?
         mix_type(to_type)
