@@ -79,6 +79,7 @@ module Crystal
       property dispatch_calls = 0
       property dispatch_targets = 0
       property pruned_targets = 0
+      property dead_calls = 0
       property prunable_types = 0
       property created_types = 0
       property rounds = 0
@@ -131,7 +132,7 @@ module Crystal
           @list_of_waiting_branches = [] of {Call, Def}
           followed_any = false
           list_of_waiting.each do |(call, a_def)|
-            if branch_live?(call, a_def)
+            if waiting_live?(call, a_def)
               reach(a_def)
               followed_any = true
             else
@@ -140,7 +141,17 @@ module Crystal
           end
           break unless followed_any
         end
-        @stats.pruned_targets = @gave_up ? 0 : @list_of_waiting_branches.size
+        unless @gave_up
+          @list_of_waiting_branches.each do |(call, _a_def)|
+            count = 0
+            call.each_target_def { count += 1 }
+            if count > 1
+              @stats.pruned_targets += 1
+            else
+              @stats.dead_calls += 1
+            end
+          end
+        end
         @stats.reached_defs = @reached_defs.size
         @stats.created_types = @created.size
         @stats.seconds = (Time.instant - started_at).total_seconds
@@ -151,6 +162,37 @@ module Crystal
 
       # Whether code generation leaves the branch of *call* that goes to
       # *a_def* out: no value of a created type can select it.
+      # Whether code generation replaces *call*, a call with a single target
+      # def, by an "unreachable type" stop: its receiver is a class nothing
+      # creates, so no execution gets to it.
+      def prunes_call?(call : Call) : Bool
+        return false if @gave_up || @mode.off?
+
+        !single_target_live?(call, call.target_def)
+      end
+
+      # A call with a single target def runs only with a receiver of the
+      # def's owner. A value whose static type is an exact class has that
+      # class at run time, and one whose static type is virtual has one of
+      # its subclasses, so a call on a class nothing creates never runs:
+      # `if io.is_a?(OpenSSL::SSL::Socket::Server)` guards such calls in a
+      # plain HTTP server. Other owners (the program, modules, metaclasses,
+      # structs) and `super` always count as live.
+      private def single_target_live?(call : Call, a_def : Def) : Bool
+        return true if call.super?
+        owner = a_def.owner?
+        return true unless owner
+        return true unless owner.is_a?(VirtualType) || prunable?(owner)
+
+        live?(owner)
+      end
+
+      private def waiting_live?(call : Call, a_def : Def) : Bool
+        count = 0
+        call.each_target_def { count += 1 }
+        count > 1 ? branch_live?(call, a_def) : single_target_live?(call, a_def)
+      end
+
       def prunes?(call : Call, a_def : Def) : Bool
         return false if @gave_up || @mode.off?
 
@@ -177,8 +219,8 @@ module Crystal
 
       def print_stats : Nil
         stats = @stats
-        STDERR.printf("prune dispatch (%s): %d defs reached, %d dispatch calls with %d targets, %d targets left out, %d of %d class types created, %d rounds, %.2f s%s\n",
-          @mode.to_s.downcase, stats.reached_defs, stats.dispatch_calls, stats.dispatch_targets, stats.pruned_targets,
+        STDERR.printf("prune dispatch (%s): %d defs reached, %d dispatch calls with %d targets, %d targets left out, %d calls on classes never created, %d of %d class types created, %d rounds, %.2f s%s\n",
+          @mode.to_s.downcase, stats.reached_defs, stats.dispatch_calls, stats.dispatch_targets, stats.pruned_targets, stats.dead_calls,
           stats.created_types, stats.prunable_types, stats.rounds, stats.seconds,
           (cause = stats.gave_up_cause) ? ", gave up: #{cause}" : "")
       end
@@ -223,7 +265,10 @@ module Crystal
       def live?(type : Type) : Bool
         return true if @live_cache.includes?(type.object_id)
 
-        result = concrete_types_of(type).any? do |concrete|
+        list_of_concrete_types = concrete_types_of(type)
+        # A type with no concrete types (the program, a module nothing
+        # includes) is not something this analysis reasons about.
+        result = list_of_concrete_types.empty? || list_of_concrete_types.any? do |concrete|
           !prunable?(concrete) || @created.includes?(concrete.object_id)
         end
         @live_cache << type.object_id if result
@@ -499,7 +544,13 @@ module Crystal
             end
           end
         else
-          node.each_target_def { |a_def| reach(a_def) }
+          node.each_target_def do |a_def|
+            if @mode.off? || single_target_live?(node, a_def)
+              reach(a_def)
+            else
+              @list_of_waiting_branches << {node, a_def}
+            end
+          end
         end
 
         false
@@ -657,7 +708,7 @@ module Crystal
         analysis.print_stats
         # The same walk following every branch: the defs reached only
         # through types the program never creates are the difference.
-        DispatchPrune::Analysis.new(self, DispatchPrune::Mode::Off).run(node).print_stats
+        DispatchPrune::Analysis.new(self, DispatchPrune::Mode::Off).run(node).tap(&.count_prunable_types).print_stats
       end
       analysis
     end

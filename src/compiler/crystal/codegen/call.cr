@@ -16,6 +16,11 @@ class Crystal::CodeGenVisitor
       return false
     end
 
+    if (dispatch_prune = @dispatch_prune) && dispatch_prune.prunes_call?(node)
+      codegen_dead_call(node, dispatch_prune.mode)
+      return false
+    end
+
     owner = node.super? ? node.scope : node.target_def.owner
 
     call_args = prepare_call_args node, owner
@@ -453,7 +458,7 @@ class Crystal::CodeGenVisitor
           position_at_end current_def_label
 
           if left_out
-            codegen_unreachable_type(node, obj_type_id)
+            codegen_unreachable_type(node, type_id_to_class_name(obj_type_id))
             position_at_end next_def_label
             next
           end
@@ -478,7 +483,7 @@ class Crystal::CodeGenVisitor
         # a left out type arrives after all; a release build keeps the plain
         # `unreachable` that lets LLVM drop the last type check.
         if left_out_any && !@program.has_flag?("release")
-          codegen_unreachable_type(node, obj_type_id)
+          codegen_unreachable_type(node, type_id_to_class_name(obj_type_id))
         end
         unreachable
       end
@@ -487,17 +492,35 @@ class Crystal::CodeGenVisitor
     @needs_value = old_needs_value
   end
 
-  # Stops the program with an "unreachable type" error: a value whose type
-  # id is *obj_type_id* reached *node*, a dispatch compiled without a branch
-  # for its type (see `DispatchPrune`). Does nothing when the prelude has no
-  # `__crystal_raise_unreachable_type`.
-  private def codegen_unreachable_type(node : Call, obj_type_id : LLVM::Value) : Nil
+  # A call whose receiver is a class nothing creates (see
+  # `DispatchPrune::Analysis#prunes_call?`): its receiver is evaluated, and
+  # then the program stops, as no execution gets past it. A development
+  # build, and check mode in any build, stops with an "unreachable type"
+  # error; a release build ends in `unreachable`.
+  private def codegen_dead_call(node : Call, mode : DispatchPrune::Mode) : Nil
+    if obj = node.obj
+      request_value(obj)
+      return if @builder.end
+    end
+
+    @left_out_branch_count += 1
+    if mode.check? || !@program.has_flag?("release")
+      codegen_unreachable_type(node, build_string_constant(node.target_def.owner.to_s))
+    end
+    unreachable
+  end
+
+  # Stops the program with an "unreachable type" error: a value of the
+  # type named by the string *type_name* reached *node*, a call compiled
+  # without code for that type (see `DispatchPrune`). Does nothing when the
+  # prelude has no `__crystal_raise_unreachable_type`.
+  private def codegen_unreachable_type(node : Call, type_name : LLVM::Value) : Nil
     func = crystal_raise_unreachable_type_fun
     return unless func
 
     location = node.location
     call_args = [
-      cast_to_void_pointer(type_id_to_class_name(obj_type_id)),
+      cast_to_void_pointer(type_name),
       cast_to_void_pointer(build_string_constant(node.name)),
       location ? cast_to_void_pointer(build_string_constant(location.expanded_location.to_s)) : llvm_context.void_pointer.null,
     ] of LLVM::Value

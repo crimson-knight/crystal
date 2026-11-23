@@ -204,6 +204,22 @@ describe "Code gen: dispatch pruning" do
     run(code, flags: ["prune_dispatch"]).to_i.should eq(1)
   end
 
+  it "leaves out a call on a class nothing creates, behind is_a?" do
+    code = GREETERS + %(
+      list = Pointer(Greeter).malloc(1_u64)
+      list.value = Plain.new
+      greeter = list.value
+      if greeter.is_a?(NeverMade)
+        greeter.only_through_never_made
+      else
+        greeter.greet
+      end
+      )
+    generated_function_names(code).any?(&.includes?("only_through_never_made")).should be_false
+    analysis_of(code).stats.dead_calls.should eq(1)
+    run(code, flags: ["prune_dispatch"]).to_i.should eq(1)
+  end
+
   it "stops a development build with an unreachable type error when a left out type arrives" do
     code = %(
       require "prelude"
