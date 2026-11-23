@@ -626,6 +626,7 @@ module Crystal
     end
 
     def finish
+      generate_deferred_funs
       trace_peak("finish begins")
       clear_current_debug_location if @debug.line_numbers?
       codegen_return @main_ret_type
@@ -897,14 +898,21 @@ module Crystal
       false
     end
 
-    # The module the function of a proc literal is generated into. In a build
-    # that skips IR generation for unchanged modules (see `IrSkip`) it is the
-    # module of the function that holds the literal, so a module that gets no
-    # code keeps the functions of its literals in its cached object file;
-    # otherwise it is the main module.
+    # The module the function of a proc literal is generated into: the module
+    # of the function that holds the literal. A module that gets no code (see
+    # `IrSkip`) keeps the functions of its literals in its cached object
+    # file, and the literals' functions are spilled with their module: the
+    # main module is never spilled, and with every literal in it (13,000 in
+    # a Grant app of 300 models) it was the largest module in memory and the
+    # longest object file job. `CRYSTAL_PROC_LITERALS_IN_MAIN=1` puts them in
+    # the main module again, for measuring.
     private def proc_literal_module_info : ModuleInfo
-      ir_skip_session ? @module_info : @main_module_info
+      return @main_module_info if CodeGenVisitor.proc_literals_in_main? && !ir_skip_session
+
+      @module_info
     end
+
+    class_getter?(proc_literals_in_main : Bool) { ENV["CRYSTAL_PROC_LITERALS_IN_MAIN"]? == "1" }
 
     # If we don't care about a proc literal's return type then we mark the associated
     # def as returning void. This can't be done in the type inference phase because

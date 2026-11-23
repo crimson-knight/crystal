@@ -143,6 +143,9 @@ module Crystal
     # machine's memory. Set by `--object-memory-budget`.
     property codegen_worker_memory_budget_bytes : Int64?
 
+    # The memory budget this compilation was given (see `MemoryBudget`).
+    property memory_budget : MemoryBudget?
+
     # The worker processes that built the object files of the last compilation.
     @last_codegen_worker_pool : CodegenWorkerPool?
 
@@ -720,9 +723,13 @@ module Crystal
 
       remove_spill_files_of_ended_compilations(output_dir)
 
-      ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
+      module_spill = ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
         File.join(output_dir, "#{CompilationUnit.file_basename(type_name, optimization_mode)}.#{Process.pid}.part#{part_index}.new.bc")
       end
+      if (memory_budget = @memory_budget) && module_spill.malloc_relief_bytes == 0
+        module_spill.malloc_relief_bytes = memory_budget.malloc_relief_bytes
+      end
+      module_spill
     end
 
     # Loads the modules in the bitcode files of *list_of_filenames* into
@@ -1949,6 +1956,7 @@ module Crystal
            "#{module_spill.hash_time.total_seconds.round(1)} s hashing it, #{module_spill.write_time.total_seconds.round(1)} s putting it in files"
       puts " - modules made of several parts: #{module_spill.multi_part_module_count}"
       puts " - function signatures recorded: #{module_spill.recorded_signature_count}"
+      puts " - functions generated after the chain of calls that asked for them: #{module_spill.deferred_fun_count}"
       STDOUT.flush
     end
 

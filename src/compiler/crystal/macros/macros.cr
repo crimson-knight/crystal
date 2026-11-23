@@ -54,7 +54,7 @@ class Crystal::Program
 
   def parse_macro_source(generated_source, macro_expansion_pragmas, the_macro, node, vars, current_def = nil, inside_type = false, inside_exp = false, visibility : Visibility = :public, &)
     parser = @program.new_parser(generated_source, var_scopes: [vars.dup])
-    virtual_file = VirtualFile.new(the_macro, generated_source, node.location)
+    virtual_file = VirtualFile.new(the_macro, generated_source, node.location, @program.macro_source_store)
     @program.virtual_files << virtual_file
     VirtualFile.current_program_files = @program.virtual_files
     parser.filename = virtual_file
