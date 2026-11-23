@@ -75,12 +75,14 @@ module Compress::Zlib
       reader.read(slice).should eq(0)
     end
 
-    it "should raise buffer error on error (#6575)" do
+    it "should raise on a truncated stream (#6575)" do
       io = IO::Memory.new("x\x9C4\xC9\xD1\n@@\u0010\u0005\xD0\u007F\xB9ϻeEj~E\xD2`B\xAD\xA55H\x9B\u007F\xE7\xC5۩\x93\xA0\xA0pxo\xB0\xFFX7\x90\xCB\f\u0006P\xC2$\u001C\xB5\u0013\xD6v\u000E*\xF1d\u000F*\\^~\xDFj\xE4^@5FV\xB9\xF8\xB6[\u001C\xEC\xC2s\xB0\x99\xD3\n\xCD\xF3\xBC\u0000\u0000\u0000\xFF\xFF")
 
       reader = Reader.new(io)
 
-      expect_raises(Compress::Deflate::Error, "deflate: buffer error") do
+      # zlib calls a stream that ends before its final block a buffer error.
+      message = {% if flag?(:use_libz) %} "deflate: buffer error" {% else %} "deflate: Input ends inside" {% end %}
+      expect_raises(Compress::Deflate::Error, message) do
         reader.gets_to_end
       end
     end

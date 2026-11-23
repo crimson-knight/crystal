@@ -65,6 +65,73 @@ module Crystal::InferReuse
       @list_of_program_runs << run unless @list_of_program_runs.includes?(run)
     end
 
+    # Source lines whose line number macro output holds (`line_number`, a
+    # `__LINE__` default argument of a macro): a later build may not move them.
+    getter line_reads_by_filename = {} of String => Set(Int32)
+
+    # Names a `responds_to?` asked about: a method of that name added or
+    # removed can change what it answers.
+    getter responds_to_names = Set(String).new
+
+    # Types a macro asked `overrides?` about, by object id.
+    getter overrides_read_type_by_id = {} of UInt64 => Type
+
+    # Every macro expansion that read a list of methods (`methods`,
+    # `all_methods`, `has_method?`), to run again when a method is added or
+    # removed (see `MethodListReplay`).
+    getter list_of_method_list_expansions = [] of MethodListExpansion
+    getter method_list_frames = MethodListFrames.new
+    # Set while a build server runs an expansion again.
+    property method_list_replay : MethodListReplay? = nil
+    # Whether every type and method of the program was declared (the
+    # `finished` hooks and type inference run after that).
+    property? declarations_complete = false
+
+    def add_line_read(location : Location?) : Nil
+      return unless location
+      filename = location.filename
+      return unless filename.is_a?(String)
+      (@line_reads_by_filename[filename] ||= Set(Int32).new) << location.line_number
+    end
+
+    # Names of methods typed once per call (with a block), outside the
+    # instance caches a build server searches.
+    getter uncached_call_names = Set(String).new
+
+    def add_uncached_call(name : String) : Nil
+      @uncached_call_names << name
+    end
+
+    def add_responds_to(name : String) : Nil
+      @responds_to_names << name
+    end
+
+    def add_overrides_read(type : Type) : Nil
+      @overrides_read_type_by_id[type.object_id] ||= type
+    end
+
+    def add_method_list_read(read : MethodListRead) : Nil
+      expansion = @method_list_frames.current
+      unless expansion
+        block("a macro read the methods of #{read.type} outside a macro expansion")
+        return
+      end
+      @list_of_method_list_expansions << expansion if expansion.list_of_reads.empty?
+      expansion.list_of_reads << read
+    end
+
+    # Moves the recorded lines of *filename* to their place in its new text.
+    def shift_lines(filename : String, shift : Location::LineShift) : Nil
+      return if shift.identity?
+      @list_of_def_body_reads.map! do |read|
+        next read unless read.filename == filename
+        DefBodyRead.new(read.filename, read.name, shift.apply(read.first_line), shift.apply(read.last_line))
+      end
+      if lines = @line_reads_by_filename[filename]?
+        @line_reads_by_filename[filename] = lines.map { |line| shift.apply(line) }.to_set
+      end
+    end
+
     def block(reason : String) : Nil
       @blocked_reason ||= reason
     end

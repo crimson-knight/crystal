@@ -71,4 +71,13 @@ describe Digest::CRC32 do
     combined = Digest::CRC32.combine(crc1, crc2, " world!".size)
     Digest::CRC32.checksum("hello world!").should eq(combined)
   end
+
+  it "combines checksums of pieces of every size" do
+    content = Bytes.new(70_000) { |index| (index * 31 + index // 7).to_u8! }
+    {0, 1, 2, 3, 100, 4_095, 65_536, 69_999}.each do |split|
+      first, second = content[0, split], content[split, content.size - split]
+      Digest::CRC32.combine(Digest::CRC32.checksum(first), Digest::CRC32.checksum(second), second.size)
+        .should eq(Digest::CRC32.checksum(content))
+    end
+  end
 end

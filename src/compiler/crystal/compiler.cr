@@ -143,6 +143,9 @@ module Crystal
     # machine's memory. Set by `--object-memory-budget`.
     property codegen_worker_memory_budget_bytes : Int64?
 
+    # The memory budget this compilation was given (see `MemoryBudget`).
+    property memory_budget : MemoryBudget?
+
     # The worker processes that built the object files of the last compilation.
     @last_codegen_worker_pool : CodegenWorkerPool?
 
@@ -720,9 +723,13 @@ module Crystal
 
       remove_spill_files_of_ended_compilations(output_dir)
 
-      ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
+      module_spill = ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
         File.join(output_dir, "#{CompilationUnit.file_basename(type_name, optimization_mode)}.#{Process.pid}.part#{part_index}.new.bc")
       end
+      if (memory_budget = @memory_budget) && module_spill.malloc_relief_bytes == 0
+        module_spill.malloc_relief_bytes = memory_budget.malloc_relief_bytes
+      end
+      module_spill
     end
 
     # Loads the modules in the bitcode files of *list_of_filenames* into
@@ -983,6 +990,43 @@ module Crystal
       run_dsymutil(output_filename) unless File.exists?(dwarf_filename)
     end
 
+    # Whether dsymutil runs in the background after an incremental build
+    # links: the build ends without waiting for the `<output>.dwarf`
+    # companion, which appears a few seconds later. Only when nothing asked
+    # for dsymutil explicitly (`crystal run` and `crystal spec` ask, because
+    # they run the program right away; so does `--dsymutil`).
+    def dwarf_companion_in_background? : Bool
+      @incremental && @dsymutil.nil?
+    end
+
+    # Starts dsymutil for *filename* and returns without waiting for it. It
+    # writes the companion under a temporary name and renames it into place,
+    # so a program never reads a partial file (a program that starts before
+    # then prints its backtraces without file and line). The process keeps
+    # *build_lock*, the locked `compiler.lock` of the cache directory, until
+    # it ends: the next build of the same program waits for it before it
+    # touches the object files dsymutil reads or links a new executable.
+    protected def start_dsymutil_in_background(filename : String, build_lock : IO::FileDescriptor?) : Nil
+      dsymutil = Process.find_executable("dsymutil")
+      return unless dsymutil
+
+      @progress_tracker.stage("dsymutil") do
+        # The script first closes every inherited descriptor but the lock:
+        # a pipe a caller waits on (the build server's status pipe, a
+        # client's socket) must not stay open until dsymutil ends.
+        script = %(for fd in $(ls /dev/fd); do if [ "$fd" -gt 2 ] && [ "$fd" != "$3" ]; then eval "exec $fd>&-"; fi; done 2>/dev/null; ) +
+                 %("$1" --flat -o "$2.dwarf.tmp" "$2" && mv -f "$2.dwarf.tmp" "$2.dwarf" || rm -f "$2.dwarf.tmp")
+        lock_descriptor = build_lock.try(&.fd) || -1
+        build_lock.try &.close_on_exec = false
+        begin
+          Process.new("/bin/sh", ["-c", script, "sh", dsymutil, filename, lock_descriptor.to_s],
+            input: Process::Redirect::Close, output: Process::Redirect::Close, error: Process::Redirect::Close)
+        ensure
+          build_lock.try &.close_on_exec = true
+        end
+      end
+    end
+
     protected def run_dsymutil(filename)
       dsymutil = Process.find_executable("dsymutil")
       return unless dsymutil
@@ -1164,7 +1208,19 @@ module Crystal
           link_flags += " -L/usr/local/lib"
         end
 
-        link_flags = use_modern_linker(link_flags)
+        # On macOS the system linker (ld-prime, Xcode 15 and later) links a
+        # large program faster than ld64.lld: 0.7 s against 1.6 to 4 s for
+        # Grant300's 7,759 objects (notes/rebuild-30s.md), so it stays.
+        link_flags = use_modern_linker(link_flags) unless program.has_flag?("darwin")
+
+        # The system linker warns once per object file built for a newer
+        # macOS than it links for, and Clang's default for the link differs
+        # from the version in our target triple (macOS 26.0 against 26.5 on
+        # one host, 27.2 against 28.0 on another). Linking for the triple's
+        # version keeps the two in step.
+        if (macos_version = program.codegen_target.environment.lchop?("macosx")) && !macos_version.empty? && !link_flags.includes?("version-min")
+          link_flags += " -mmacosx-version-min=#{macos_version}"
+        end
 
         {DEFAULT_LINKER, %(#{DEFAULT_LINKER} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{program.lib_flags(@cross_compile)}), object_names}
       end
@@ -1256,10 +1312,14 @@ module Crystal
         if n_threads == 1
           sequential_codegen(units)
         elsif (worker_executable = @codegen_worker_executable) && units.size > 1
+          units_started_at = Time.instant
           list_of_jobs = write_bitcode_and_release_modules(units)
+          @last_unit_write_seconds = (Time.instant - units_started_at).total_seconds
           # Every unit has its bitcode hash now, and this process may end
           # with the handoff below.
+          manifest_started_at = Time.instant
           finish_ir_skip_session(output_dir, units)
+          @last_manifest_seconds = (Time.instant - manifest_started_at).total_seconds
           unless list_of_jobs.empty?
             if object_stage_handoff?
               hand_off_object_stage(program, units, list_of_jobs, n_threads, worker_executable,
@@ -1345,7 +1405,11 @@ module Crystal
     private def release_semantic_only_data(program, node : ASTNode)
       @progress_tracker.stage("Semantic (release)") do
         program.release_semantic_only_data(node)
-        return_free_memory_to_os
+        # The code generation child of the build server (`InferReuse`)
+        # shares its heap pages with the server, which keeps the typed
+        # program: unmapping free blocks there returns nothing to the
+        # system, and the three full collections took about 3 s on Grant300.
+        return_free_memory_to_os unless @infer_reuse_handoff
       end
     end
 
@@ -1451,10 +1515,13 @@ module Crystal
           # written now, under a pending name. The object stage gives it its
           # real name once the executable is linked: a build that fails
           # after this point leaves the previous cache in charge.
+          signatures_started_at = Time.instant
           extract_and_compare_signatures(program)
           pending_incremental_cache_filename = File.join(output_dir, IncrementalCache::PENDING_CACHE_FILENAME)
           save_incremental_cache(program, output_dir, IncrementalCache::PENDING_CACHE_FILENAME)
+          @last_signature_and_cache_seconds = (Time.instant - signatures_started_at).total_seconds
           incremental_stats_report = String.build do |io|
+            print_handoff_preparation_stats(io)
             print_parse_cache_stats(io)
             print_signature_stats(io)
           end
@@ -1489,6 +1556,7 @@ module Crystal
           list_of_warnings: warnings.infos,
           error_on_warnings: warnings.error_on_warnings?,
           list_of_line_patch_checks: @list_of_line_patch_checks,
+          writes_dwarf_companion_in_background: writes_dwarf_companion && dwarf_companion_in_background?,
         )
         handoff_filename = File.join(output_dir, "object-stage-handoff.json")
         File.write(handoff_filename, handoff.to_json)
@@ -1696,6 +1764,24 @@ module Crystal
     getter last_ir_skip_stats : IrSkip::Stats?
 
     @ir_skip_session_to_finish : IrSkip::Session?
+
+    # The session of the incremental build whose units are being written,
+    # for the main module (see `LinePatch::MainModule`).
+    def main_module_line_patch_session : IrSkip::Session?
+      @ir_skip_session_to_finish
+    end
+
+    # Adds a patched object to compare with the fresh one once objects are
+    # built (`CRYSTAL_LINE_PATCH_VERIFY=1`).
+    def add_line_patch_check(check : LinePatch::Verification::Check) : Nil
+      @list_of_line_patch_checks << check
+    end
+
+    # Tells `--stats` what happened to the main module's changed bitcode.
+    def print_main_module_outcome(outcome : String, seconds : Float64) : Nil
+      puts "Main module: #{outcome} (#{seconds.round(2)} s)" if @progress_tracker.stats?
+    end
+
     @list_of_ir_skip_module_infos : Array(CodeGenVisitor::ModuleInfo)?
 
     # The patched objects to compare with fresh ones once objects are built
@@ -1953,6 +2039,7 @@ module Crystal
            "#{module_spill.hash_time.total_seconds.round(1)} s hashing it, #{module_spill.write_time.total_seconds.round(1)} s putting it in files"
       puts " - modules made of several parts: #{module_spill.multi_part_module_count}"
       puts " - function signatures recorded: #{module_spill.recorded_signature_count}"
+      puts " - functions generated after the chain of calls that asked for them: #{module_spill.deferred_fun_count}"
       STDOUT.flush
     end
 
@@ -2023,6 +2110,25 @@ module Crystal
       io.puts " - hits: #{cache.hits}, misses: #{cache.misses} (#{sprintf("%.1f", cache.hit_rate)}% hit rate)"
     end
 
+    @last_signature_and_cache_seconds : Float64?
+    @last_unit_write_seconds : Float64?
+    @last_manifest_seconds : Float64?
+
+    # How long the compiler spent between IR generation and the handoff:
+    # writing the bitcode of changed units and checking the cached objects
+    # of the others, and saving the IR skip manifest.
+    private def print_handoff_preparation_stats(io : IO) : Nil
+      return unless @progress_tracker.stats?
+      unit_seconds = @last_unit_write_seconds
+      manifest_seconds = @last_manifest_seconds
+      return unless unit_seconds && manifest_seconds
+
+      io.puts
+      io.puts "Before the object stage handoff:"
+      io.puts " - units written or matched with their cached objects: #{unit_seconds.round(2)} s"
+      io.puts " - IR skip manifest saved: #{manifest_seconds.round(2)} s"
+    end
+
     private def print_signature_stats(io : IO = STDOUT)
       return unless @progress_tracker.stats?
       return unless @incremental
@@ -2034,6 +2140,9 @@ module Crystal
 
       io.puts
       io.puts "Signature tracking:"
+      if seconds = @last_signature_and_cache_seconds
+        io.puts " - signature pass and incremental cache, before the handoff: #{seconds.round(2)} s"
+      end
       io.puts " - Files with body-only changes: #{body_only}"
       io.puts " - Files with structural changes: #{structural}"
       if isolated > 0
@@ -2051,10 +2160,18 @@ module Crystal
 
     # Phase 6: Extract top-level signatures from all required files and
     # compare with cached signatures to classify changes.
+    # Whether an incremental build parses every required file again after
+    # code generation to classify the edit (body-only or structural) for
+    # `--stats`. Nothing else reads the result, and the second parse took
+    # 0.35 to 0.6 s of every Grant300 rebuild, so it is opt-in:
+    # `CRYSTAL_SIGNATURE_TRACKING=1`.
+    property? signature_tracking : Bool = ENV["CRYSTAL_SIGNATURE_TRACKING"]? == "1"
+
     private def extract_and_compare_signatures(program)
       @last_body_only_count = 0
       @last_structural_count = 0
       @last_isolated_body_only_count = 0
+      return unless signature_tracking?
 
       new_signatures, file_contents = extract_file_signatures(program)
       @last_file_signatures = new_signatures
@@ -2730,7 +2847,7 @@ module Crystal
       # corrupted file that later would cause compilation issues. Moving a file
       # is an atomic operation so no corrupted `.o` file should be generated.
       def compile(isolate_context = false)
-        if must_compile?
+        if must_compile? && !patch_main_module_lines
           isolate_module_context if isolate_context
           update_bitcode_cache
           compile_to_object
@@ -2807,6 +2924,7 @@ module Crystal
         end
 
         must_compile = must_compile?
+        must_compile = false if must_compile && patch_main_module_lines
         if must_compile
           update_bitcode_cache
         else
@@ -2815,6 +2933,72 @@ module Crystal
         end
         llvm_mod.context.dispose
         must_compile
+      end
+
+      # For the main module, which is generated in every build: when its
+      # bitcode changed only because lines moved, puts the cached object
+      # with patched debug lines in place instead of compiling it again
+      # (see `LinePatch::MainModule`). Returns whether it did. Otherwise
+      # leaves the digest of the new module's text for the next build.
+      private def patch_main_module_lines : Bool
+        return false unless @original_name == "_main" && @part_count == 1 && !compiler.no_cache?
+        session = compiler.main_module_line_patch_session || return false
+        list_of_part_hashes = @list_of_part_hashes || return false
+        module_hash = BitcodeHash.of_module(list_of_part_hashes) || return false
+        memory_buffer = @memory_buffer || return false
+
+        started_at = Time.instant
+        maps = session.line_maps
+        digests = LinePatch::MainModule.digests(llvm_mod, maps) || return false
+        patched, outcome = patch_main_module_object(session, maps, digests, memory_buffer, module_hash)
+        unless patched
+          # The object is compiled from this bitcode: its text, for the next
+          # build. It counts once the object's record names this hash.
+          LinePatch::MainModule::Sidecar.new(module_hash, digests.text_digest).write(object_name)
+        end
+        seconds = (Time.instant - started_at).total_seconds
+        session.stats.main_module_outcome = outcome
+        session.stats.main_module_seconds = seconds
+        compiler.print_main_module_outcome(outcome, seconds)
+        patched
+      end
+
+      # Patches the main module's cached object when the new text, with its
+      # positions mapped back, is the text the object was built from.
+      # Returns whether the object was patched, and what happened.
+      private def patch_main_module_object(session : IrSkip::Session, maps : LinePatch::Maps?,
+                                           digests : LinePatch::MainModule::Digests,
+                                           memory_buffer : LLVM::MemoryBuffer, module_hash : String) : {Bool, String}
+        return {false, "compiled: no lines moved"} unless maps && !maps.empty?
+        if failure = digests.mapping_failure
+          return {false, "compiled: #{failure}"}
+        end
+        return {false, "compiled: the flags object files are built with changed"} if @bc_flags_changed
+        record = CachedObjectRecord.read?(hash_record_name)
+        return {false, "compiled: no record of its object"} unless record && record.describes_objects?(object_names)
+        sidecar = LinePatch::MainModule::Sidecar.read?(object_name)
+        return {false, "compiled: no text digest of its object"} unless sidecar && sidecar.module_hash == record.module_hash
+        return {false, "compiled: its code changed"} unless digests.mapped_text_digest == sidecar.text_digest
+
+        patched_bytes = LinePatch::MainModule.patch_object(object_name, maps)
+        return {false, "compiled: the patcher refused its object: #{patched_bytes}"} if patched_bytes.is_a?(String)
+
+        pending_filename = "#{object_name}#{LinePatch::UnitPatcher::PENDING_EXTENSION}"
+        File.write(pending_filename, patched_bytes)
+        if session.verify?
+          compiler.add_line_patch_check(LinePatch::Verification::Check.new("_main", pending_filename, object_name))
+          return {false, "compiled for verification: lines moved, patched object kept to compare"}
+        end
+
+        # Same order as for any object put in place: the record goes first,
+        # and comes back once the files it describes are there.
+        File.delete?(hash_record_name)
+        File.write(bc_name, memory_buffer.to_slice)
+        File.rename(pending_filename, object_name)
+        write_hash_record
+        LinePatch::MainModule::Sidecar.new(module_hash, digests.text_digest).write(object_name)
+        @patched_object_filename = object_name
+        {true, "lines moved, cached object patched"}
       end
 
       # The same for a unit that IR generation spilled: its bitcode is

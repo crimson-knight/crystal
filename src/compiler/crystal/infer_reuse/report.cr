@@ -11,6 +11,11 @@ module Crystal::InferReuse
     getter server_pid : Int64 = ::Process.pid
     property retype_seconds : Float64? = nil
     property changed_methods : Int32? = nil
+    property added_methods : Int32? = nil
+    property removed_methods : Int32? = nil
+    property candidate_calls : Int32? = nil
+    property candidate_seconds : Float64? = nil
+    property replayed_expansions : Int32? = nil
     property retyped_instances : Int32? = nil
     property new_typed_defs : Int32? = nil
     property build_child_footprint_bytes : UInt64? = nil
@@ -40,7 +45,9 @@ module Crystal::InferReuse
           counters : UInt64[40]
         end
 
-        fun proc_pid_rusage(pid : Int32, flavor : Int32, buffer : RusageInfoV4*) : Int32
+        # The same binding as `LibDarwinProcessUsage` (gc_tuning.cr): one C
+        # function may be bound with one signature only.
+        fun proc_pid_rusage(pid : Int32, flavor : Int32, buffer : Void*) : Int32
       end
 
       PHYS_FOOTPRINT_INDEX              =  7
@@ -48,13 +55,13 @@ module Crystal::InferReuse
 
       def self.of(pid : Int) : UInt64?
         info = LibProc::RusageInfoV4.new
-        return nil unless LibProc.proc_pid_rusage(pid.to_i32, LibProc::RUSAGE_INFO_V4, pointerof(info)) == 0
+        return nil unless LibProc.proc_pid_rusage(pid.to_i32, LibProc::RUSAGE_INFO_V4, pointerof(info).as(Void*)) == 0
         info.counters[PHYS_FOOTPRINT_INDEX]
       end
 
       def self.lifetime_max_of(pid : Int) : UInt64?
         info = LibProc::RusageInfoV4.new
-        return nil unless LibProc.proc_pid_rusage(pid.to_i32, LibProc::RUSAGE_INFO_V4, pointerof(info)) == 0
+        return nil unless LibProc.proc_pid_rusage(pid.to_i32, LibProc::RUSAGE_INFO_V4, pointerof(info).as(Void*)) == 0
         info.counters[LIFETIME_MAX_PHYS_FOOTPRINT_INDEX]
       end
     {% else %}

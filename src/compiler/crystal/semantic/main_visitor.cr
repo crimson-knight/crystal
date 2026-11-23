@@ -2171,6 +2171,7 @@ module Crystal
 
     def end_visit(node : RespondsTo)
       node.type = program.bool
+      program.infer_reuse_record.try &.add_responds_to(node.name)
       if needs_type_filters? && (var = get_expression_var(node.obj))
         @type_filters = TypeFilters.new var, RespondsToTypeFilter.new(node.name)
       end

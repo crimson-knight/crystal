@@ -73,6 +73,14 @@ module Crystal
       @recorded_signature_count += 1
     end
 
+    # How many functions were declared first and generated later, out of a
+    # deep chain of calls (see `CodeGenVisitor#defers_generation_of?`).
+    getter deferred_fun_count = 0
+
+    def record_deferred_fun : Nil
+      @deferred_fun_count += 1
+    end
+
     def initialize(@resident_limit : Int32, @resident_ir_bytes : Int64, @target_triple : String, &@bitcode_path : String, Int32 -> String)
     end
 

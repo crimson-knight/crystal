@@ -108,11 +108,28 @@ module Crystal
           if min_version = ENV["MACOSX_DEPLOYMENT_TARGET"]?
             triple = "#{target.architecture}-#{target.vendor}-macosx#{min_version}"
             target = Crystal::Codegen::Target.new(triple)
+          elsif target.environment.starts_with?("darwin") && (product_version = macos_product_version)
+            # LLVM derives the version from the Darwin kernel version and
+            # gets it wrong for releases it predates: LLVM 21 reads Darwin
+            # 27.2 (macOS 27.2) as macOS 28.0. The running system's version
+            # is the right one; the link passes it on as
+            # `-mmacosx-version-min` (`Compiler#linker_command`).
+            triple = "#{target.architecture}-#{target.vendor}-macosx#{product_version}"
+            target = Crystal::Codegen::Target.new(triple)
           end
         end
 
         target
       end
+    end
+
+    # The major and minor version of the running macOS (for example
+    # `"27.2"`), read from its `SystemVersion.plist`, or `nil`.
+    def self.macos_product_version : String?
+      plist = File.read("/System/Library/CoreServices/SystemVersion.plist")
+      plist.match(/<key>ProductVersion<\/key>\s*<string>(\d+\.\d+)/).try(&.[1])
+    rescue File::Error
+      nil
     end
 
     def self.linux_runtime_libc

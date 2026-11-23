@@ -22,9 +22,19 @@ class Crystal::Program
   def expand_macro(a_macro : Macro, call : Call, scope : Type, path_lookup : Type? = nil, a_def : Def? = nil)
     check_call_to_deprecated_macro a_macro, call
 
-    interpreter = MacroInterpreter.new self, scope, path_lookup || scope, a_macro, call, a_def, in_macro: true
-    a_macro.body.accept interpreter
-    {interpreter.to_s, interpreter.macro_expansion_pragmas}
+    record = infer_reuse_record
+    if record
+      record.method_list_frames.push(call.location, record.declarations_complete?, -> { expand_macro(a_macro, call, scope, path_lookup, a_def)[0] })
+    end
+    output = nil
+    begin
+      interpreter = MacroInterpreter.new self, scope, path_lookup || scope, a_macro, call, a_def, in_macro: true
+      a_macro.body.accept interpreter
+      output = interpreter.to_s
+      {output, interpreter.macro_expansion_pragmas}
+    ensure
+      record.try &.method_list_frames.pop(output)
+    end
   rescue ex
     raise ex if @program.macro_expansion_error_hook.nil?
 
@@ -35,10 +45,20 @@ class Crystal::Program
   end
 
   def expand_macro(node : ASTNode, scope : Type, path_lookup : Type? = nil, free_vars = nil, a_def : Def? = nil)
-    interpreter = MacroInterpreter.new self, scope, path_lookup || scope, node.location, def: a_def, in_macro: false
-    interpreter.free_vars = free_vars
-    node.accept interpreter
-    {interpreter.to_s, interpreter.macro_expansion_pragmas}
+    record = infer_reuse_record
+    if record
+      record.method_list_frames.push(node.location, record.declarations_complete?, -> { expand_macro(node, scope, path_lookup, free_vars, a_def)[0] })
+    end
+    output = nil
+    begin
+      interpreter = MacroInterpreter.new self, scope, path_lookup || scope, node.location, def: a_def, in_macro: false
+      interpreter.free_vars = free_vars
+      node.accept interpreter
+      output = interpreter.to_s
+      {output, interpreter.macro_expansion_pragmas}
+    ensure
+      record.try &.method_list_frames.pop(output)
+    end
   rescue ex
     raise ex if @program.macro_expansion_error_hook.nil?
 
@@ -54,8 +74,9 @@ class Crystal::Program
 
   def parse_macro_source(generated_source, macro_expansion_pragmas, the_macro, node, vars, current_def = nil, inside_type = false, inside_exp = false, visibility : Visibility = :public, &)
     parser = @program.new_parser(generated_source, var_scopes: [vars.dup])
-    virtual_file = VirtualFile.new(the_macro, generated_source, node.location)
+    virtual_file = VirtualFile.new(the_macro, generated_source, node.location, @program.macro_source_store)
     @program.virtual_files << virtual_file
+    infer_reuse_record.try &.method_list_frames.attach(generated_source, virtual_file)
     VirtualFile.current_program_files = @program.virtual_files
     parser.filename = virtual_file
     parser.macro_expansion_pragmas = macro_expansion_pragmas

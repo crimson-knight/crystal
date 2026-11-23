@@ -509,6 +509,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
 
     replaced = target_type.add_def node
     @program.record_declared_def(node, target_type, replaced)
+    @program.strict_tool_recorder.try &.record_declaration(node, target_type, replaced)
 
     node.set_type @program.nil
 

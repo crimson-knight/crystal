@@ -905,6 +905,16 @@ module Crystal
     def lookup_def_instance(key)
       def_instances[key]?
     end
+
+    # `#def_instances`, or `nil` when it was never created.
+    def def_instances? : Hash(DefInstanceKey, Def)?
+      @def_instances
+    end
+
+    # Forgets the typed def kept under *key*.
+    def delete_def_instance(key : DefInstanceKey) : Nil
+      @def_instances.try &.delete(key)
+    end
   end
 
   # Base type for all module-like types (modules, classes, structs, enums).
@@ -1635,6 +1645,7 @@ module Crystal
 
       instance = self.new_generic_instance(program, self, instance_type_vars)
       generic_types[type_vars] = instance
+      program.generic_instance_count += 1
 
       if instance.is_a?(GenericClassInstanceType) && !instance.superclass
         instance.superclass = instantiated_generic_superclass(instance)
@@ -2392,6 +2403,7 @@ module Crystal
 
       instance = ProcInstanceType.new(program, types, return_type)
       generic_types[type_vars] = instance
+      program.generic_instance_count += 1
       instance.after_initialize
       instance
     end
@@ -2470,6 +2482,7 @@ module Crystal
       end
       instance = TupleInstanceType.new(program, types)
       generic_types[type_vars] = instance
+      program.generic_instance_count += 1
       instance.after_initialize
       instance
     end
