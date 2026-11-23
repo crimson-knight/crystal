@@ -432,7 +432,9 @@ module Crystal
         end
       when "line_number"
         interpret_check_args do
-          line_number = location.try &.expanded_location.try &.line_number
+          expanded = location.try &.expanded_location
+          interpreter.record_line_read(expanded)
+          line_number = expanded.try &.line_number
           line_number ? NumberLiteral.new(line_number) : NilLiteral.new
         end
       when "column_number"
@@ -442,7 +444,9 @@ module Crystal
         end
       when "end_line_number"
         interpret_check_args do
-          line_number = end_location.try &.expanded_location.try &.line_number
+          expanded = end_location.try &.expanded_location
+          interpreter.record_line_read(expanded)
+          line_number = expanded.try &.line_number
           line_number ? NumberLiteral.new(line_number) : NilLiteral.new
         end
       when "end_column_number"
@@ -2148,10 +2152,13 @@ module Crystal
           TypeNode.has_constant?(type, value)
         end
       when "methods"
+        interpreter.@program.infer_reuse_record.try &.add_method_list_read(type)
         interpret_check_args { TypeNode.methods(type) }
       when "all_methods"
+        interpreter.@program.infer_reuse_record.try &.add_method_list_read(type)
         interpret_check_args { TypeNode.all_methods(type) }
       when "has_method?"
+        interpreter.@program.infer_reuse_record.try &.add_method_list_read(type)
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#has_method?'")
           TypeNode.has_method?(type, value)
@@ -2261,6 +2268,7 @@ module Crystal
           BoolLiteral.new(!!value)
         end
       when "overrides?"
+        interpreter.@program.infer_reuse_record.try &.add_method_list_read(type)
         interpret_check_args do |arg1, arg2|
           unless arg1.is_a?(TypeNode)
             raise "TypeNode##{method} expects TypeNode as a first argument, not #{arg1.class_desc}"

@@ -569,6 +569,7 @@ class Crystal::Call
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
         newly_typed_def = typed_def
         program.infer_reuse_new_typed_defs.try &.<< typed_def
+        program.infer_reuse_record.try &.add_uncached_call(match.def.name) unless use_cache
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
         # Later calls can reach this copy with narrower types than it declares.
         typed_def.type_once = match.def.type_once?

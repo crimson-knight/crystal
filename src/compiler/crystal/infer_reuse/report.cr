@@ -11,6 +11,10 @@ module Crystal::InferReuse
     getter server_pid : Int64 = ::Process.pid
     property retype_seconds : Float64? = nil
     property changed_methods : Int32? = nil
+    property added_methods : Int32? = nil
+    property removed_methods : Int32? = nil
+    property candidate_calls : Int32? = nil
+    property candidate_seconds : Float64? = nil
     property retyped_instances : Int32? = nil
     property new_typed_defs : Int32? = nil
     property build_child_footprint_bytes : UInt64? = nil
