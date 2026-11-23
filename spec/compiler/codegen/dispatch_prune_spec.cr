@@ -253,4 +253,40 @@ describe "Code gen: dispatch pruning" do
       )
     run(code, flags: ["prune_dispatch_check"]).to_i.should eq(2)
   end
+
+  it "generates the program again in an incremental build when an edit creates a type that was left out" do
+    with_tempfile("dispatch_prune_incremental") do |directory|
+      Dir.mkdir_p(directory)
+      program = File.join(directory, "program.cr")
+      executable = File.join(directory, "program")
+      source = GREETERS + %(list = [Plain.new] of Greeter\nputs list.sum(&.greet)\n)
+      build = ->(text : String, turn : Int32) do
+        File.write(program, text)
+        File.touch(program, Time.utc + (turn * 5).seconds)
+        compiler = Crystal::Compiler.new
+        compiler.incremental = true
+        compiler.n_threads = 2
+        compiler.flags << "prune_dispatch"
+        compiler.compile(Crystal::Compiler::Source.new(program, text), executable)
+        compiler.last_ir_skip_stats || raise "the build kept no keys"
+      end
+
+      build.call(source, 1)
+      Process.capture(executable).should eq("1\n")
+
+      # The same program again: every module can be skipped.
+      stats = build.call(source, 2)
+      stats.skipped_units.should be > 10
+      Process.capture(executable).should eq("1\n")
+
+      # `NeverMade` is created now: the left out branch must come back.
+      stats = build.call(source.sub("[Plain.new]", "[Plain.new, NeverMade.new]"), 3)
+      stats.skipped_units.should eq(0)
+      Process.capture(executable).should eq("3\n")
+
+      # And goes again when nothing creates it any more.
+      build.call(source, 4)
+      Process.capture(executable).should eq("1\n")
+    end
+  end
 end

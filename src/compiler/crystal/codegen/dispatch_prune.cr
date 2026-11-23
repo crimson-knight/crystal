@@ -31,11 +31,11 @@ module Crystal
   # A reference type counts as created when the walk reaches:
   # - its `allocate` (`new` calls it, also through macros) or
   #   `pre_initialize`;
-  # - a cast from a pointer to it (`ptr.as(T)`) or to a pointer to it
-  #   (`x.as(T*)`, which `unsafe_as` uses), a `Pointer(T).new(address)`, a
-  #   `va_arg` of it, or an `uninitialized` value of it. These make a value
-  #   from raw memory, so they mark every subtype of the type, and the type
-  #   arguments of each, as created.
+  # - a value typed exactly as it that is made out of memory: a cast from a
+  #   pointer to it (`ptr.as(T)`) or to a pointer to it (`x.as(T*)`, which
+  #   `unsafe_as` uses), `Pointer(T).new(address)`, `va_arg`, `uninitialized`,
+  #   zeroed memory from `Pointer(T).malloc`, or a zeroed instance variable
+  #   of an allocated object (see `#conjure` for why exact types are enough).
   #
   # Code generation then asks `#prunes?` for each branch of a dispatch, with
   # the same rule over the final set. The analysis is an
@@ -273,6 +273,7 @@ module Crystal
         return if forgotten?(type)
 
         @created << type.object_id
+        explain_creation(type)
       end
 
       # `CRYSTAL_PRUNE_DISPATCH_FORGET=Name` makes the analysis miss that the
@@ -281,35 +282,98 @@ module Crystal
       # use it for a real build.
       @forgotten_type_name : String? = ENV["CRYSTAL_PRUNE_DISPATCH_FORGET"]?.presence
 
+      # `CRYSTAL_PRUNE_DISPATCH_EXPLAIN=Name` prints where the analysis found
+      # that the class *Name* is created, for finding out why a type stays.
+      @explained_type_name : String? = ENV["CRYSTAL_PRUNE_DISPATCH_EXPLAIN"]?.presence
+      # The node the walk is at when it marks a type as created.
+      @origin : ASTNode? = nil
+      # The def that first reached each def, kept only while explaining.
+      @reached_from = {} of UInt64 => Def?
+
+      private def explain_creation(type : Type) : Nil
+        name = @explained_type_name
+        return unless name && type.to_s == name
+
+        origin = @origin
+        current_def = @current_def
+        STDERR.puts "prune dispatch: #{name} is created by #{origin.class.name.split("::").last} #{origin.try(&.to_s.lines.first?)} at #{origin.try(&.location)}"
+        depth = 0
+        while current_def && depth < 12
+          STDERR.puts "  in #{current_def.owner?}##{current_def.name} (#{current_def.location})"
+          current_def = @reached_from[current_def.object_id]?
+          depth += 1
+        end
+      end
+
       private def forgotten?(type : Type) : Bool
         name = @forgotten_type_name
         name ? type.to_s == name : false
       end
 
-      # Marks every concrete type of *type*, and the type arguments of each,
-      # as created: a value made from raw memory can be any of them.
-      private def conjure(type : Type) : Nil
-        return if @conjured.includes?(type.object_id)
-        @conjured << type.object_id
+      # Marks the classes a value made out of memory can have as its exact
+      # static type, for a value of *type* that a cast, `Pointer.new`,
+      # `va_arg` or `uninitialized` produced (*relabeled*), or that memory
+      # set to zero holds (`Pointer.malloc`, the instance variables of an
+      # object before `initialize`).
+      #
+      # A dispatch reads the type id of its receiver from the object itself
+      # when the receiver's static type is virtual or a module, and only
+      # `allocate` and `pre_initialize` write that id. It reads it from a
+      # union's type id slot otherwise, which an upcast fills with the exact
+      # static type of the value. So the only types besides the allocated
+      # ones that a dispatch can see are the exact classes values are typed
+      # as: those found here, through unions, pointers, struct fields,
+      # tuples and type arguments.
+      private def conjure(type : Type, relabeled : Bool = true) : Nil
+        key = relabeled ? type.object_id : ~type.object_id
+        return if @conjured.includes?(key)
+        @conjured << key
 
-        concrete_types_of(type).each do |concrete|
-          @created << concrete.object_id if prunable?(concrete) && !forgotten?(concrete)
-          case concrete
-          when PointerInstanceType
-            conjure(concrete.element_type)
-          when StaticArrayInstanceType
-            conjure(concrete.element_type)
-          when TupleInstanceType
-            concrete.tuple_types.each { |tuple_type| conjure(tuple_type) }
-          when NamedTupleInstanceType
-            concrete.entries.each { |entry| conjure(entry.type) }
-          when GenericInstanceType
-            concrete.type_vars.each_value do |type_var|
+        case type
+        when UnionType
+          # Zeroed or garbage memory of a union has type id 0 (nil) or no
+          # meaning at all: only a relabeled union names its members.
+          type.union_types.each { |union_type| conjure(union_type, relabeled) } if relabeled
+        when VirtualType, VirtualMetaclassType, NonGenericModuleType, GenericModuleInstanceType
+          # The type id comes from the object.
+        when PointerInstanceType
+          conjure(type.element_type, relabeled) if relabeled
+        when TupleInstanceType
+          type.tuple_types.each { |tuple_type| conjure(tuple_type, relabeled) }
+        when NamedTupleInstanceType
+          type.entries.each { |entry| conjure(entry.type, relabeled) }
+        when StaticArrayInstanceType
+          conjure(type.element_type, relabeled)
+        when TypeDefType, AliasType
+          conjure(type.remove_indirection, relabeled)
+        else
+          if prunable?(type)
+            unless forgotten?(type) || @created.includes?(type.object_id)
+              @created << type.object_id
+              explain_creation(type)
+            end
+          elsif type.struct? && type.is_a?(InstanceVarContainer)
+            type.all_instance_vars.each_value do |ivar|
+              ivar.type?.try { |ivar_type| conjure(ivar_type, relabeled) }
+            end
+          end
+          if relabeled && type.is_a?(GenericInstanceType)
+            type.type_vars.each_value do |type_var|
               if type_var.is_a?(Var) && (type_var_type = type_var.type?)
-                conjure(type_var_type)
+                conjure(type_var_type, relabeled)
               end
             end
           end
+        end
+      end
+
+      # The instance variables of a new object are zero until `initialize`
+      # sets them, and code can read them before that (`allocate` alone).
+      private def conjure_zeroed_instance_vars(type : Type) : Nil
+        return unless type.is_a?(InstanceVarContainer)
+
+        type.all_instance_vars.each_value do |ivar|
+          ivar.type?.try { |ivar_type| conjure(ivar_type, relabeled: false) }
         end
       end
 
@@ -322,6 +386,7 @@ module Crystal
         return if @reached_defs.includes?(a_def.object_id)
 
         @reached_defs << a_def.object_id
+        @reached_from[a_def.object_id] = @current_def if @explained_type_name
         @list_of_pending_defs << a_def
       end
 
@@ -395,6 +460,7 @@ module Crystal
 
         @allocated_types << base_type.object_id
         walk_instance_var_initializers(base_type)
+        conjure_zeroed_instance_vars(base_type)
       end
 
       def visit(node : Call)
@@ -433,6 +499,7 @@ module Crystal
       end
 
       def visit(node : Primitive)
+        @origin = node
         case node.name
         when "allocate"
           created_by_allocation(node.type)
@@ -445,6 +512,10 @@ module Crystal
           if (type = node.type?).is_a?(PointerInstanceType)
             conjure(type.element_type)
           end
+        when "pointer_malloc", "pointer_realloc"
+          if (type = node.type?).is_a?(PointerInstanceType)
+            conjure(type.element_type, relabeled: false)
+          end
         when "va_arg"
           node.type?.try { |type| conjure(type) }
         end
@@ -453,6 +524,7 @@ module Crystal
 
       def visit(node : Cast | NilableCast)
         node.obj.accept self
+        @origin = node
 
         obj_type = node.obj.type?
         to_type = node.to.type?
@@ -468,6 +540,7 @@ module Crystal
       end
 
       def visit(node : UninitializedVar)
+        @origin = node
         node.type?.try { |type| conjure(type) }
         false
       end
