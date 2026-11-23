@@ -215,6 +215,24 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
     end
   end
 
+  it "runs a macro's program again and types the program fresh when its output changes" do
+    with_project("infer-reuse-macro-run") do |project|
+      project.write("number.cr", "puts File.read(ARGV[0]).strip\n")
+      project.write("number.txt", "7\n")
+      run_main = MAIN + "puts {{ run(\"./number\", \"number.txt\") }}\n"
+      project.write("main.cr", run_main)
+      expect_build(project, "Hello world\n11\n0\n7\n", reused: false)
+
+      project.write("helper.cr", HELPER.sub("    1\n", "    5\n"))
+      expect_build(project, "Hello world\n15\n0\n7\n", reused: true)
+
+      project.write("number.txt", "8\n")
+      project.write("helper.cr", HELPER)
+      report = expect_build(project, "Hello world\n11\n0\n8\n", reused: false)
+      report["reason"].as_s.should contain("whose output changed")
+    end
+  end
+
   it "types the whole program again when an edited body changes the method's type" do
     with_project("infer-reuse-return-type") do |project|
       untyped_main = MAIN.sub("def total : Int32", "def total")

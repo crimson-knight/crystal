@@ -330,8 +330,8 @@ module Crystal
         run_args << @last.to_macro_id
       end
 
-      @program.infer_reuse_record.try &.block("a macro ran the program #{filename}")
       result = @program.macro_run(filename, run_args)
+      @program.infer_reuse_record.try &.add_program_run(filename, run_args, result.status.success? ? result.stdout : nil)
       if result.status.success?
         @last = MacroId.new(result.stdout)
       else

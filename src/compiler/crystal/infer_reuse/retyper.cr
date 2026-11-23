@@ -6,8 +6,8 @@ module Crystal::InferReuse
   #
   # * the same argument list, working directory and compiler environment
   #   (`InferReuse.comparable_env`) as the build that typed the program;
-  # * no macro that ran a program (`run`), and every command, environment
-  #   variable, file and file check a macro read giving the same answer;
+  # * every program (`run`), command, environment variable, file and file
+  #   check a macro read giving the same answer;
   # * no warning from the kept build (a reused build would repeat it);
   # * every `require` finding the same files, and every changed file a
   #   `BodyEdit` of methods `#check_eligible` accepts;
@@ -134,6 +134,20 @@ module Crystal::InferReuse
           nil
         end
         raise Refusal.new("a macro ran `#{command}`, whose output changed") unless current == output
+      end
+      unless record.list_of_program_runs.empty?
+        # Compile each program again when its source changed (the compile
+        # cache on disk knows), rather than run the build's own copy.
+        program.compiled_macros_cache.clear
+        record.list_of_program_runs.each do |run|
+          current = begin
+            result = program.macro_run(run.filename, run.list_of_arguments)
+            result.status.success? ? result.stdout : nil
+          rescue ex
+            raise Refusal.new("a macro program #{run.filename} no longer compiles or runs: #{ex.message}")
+          end
+          raise Refusal.new("a macro ran #{run.filename}, whose output changed") unless current == run.output
+        end
       end
       record.existence_by_checked_file.each do |filename, exists|
         raise Refusal.new("a macro checked #{filename}, which changed") unless File.exists?(filename) == exists
