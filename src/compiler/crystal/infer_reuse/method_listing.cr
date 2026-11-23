@@ -71,7 +71,9 @@ module Crystal::InferReuse
       list_of_before = canonical_before.lines
       list_of_after = canonical_after.lines
       return nil unless list_of_before.reject(&.blank?) == list_of_after.reject(&.blank?)
-      return nil unless parsed_text(program, canonical_before) == parsed_text(program, canonical_after)
+      parsed_before = parsed(program, canonical_before) || return nil
+      parsed_after = parsed(program, canonical_after) || return nil
+      return nil unless parsed_before == parsed_after
 
       list_of_steps = [{1, 0}]
       after_index = 0
@@ -87,10 +89,11 @@ module Crystal::InferReuse
       Location::LineShift.new(list_of_steps)
     end
 
-    # The text of the nodes *text* parses to, or `nil` when it does not parse
-    # on its own.
-    private def self.parsed_text(program : Program, text : String) : String?
-      program.new_parser(text).parse.to_s
+    # The nodes *text* parses to, or `nil` when it does not parse on its own.
+    # Nodes compare equal without their locations, so blank lines between
+    # them do not count.
+    private def self.parsed(program : Program, text : String) : ASTNode?
+      program.new_parser(text).parse
     rescue CodeError
       nil
     end
