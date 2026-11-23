@@ -143,6 +143,9 @@ module Crystal
     # machine's memory. Set by `--object-memory-budget`.
     property codegen_worker_memory_budget_bytes : Int64?
 
+    # The memory budget this compilation was given (see `MemoryBudget`).
+    property memory_budget : MemoryBudget?
+
     # The worker processes that built the object files of the last compilation.
     @last_codegen_worker_pool : CodegenWorkerPool?
 

@@ -109,12 +109,17 @@ module Crystal
       io.flush
     end
 
+    # How many functions IR generation has started (for `trace_peak`).
+    @generated_fun_count = 0
+
     # Prints one line of `PeakProbe` numbers with the modules in memory.
     def trace_peak(label : String) : Nil
       return unless PeakProbe.traces?
 
-      STDERR.printf("peak-trace modules_in_memory=%d estimated_ir_mb=%.1f spills=%d ", @resident_modules.size,
-        @resident_ir_bytes / 1e6, @module_spill.try(&.spill_count) || 0)
+      footprint, footprint_peak = GCTuning.footprint_bytes
+      STDERR.printf("peak-trace t=%.1f footprint_mb=%.1f footprint_peak_mb=%.1f generated_functions=%d modules_in_memory=%d estimated_ir_mb=%.1f spills=%d ",
+        GCTuning.started_at.elapsed.total_seconds, footprint / 1e6, footprint_peak / 1e6, @generated_fun_count,
+        @resident_modules.size, @resident_ir_bytes / 1e6, @module_spill.try(&.spill_count) || 0)
       PeakProbe.record(STDERR, label, system_report: false)
     end
 

@@ -6,8 +6,12 @@ class Crystal::VirtualFile
   # The macro that produced this VirtualFile
   getter macro : Macro
 
-  # The expanded source code of the macro
-  getter source : String
+  # The expanded source code of the macro, while it is kept in the heap.
+  # A longer text is kept in the `MacroSourceStore` instead.
+  @source : String?
+
+  # Where the expanded source code is in the `MacroSourceStore`.
+  @stored_source : MacroSourceStore::Entry?
 
   # The location where the macro was expanded (where the macro was invoked).
   getter expanded_location : Location?
@@ -23,15 +27,34 @@ class Crystal::VirtualFile
   # The index of this file in the table that locations refer to.
   getter file_index : UInt32 = 0_u32
 
-  def initialize(@macro : Macro, @source : String, @expanded_location : Location?)
+  def initialize(@macro : Macro, source : String, @expanded_location : Location?)
     @file_index = Location.register(self)
+    store = MacroSourceStore.instance
+    @stored_source = store.try &.store(source)
+    @source = source unless @stored_source
+  end
+
+  # The expanded source code of the macro (empty once released).
+  def source : String
+    if stored_source = @stored_source
+      if store = MacroSourceStore.instance
+        return store.read(stored_source)
+      end
+    end
+    @source || ""
+  end
+
+  # The expanded source code if it is kept in the heap, for the memory census.
+  def source_in_heap : String?
+    @source
   end
 
   # Drops the expanded source code. Only error messages read it, to show
   # the expansion an error is in; after this they show the macro's name and
   # the place it was expanded.
   def release_source : Nil
-    @source = ""
+    @source = nil
+    @stored_source = nil
   end
 
   def to_s(io : IO) : Nil

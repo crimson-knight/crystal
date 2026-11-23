@@ -38,13 +38,47 @@ module Crystal
   module GCTuning
     FREE_SPACE_DIVISOR = 10_u64
 
+    # The divisor for IR generation that a memory budget asks for (see
+    # `MemoryBudget`), if any.
+    class_property ir_generation_divisor : UInt64?
+
+    # The heap size from which the collector runs with `@@tight_divisor`
+    # (0: never; see `#tighten_above`).
+    @@tight_heap_bytes = 0_u64
+    @@tight_divisor = FREE_SPACE_DIVISOR
+
+    # Makes the collector collect with *divisor* (more often) once its heap
+    # has grown to *heap_bytes*, and during IR generation. While the heap is
+    # smaller it keeps collecting as before, so a build that stays far below
+    # a memory budget pays nothing for it.
+    def self.tighten_above(heap_bytes : Int64, divisor : UInt64) : Nil
+      @@tight_heap_bytes = heap_bytes.to_u64
+      @@tight_divisor = divisor
+      self.ir_generation_divisor = divisor
+      {% unless flag?(:gc_none) || flag?(:wasm32) %}
+        LibGC.set_on_heap_resize ->(heap_size : LibGC::Word) { GCTuning.heap_resized(heap_size.to_u64) }
+        heap_resized(GC.stats.heap_size)
+      {% end %}
+    end
+
+    # Called by the collector (with its lock held) when its heap grew.
+    # :nodoc:
+    def self.heap_resized(heap_size : UInt64) : Nil
+      {% unless flag?(:gc_none) || flag?(:wasm32) %}
+        return if @@tight_heap_bytes == 0 || heap_size < @@tight_heap_bytes
+        return if LibGC.get_free_space_divisor >= @@tight_divisor
+        LibGC.set_free_space_divisor(LibGC::Word.new(@@tight_divisor))
+      {% end %}
+    end
+
     # Runs the block, IR generation, with the divisor
-    # `CRYSTAL_GC_IR_FREE_SPACE_DIVISOR` names, when it names one.
+    # `CRYSTAL_GC_IR_FREE_SPACE_DIVISOR` names, or else the one a memory
+    # budget asks for, if any.
     def self.with_ir_generation_divisor(&)
       {% if flag?(:gc_none) || flag?(:wasm32) %}
         yield
       {% else %}
-        divisor = ENV["CRYSTAL_GC_IR_FREE_SPACE_DIVISOR"]?.try(&.to_u64?)
+        divisor = ENV["CRYSTAL_GC_IR_FREE_SPACE_DIVISOR"]?.try(&.to_u64?) || ir_generation_divisor
         if divisor && divisor > 0
           previous_divisor = LibGC.get_free_space_divisor
           LibGC.set_free_space_divisor(LibGC::Word.new(divisor))
