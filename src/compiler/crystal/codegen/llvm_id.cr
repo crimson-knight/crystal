@@ -1,4 +1,5 @@
 require "../types"
+require "./stable_numbering"
 
 module Crystal
   # This class assigns a pair of IDs `{min, max}` to every type in the program.
@@ -295,5 +296,13 @@ module Crystal
     private def subclasses_of(type)
       type.subclasses.reject(GenericInstanceType)
     end
+  end
+end
+
+class Crystal::Program
+  # The type ids of this program. Lives beside `LLVMId`, not in codegen.cr, because
+  # semantic-time code (`OwnerShapeSharing`) reads it in a build without LLVM.
+  def llvm_id
+    @llvm_id ||= LLVMId.new(self, stable_numbering.try(&.type_ids_by_stable_key))
   end
 end

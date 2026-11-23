@@ -343,7 +343,7 @@ module Crystal
           {% name = type.stringify %}
           {% container = name.starts_with?("Array(") || name.starts_with?("Hash(") || name.starts_with?("Set(") || name.starts_with?("Deque(") %}
           {% known = name.starts_with?("Crystal::") || name == "String" || name == "Array(String)" || name == "Set(String)" || (container && name.includes?("Crystal::")) %}
-          {% excluded = ["PrettyPrint", "Crystal::CodeGenVisitor::DIBuilder"] %}
+          {% excluded = ["PrettyPrint", "Crystal::CodeGenVisitor::DIBuilder", "InterpretCompareWrapper", "Crystal::EventLoop::", "Crystal::System::"] %}
           {% if known && !excluded.any? { |part| name.includes?(part) } && !type.abstract? && !type.private? && !(name =~ /(^|[^A-Za-z0-9_:])\*?[A-Z][0-9]*($|[^A-Za-z0-9_:])/) %}
             names[{{type}}.crystal_instance_type_id] = {{name}}
           {% end %}

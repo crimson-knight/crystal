@@ -180,7 +180,10 @@ module Crystal
       property compiler : Compiler?
     {% end %}
 
-    property optimization_mode = Compiler::OptimizationMode::O0
+    {% unless flag?(:without_llvm) %}
+      # Read only by codegen (fun.cr); a frontend-only build has no Compiler.
+      property optimization_mode = Compiler::OptimizationMode::O0
+    {% end %}
 
     def initialize
       super(self, self, "main")

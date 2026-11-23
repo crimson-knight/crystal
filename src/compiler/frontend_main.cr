@@ -28,17 +28,21 @@ require "./crystal/error"
 require "./crystal/exception"
 require "./crystal/util"
 require "./crystal/warnings"
+require "./crystal/gc_tuning" # GCTuning (called by ProgressTracker); no LLVM inside
 require "./crystal/progress_tracker"
 require "./crystal/crystal_path"
 require "./crystal/syntax"
 require "./crystal/types"
 require "./crystal/program"
-require "./crystal/codegen/link"         # LinkAnnotation (referenced by types.cr); no LLVM inside
-require "./crystal/codegen/cache_dir"    # CacheDir (referenced by program.cr); no LLVM inside
-require "./crystal/codegen/experimental" # ExperimentalAnnotation (referenced by semantic_visitor); no LLVM inside
-require "./crystal/codegen/types"        # has_inner_pointers? etc. (used by macro methods); only type-level LLVM refs
-require "./crystal/codegen/ast"          # no_returns?, Asm#dialect etc.; only enum-level LLVM refs
-require "./crystal/formatter" # Crystal::Formatter (used by the `debug` macro method); pure syntax, no LLVM
+require "./crystal/codegen/link"                # LinkAnnotation (referenced by types.cr); no LLVM inside
+require "./crystal/codegen/cache_dir"           # CacheDir (referenced by program.cr); no LLVM inside
+require "./crystal/codegen/experimental"        # ExperimentalAnnotation (referenced by semantic_visitor); no LLVM inside
+require "./crystal/codegen/types"               # has_inner_pointers? etc. (used by macro methods); only type-level LLVM refs
+require "./crystal/codegen/ast"                 # no_returns?, Asm#dialect etc.; only enum-level LLVM refs
+require "./crystal/formatter"                   # Crystal::Formatter (used by the `debug` macro method); pure syntax, no LLVM
+require "./crystal/codegen/owner_shape_sharing" # OwnerShapeSharing (read by semantic/memory_census.cr); no LLVM inside
+require "./crystal/codegen/stable_numbering"    # Program#stable_numbering (read by owner_shape_sharing.cr); no LLVM inside
+require "./crystal/codegen/llvm_id"             # Program#llvm_id (read by owner_shape_sharing.cr); no LLVM inside
 require "./crystal/macros"
 # IMPORTANT: semantic MUST be required before macros/* (mirroring
 # src/compiler/requires.cr). The macro interpreter's overload restrictions
