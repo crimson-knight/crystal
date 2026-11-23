@@ -311,7 +311,9 @@ module Crystal
       # Before owner shapes, which can release typed bodies the analysis reads.
       @dispatch_prune = @program.dispatch_prune || @program.analyze_dispatch_prune(@node)
       if @program.share_owner_shapes?
-        @owner_shape_sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
+        sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
+        @owner_shape_sharing = sharing
+        @dispatch_prune.try &.keep_shared_representatives(sharing)
       end
       # LLVM::Context.register(@llvm_context, "main")
       @llvm_mod = configure_module(@llvm_context.new_module("main_module"))

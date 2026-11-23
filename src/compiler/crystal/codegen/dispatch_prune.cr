@@ -105,6 +105,9 @@ module Crystal
       @allocated_types = Set(UInt64).new
       # Target defs of `super` calls: never stubbed.
       @super_targets = Set(UInt64).new
+      # Representatives of owner shape groups with a member that runs:
+      # never stubbed (see `keep_shared_representatives`).
+      @kept_representatives = Set(UInt64).new
       @concrete_types_by_type_id = {} of UInt64 => Array(Type)
       @list_of_pending_defs = [] of Def
       # Dispatch branches not followed yet: the call and its target def.
@@ -170,6 +173,18 @@ module Crystal
         self
       end
 
+      # Owner shape sharing (see `OwnerShapeSharing`) emits one function for
+      # a group of typed defs, under the name of its representative, and
+      # every member calls it. The representative keeps its body when any
+      # member of its group can run, whether or not it can run itself.
+      def keep_shared_representatives(sharing : OwnerShapeSharing) : Nil
+        return if @gave_up || @mode.off?
+
+        sharing.each_shared_def do |typed_def, representative|
+          @kept_representatives << representative.object_id unless stubs?(typed_def)
+        end
+      end
+
       # Whether code generation gives *a_def* a stub for its body, a stop
       # with an "unreachable type" error: its owner is a class nothing
       # creates, so no call to it ever runs. The calls stay as they are,
@@ -177,6 +192,7 @@ module Crystal
       def stubs?(a_def : Def) : Bool
         return false if @gave_up || @mode.off?
         return false if @super_targets.includes?(a_def.object_id)
+        return false if @kept_representatives.includes?(a_def.object_id)
 
         stubbed = !def_live?(a_def)
         explain_stub(a_def) if stubbed && self.class.explain_stubs?
