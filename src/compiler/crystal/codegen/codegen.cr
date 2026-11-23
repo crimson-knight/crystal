@@ -919,13 +919,24 @@ module Crystal
       end
     end
 
+    # Joins the type of a proc literal function and the function it is in
+    # (see `#fun_literal_name`).
+    PROC_LITERAL_SEPARATOR = "~in~"
+
     # The name of the function of a proc literal: its type, the function it
     # is generated in, and its turn among the proc literals of that type
-    # there (`~procProc(Nil)@*Foo#bar:Nil`, then `~proc2Proc(Nil)@*Foo#bar:Nil`).
+    # there (`~procProc(Nil)~in~*Foo#bar:Nil`, then `~proc2Proc(Nil)~in~*Foo#bar:Nil`).
     #
     # The name says nothing about where the literal is in its file, so that
     # lines added above it leave the name, and with it the code of every
     # module that refers to the function, as they were.
+    #
+    # The enclosing function is joined with `PROC_LITERAL_SEPARATOR`, never
+    # with `@`: an ELF linker reads `name@text` as a reference to version
+    # *text* of *name*, and GNU ld then defines an absolute symbol named
+    # *text*. With `@` that symbol is the enclosing function itself, and the
+    # program fails to link with a multiple definition of it whenever the
+    # proc function is referred to from another object file.
     def fun_literal_name(node : ProcLiteral)
       enclosing_fun_name = context.fun.name
       prefix = "~proc"
@@ -936,7 +947,7 @@ module Crystal
       proc_counts_of_fun = @proc_counts[enclosing_fun_name] ||= Hash(String, Int32).new(0)
       proc_count = (proc_counts_of_fun["#{prefix}#{type}"] += 1)
       turn = proc_count > 1 ? proc_count.to_s : ""
-      Crystal.safe_mangling(@program, "#{prefix}#{turn}#{type}@#{enclosing_fun_name}")
+      Crystal.safe_mangling(@program, "#{prefix}#{turn}#{type}#{PROC_LITERAL_SEPARATOR}#{enclosing_fun_name}")
     end
 
     def visit(node : ProcPointer)

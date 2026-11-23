@@ -149,6 +149,48 @@ private def build_stable_program(directory : String, code : String, build_index 
   {Process.capture(executable), compiler}
 end
 
+# Proc literals in a method, in a generic method that has one copy per
+# type, and in the initializer of a constant: each proc function is in an
+# object file of its own or referred to from another one.
+private PROC_LITERALS_ACROSS_MODULES = <<-CRYSTAL
+  require "prelude"
+
+  class Counter
+    def initialize(@step : Int32)
+    end
+
+    def steps : Int32
+      add = ->(number : Int32) { number &+ @step }
+      add.call(1)
+    end
+  end
+
+  module Registry
+    def self.describe(value : T) : String forall T
+      describer = ->(item : T) { "\#{T}:\#{item}" }
+      describer.call(value)
+    end
+  end
+
+  DOUBLER = ->(number : Int32) { number &* 2 }
+
+  puts Counter.new(2).steps, Registry.describe(7), Registry.describe("seven"), DOUBLER.call(21)
+  CRYSTAL
+
+# Builds *code* in *directory* the way `crystal run` does without
+# `--release` (one object file per type), links it and runs it.
+private def build_and_run_in_modules(directory : String, code : String) : String
+  program = File.join(directory, "program.cr")
+  File.write(program, code)
+  executable = File.join(directory, "program")
+
+  compiler = Crystal::Compiler.new
+  compiler.debug = Crystal::Debug::None
+  ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
+  compiler.compile(Crystal::Compiler::Source.new(program, code), executable)
+  Process.capture(executable)
+end
+
 describe "Code generation: stable numbering" do
   describe "type ids" do
     it "numbers a program the usual way when no ids are kept" do
@@ -291,10 +333,30 @@ describe "Code generation: stable numbering" do
       mod = codegen(PROC_LITERALS)
 
       function_names(mod, "~proc").should eq([
-        "~proc2Proc(Int32, Int32)@*Counter#steps:Int32",
-        "~procProc(Int32)@*Counter#steps:Int32",
-        "~procProc(Int32, Int32)@*Counter#steps:Int32",
+        "~proc2Proc(Int32, Int32)~in~*Counter#steps:Int32",
+        "~procProc(Int32)~in~*Counter#steps:Int32",
+        "~procProc(Int32, Int32)~in~*Counter#steps:Int32",
       ])
+    end
+
+    it "never names the function they are in after an @" do
+      mod = codegen(PROC_LITERALS)
+      list_of_function_names = Set(String).new
+      mod.functions.each { |function| list_of_function_names << function.name }
+
+      function_names(mod, "~proc").each do |name|
+        # An ELF linker reads `name@text` as version *text* of *name*, and
+        # defines a symbol named *text*: it must not be a function.
+        _, _, version = name.partition('@')
+        list_of_function_names.should_not contain(version)
+      end
+    end
+
+    it "links a program whose proc functions are referred to from other object files" do
+      with_tempfile("proc_literals_across_modules") do |directory|
+        Dir.mkdir_p(directory)
+        build_and_run_in_modules(directory, PROC_LITERALS_ACROSS_MODULES).should eq("3\nInt32:7\nString:seven\n42\n")
+      end
     end
 
     it "keeps their names when lines are added above them" do
