@@ -272,6 +272,9 @@ class Crystal::EventLoop::LibEvent < Crystal::EventLoop
         socket.evented_wait_writable(timeout: timeout) do
           return IO::TimeoutError.new("connect timed out")
         end
+        if errno = System::Socket.pending_connect_error(socket.fd)
+          return ::Socket::ConnectError.from_os_error("connect", errno)
+        end
       else
         return ::Socket::ConnectError.from_errno("connect")
       end

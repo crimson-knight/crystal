@@ -10,6 +10,28 @@ describe UNIXSocket do
     end
   end
 
+  it "raises when nothing listens on the path" do
+    with_tempfile("unix_nolisten.sock") do |path|
+      expect_raises(Socket::ConnectError, "connect") { UNIXSocket.new(path) }
+    end
+  end
+
+  it "raises when the socket at the path is not listening" do
+    with_tempfile("unix_bound.sock") do |path|
+      bound = Socket.unix
+      begin
+        bound.bind(Socket::UNIXAddress.new(path))
+
+        error = expect_raises(Socket::ConnectError, "connect") { UNIXSocket.new(path) }
+        {% unless flag?(:win32) %}
+          error.os_error.should eq(Errno::ECONNREFUSED)
+        {% end %}
+      ensure
+        bound.close
+      end
+    end
+  end
+
   it "sends and receives messages" do
     with_tempfile("unix_socket.sock") do |path|
       UNIXServer.open(path) do |server|

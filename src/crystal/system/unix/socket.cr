@@ -187,6 +187,21 @@ module Crystal::System::Socket
     FileDescriptor.set_blocking(fd, value)
   end
 
+  # Reads (and clears) the error left on *fd* by a non-blocking `connect(2)`
+  # once the socket became writable. Returns `nil` when there is none.
+  #
+  # Calling `connect(2)` again does not report that error everywhere: macOS 27
+  # answers a refused connect with `EISCONN`, as if the socket were connected,
+  # while `SO_ERROR` still holds `ECONNREFUSED`.
+  def self.pending_connect_error(fd : Handle) : Errno?
+    error = 0
+    size = LibC::SocklenT.new(sizeof(Int32))
+    if LibC.getsockopt(fd, LibC::SOL_SOCKET, LibC::SO_ERROR, pointerof(error), pointerof(size)) == -1
+      return Errno.value
+    end
+    Errno.new(error) unless error == 0
+  end
+
   def self.get_blocking(fd : Handle)
     FileDescriptor.get_blocking(fd)
   end

@@ -340,6 +340,9 @@ abstract class Crystal::EventLoop::Polling < Crystal::EventLoop
         wait_writable(socket, timeout) do
           return IO::TimeoutError.new("Connect timed out")
         end
+        if errno = System::Socket.pending_connect_error(socket.fd)
+          return ::Socket::ConnectError.from_os_error("connect", errno)
+        end
       else
         return ::Socket::ConnectError.from_errno("connect")
       end
