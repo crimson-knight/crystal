@@ -41,21 +41,23 @@ end
 describe Crystal::VirtualFile do
   it "keeps a long expansion in the macro source store and reads it back" do
     text = "def foo\n  1\nend\n" * 100
-    file = Crystal::VirtualFile.new(Crystal::Macro.new("long", [] of Crystal::Arg, Crystal::Nop.new), text, nil)
-    if Crystal::MacroSourceStore.instance
-      file.source_in_heap.should be_nil
-    end
+    store = Crystal::MacroSourceStore.open.should_not be_nil
+    file = Crystal::VirtualFile.new(Crystal::Macro.new("long", [] of Crystal::Arg, Crystal::Nop.new), text, nil, store)
+    file.source_in_heap.should be_nil
+    file.source.should eq(text)
+    other = Crystal::VirtualFile.new(Crystal::Macro.new("other", [] of Crystal::Arg, Crystal::Nop.new), text.upcase, nil, store)
+    other.source.should eq(text.upcase)
     file.source.should eq(text)
   end
 
   it "keeps a short expansion in the heap" do
-    file = Crystal::VirtualFile.new(Crystal::Macro.new("short", [] of Crystal::Arg, Crystal::Nop.new), "def foo; end", nil)
+    file = Crystal::VirtualFile.new(Crystal::Macro.new("short", [] of Crystal::Arg, Crystal::Nop.new), "def foo; end", nil, Crystal::MacroSourceStore.open)
     file.source_in_heap.should eq("def foo; end")
     file.source.should eq("def foo; end")
   end
 
   it "has no text once released" do
-    file = Crystal::VirtualFile.new(Crystal::Macro.new("long", [] of Crystal::Arg, Crystal::Nop.new), "x = 1\n" * 100, nil)
+    file = Crystal::VirtualFile.new(Crystal::Macro.new("long", [] of Crystal::Arg, Crystal::Nop.new), "x = 1\n" * 100, nil, Crystal::MacroSourceStore.open)
     file.release_source
     file.source.should eq("")
     file.source_in_heap.should be_nil

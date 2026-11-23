@@ -5,8 +5,15 @@ module Crystal
   # messages and tools read it again. A program of 300 Grant models expands
   # 60,070 macros into 123 MB of text, which stays in the heap through all
   # of type inference, the stage that sets the compiler's memory peak. The
-  # store writes each text to one unnamed temporary file when the expansion
+  # store writes each text to an unnamed temporary file when the expansion
   # is made and reads it back when it is asked for.
+  #
+  # Each `Program` has a store of its own (see `Program#macro_source_store`),
+  # and every `VirtualFile` keeps a reference to its store: the file is
+  # closed, and its disk space freed, once neither the program nor any of
+  # its virtual files (an error may outlive its program) are left, so a
+  # long-running process that compiles again and again does not keep the
+  # text of every compilation.
   #
   # `CRYSTAL_MACRO_SOURCE_IN_MEMORY=1` keeps the texts in the heap.
   class MacroSourceStore
@@ -18,11 +25,11 @@ module Crystal
 
     class_getter?(enabled : Bool) { ENV["CRYSTAL_MACRO_SOURCE_IN_MEMORY"]? != "1" }
 
-    # The store of this process, or `nil` when the texts stay in the heap
-    # or no temporary file could be made.
-    class_getter(instance : MacroSourceStore?) { enabled? ? open : nil }
-
+    # A new store, or `nil` when the texts stay in the heap or no temporary
+    # file could be made.
     def self.open : MacroSourceStore?
+      return nil unless enabled?
+
       file = File.tempfile("crystal-macro-sources")
       {% unless flag?(:win32) %}
         # Unnamed: the system removes it when the compiler exits.

@@ -27,20 +27,25 @@ class Crystal::VirtualFile
   # The index of this file in the table that locations refer to.
   getter file_index : UInt32 = 0_u32
 
-  def initialize(@macro : Macro, source : String, @expanded_location : Location?)
+  # The store that holds the expanded source code, if one does.
+  @source_store : MacroSourceStore?
+
+  def initialize(@macro : Macro, source : String, @expanded_location : Location?, source_store : MacroSourceStore? = nil)
     @file_index = Location.register(self)
-    store = MacroSourceStore.instance
-    @stored_source = store.try &.store(source)
-    @source = source unless @stored_source
+    if source_store && (stored_source = source_store.store(source))
+      @source_store = source_store
+      @stored_source = stored_source
+    else
+      @source = source
+    end
   end
 
   # The expanded source code of the macro (empty once released).
   def source : String
-    if stored_source = @stored_source
-      if store = MacroSourceStore.instance
-        return store.read(stored_source)
-      end
-    end
+    source_store = @source_store
+    stored_source = @stored_source
+    return source_store.read(stored_source) if source_store && stored_source
+
     @source || ""
   end
 
@@ -55,6 +60,7 @@ class Crystal::VirtualFile
   def release_source : Nil
     @source = nil
     @stored_source = nil
+    @source_store = nil
   end
 
   def to_s(io : IO) : Nil

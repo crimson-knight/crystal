@@ -70,6 +70,10 @@ module Crystal
     # keeps the files alive for as long as it lives.
     getter virtual_files = [] of VirtualFile
 
+    # Where the text of this program's macro expansions is kept (see
+    # `MacroSourceStore`), opened on the first expansion.
+    getter(macro_source_store : MacroSourceStore?) { MacroSourceStore.open }
+
     # If `true`, error messages can be colorized
     property? color = true
 
