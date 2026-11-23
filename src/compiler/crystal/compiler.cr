@@ -1656,6 +1656,24 @@ module Crystal
     getter last_ir_skip_stats : IrSkip::Stats?
 
     @ir_skip_session_to_finish : IrSkip::Session?
+
+    # The session of the incremental build whose units are being written,
+    # for the main module (see `LinePatch::MainModule`).
+    def main_module_line_patch_session : IrSkip::Session?
+      @ir_skip_session_to_finish
+    end
+
+    # Adds a patched object to compare with the fresh one once objects are
+    # built (`CRYSTAL_LINE_PATCH_VERIFY=1`).
+    def add_line_patch_check(check : LinePatch::Verification::Check) : Nil
+      @list_of_line_patch_checks << check
+    end
+
+    # Tells `--stats` what happened to the main module's changed bitcode.
+    def print_main_module_outcome(outcome : String, seconds : Float64) : Nil
+      puts "Main module: #{outcome} (#{seconds.round(2)} s)" if @progress_tracker.stats?
+    end
+
     @list_of_ir_skip_module_infos : Array(CodeGenVisitor::ModuleInfo)?
 
     # The patched objects to compare with fresh ones once objects are built
@@ -2743,6 +2761,7 @@ module Crystal
         end
 
         must_compile = must_compile?
+        must_compile = false if must_compile && patch_main_module_lines
         if must_compile
           update_bitcode_cache
         else
@@ -2751,6 +2770,72 @@ module Crystal
         end
         llvm_mod.context.dispose
         must_compile
+      end
+
+      # For the main module, which is generated in every build: when its
+      # bitcode changed only because lines moved, puts the cached object
+      # with patched debug lines in place instead of compiling it again
+      # (see `LinePatch::MainModule`). Returns whether it did. Otherwise
+      # leaves the digest of the new module's text for the next build.
+      private def patch_main_module_lines : Bool
+        return false unless @original_name == "_main" && @part_count == 1 && !compiler.no_cache?
+        session = compiler.main_module_line_patch_session || return false
+        list_of_part_hashes = @list_of_part_hashes || return false
+        module_hash = BitcodeHash.of_module(list_of_part_hashes) || return false
+        memory_buffer = @memory_buffer || return false
+
+        started_at = Time.instant
+        maps = session.line_maps
+        digests = LinePatch::MainModule.digests(llvm_mod, maps) || return false
+        patched, outcome = patch_main_module_object(session, maps, digests, memory_buffer, module_hash)
+        unless patched
+          # The object is compiled from this bitcode: its text, for the next
+          # build. It counts once the object's record names this hash.
+          LinePatch::MainModule::Sidecar.new(module_hash, digests.text_digest).write(object_name)
+        end
+        seconds = (Time.instant - started_at).total_seconds
+        session.stats.main_module_outcome = outcome
+        session.stats.main_module_seconds = seconds
+        compiler.print_main_module_outcome(outcome, seconds)
+        patched
+      end
+
+      # Patches the main module's cached object when the new text, with its
+      # positions mapped back, is the text the object was built from.
+      # Returns whether the object was patched, and what happened.
+      private def patch_main_module_object(session : IrSkip::Session, maps : LinePatch::Maps?,
+                                           digests : LinePatch::MainModule::Digests,
+                                           memory_buffer : LLVM::MemoryBuffer, module_hash : String) : {Bool, String}
+        return {false, "compiled: no lines moved"} unless maps && !maps.empty?
+        if failure = digests.mapping_failure
+          return {false, "compiled: #{failure}"}
+        end
+        return {false, "compiled: the flags object files are built with changed"} if @bc_flags_changed
+        record = CachedObjectRecord.read?(hash_record_name)
+        return {false, "compiled: no record of its object"} unless record && record.describes_objects?(object_names)
+        sidecar = LinePatch::MainModule::Sidecar.read?(object_name)
+        return {false, "compiled: no text digest of its object"} unless sidecar && sidecar.module_hash == record.module_hash
+        return {false, "compiled: its code changed"} unless digests.mapped_text_digest == sidecar.text_digest
+
+        patched_bytes = LinePatch::MainModule.patch_object(object_name, maps)
+        return {false, "compiled: the patcher refused its object: #{patched_bytes}"} if patched_bytes.is_a?(String)
+
+        pending_filename = "#{object_name}#{LinePatch::UnitPatcher::PENDING_EXTENSION}"
+        File.write(pending_filename, patched_bytes)
+        if session.verify?
+          compiler.add_line_patch_check(LinePatch::Verification::Check.new("_main", pending_filename, object_name))
+          return {false, "compiled for verification: lines moved, patched object kept to compare"}
+        end
+
+        # Same order as for any object put in place: the record goes first,
+        # and comes back once the files it describes are there.
+        File.delete?(hash_record_name)
+        File.write(bc_name, memory_buffer.to_slice)
+        File.rename(pending_filename, object_name)
+        write_hash_record
+        LinePatch::MainModule::Sidecar.new(module_hash, digests.text_digest).write(object_name)
+        @patched_object_filename = object_name
+        {true, "lines moved, cached object patched"}
       end
 
       # The same for a unit that IR generation spilled: its bitcode is

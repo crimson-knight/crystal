@@ -460,6 +460,11 @@ module Crystal
       property patch_refusals_by_cause = {} of String => Int32
       property patch_seconds = 0.0
       property list_of_patched_units = [] of String
+      # The main module, which is generated in every build (see
+      # `LinePatch::MainModule`): what happened to its changed bitcode, and
+      # how long reading its text took.
+      property main_module_outcome : String?
+      property main_module_seconds = 0.0
 
       def initialize
       end
