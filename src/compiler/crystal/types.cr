@@ -1645,6 +1645,7 @@ module Crystal
 
       instance = self.new_generic_instance(program, self, instance_type_vars)
       generic_types[type_vars] = instance
+      program.generic_instance_count += 1
 
       if instance.is_a?(GenericClassInstanceType) && !instance.superclass
         instance.superclass = instantiated_generic_superclass(instance)
@@ -2402,6 +2403,7 @@ module Crystal
 
       instance = ProcInstanceType.new(program, types, return_type)
       generic_types[type_vars] = instance
+      program.generic_instance_count += 1
       instance.after_initialize
       instance
     end
@@ -2480,6 +2482,7 @@ module Crystal
       end
       instance = TupleInstanceType.new(program, types)
       generic_types[type_vars] = instance
+      program.generic_instance_count += 1
       instance.after_initialize
       instance
     end

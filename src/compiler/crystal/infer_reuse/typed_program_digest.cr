@@ -130,6 +130,12 @@ module Crystal::InferReuse
       end
 
       def visit(node : ASTNode) : Bool
+        # A method or macro definition in the program's source is not code:
+        # its typed instances are digested on their own, from the calls that
+        # reach them. (A build server adds and removes methods in its types
+        # without changing the parsed nodes that declared them.)
+        return false if node.is_a?(Def) || node.is_a?(Macro)
+
         text = String.build do |io|
           io << node.class.name << ' ' << node.type? << ' '
           # An `Expressions` gets a location or not depending on how its file
@@ -154,10 +160,7 @@ module Crystal::InferReuse
         if node.responds_to?(:expanded) && (expanded = node.expanded)
           expanded.accept self if expanded.is_a?(ASTNode)
         end
-        # A method or macro definition in the program's source is not code:
-        # its typed instances are digested on their own, from the calls that
-        # reach them.
-        !node.is_a?(Def) && !node.is_a?(Macro)
+        true
       end
 
       private def label(node : ASTNode, io : IO) : Nil
@@ -172,8 +175,6 @@ module Crystal::InferReuse
           io << node
         when Path
           io << node.names.join("::")
-        when Def, Macro
-          io << node.name
         end
       end
     end

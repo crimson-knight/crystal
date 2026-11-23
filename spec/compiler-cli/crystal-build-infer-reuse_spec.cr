@@ -235,6 +235,76 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
     end
   end
 
+  it "re-types bodies with blocks, and methods of generic types" do
+    with_project("infer-reuse-blocks-generics") do |project|
+      main = <<-MAIN
+        class Crate(T)
+          def initialize(@value : T)
+          end
+
+          def describe : String
+            "crate of \#{@value}"
+          end
+        end
+
+        class Wrapper(U)
+          def initialize(@item : U)
+          end
+
+          def item : U
+            @item
+          end
+        end
+
+        class Summer
+          def total(list : Array(Int32)) : Int32
+            sum = 0
+            list.each { |item| sum += item }
+            sum
+          end
+
+          def twice(& : Int32 -> Int32) : Int32
+            yield(1) + yield(2)
+          end
+
+          def use_twice : Int32
+            twice { |value| value * 10 }
+          end
+        end
+
+        summer = Summer.new
+        puts summer.total([1, 2, 3])
+        puts summer.use_twice
+        puts Crate.new(1).describe
+        puts Crate.new("a").describe
+
+        MAIN
+      project.write("main.cr", main)
+      expect_build(project, "6\n30\ncrate of 1\ncrate of a\n", reused: false)
+
+      # A block in an edited body, and the block of a call to a method that yields.
+      project.write("main.cr", main.sub("sum += item }", "sum += item * 2 }").sub("value * 10 }", "value * 100 }"))
+      report = expect_build(project, "12\n300\ncrate of 1\ncrate of a\n", reused: true)
+      report["retyped_instances"].as_i.should eq(2)
+
+      # A method of a generic type: one instance per type argument (and the
+      # two bodies above, back as they were).
+      project.write("main.cr", main.sub(%("crate of \#{@value}"), %("a crate of \#{@value}")))
+      report = expect_build(project, "6\n30\na crate of 1\na crate of a\n", reused: true)
+      report["retyped_instances"].as_i.should eq(4)
+
+      # One that needs a generic instance the program did not have.
+      project.write("main.cr", main.sub(%("crate of \#{@value}"), %("crate of \#{Wrapper.new(@value).item}")))
+      report = expect_build(project, "6\n30\ncrate of 1\ncrate of a\n", reused: false)
+      report["reason"].as_s.should contain("new generic instances")
+
+      # A method that yields.
+      project.write("main.cr", main.sub("yield(1) + yield(2)", "yield(1) + yield(3)"))
+      report = expect_build(project, "6\n40\ncrate of 1\ncrate of a\n", reused: false)
+      report["reason"].as_s.should contain("takes a block")
+    end
+  end
+
   it "types the whole program again when a moved line holds __LINE__" do
     with_project("infer-reuse-line-constant") do |project|
       main = MAIN + "puts __LINE__\n"

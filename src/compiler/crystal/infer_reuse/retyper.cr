@@ -212,6 +212,7 @@ module Crystal::InferReuse
 
       def_by_location = program_defs_by_location(@list_of_file_edits.map(&.filename).to_set)
       types_before = program.after_inference_types.size
+      generic_instances_before = program.generic_instance_count
       class_var_initializers_before = program.class_var_initializers.size
 
       # Everything that reads locations of the kept program runs before its
@@ -254,6 +255,13 @@ module Crystal::InferReuse
       end
       program.infer_reuse_new_typed_defs = nil
 
+      # A method of a generic type is re-typed in each instance the kept
+      # program has; an edit that now needs another generic instance types
+      # fresh.
+      if list_of_retypes.any? { |(program_def, _)| generic_owner?(program_def.owner) } && program.generic_instance_count != generic_instances_before
+        raise Refusal.new("re-typing a method of a generic type made new generic instances")
+      end
+
       unless program.class_var_initializers.size == class_var_initializers_before
         raise Refusal.new("re-typing added class variable initializers")
       end
@@ -276,7 +284,10 @@ module Crystal::InferReuse
     # program's locations read before its lines move.
     private def find_program_def(def_by_location : Hash({String, Int32, Int32}, Def), name : String, filename : String, line : Int32, column : Int32) : Def
       key = {filename, line, column}
-      def_by_location[key]? || program_def_in_types(name, key) ||
+      found = def_by_location[key]?
+      # The parsed nodes still hold methods a build server removed since.
+      found = nil if found && !declared?(found)
+      found || program_def_in_types(name, key) ||
         raise Refusal.new("can't find method '#{name}' of #{filename}:#{line} in the program")
     end
 
@@ -287,8 +298,7 @@ module Crystal::InferReuse
       refuse = ->(why : String) { raise Refusal.new("method #{name} #{why}") }
 
       owner = program_def.owner
-      refuse.call("belongs to a generic type") if owner.is_a?(GenericType) || owner.is_a?(GenericInstanceType)
-      refuse.call("belongs to a generic type") if owner.metaclass? && owner.instance_type.is_a?(GenericType)
+      refuse.call("belongs to a generic instance") if owner.is_a?(GenericInstanceType)
       refuse.call("is an initializer") if program_def.name.in?("initialize", "new", "finalize")
       refuse.call("takes a block") if program_def.block_arg || program_def.block_arity || program_def.uses_block_arg?
       refuse.call("has default values, a splat or free variables") if program_def.splat_index || program_def.double_splat ||
@@ -495,6 +505,16 @@ module Crystal::InferReuse
       refuse.call("replaces a method of the same signature") if replaced
       normalized.set_type(program.nil)
       normalized
+    end
+
+    private def generic_owner?(owner : Type) : Bool
+      owner.is_a?(GenericType) || (owner.metaclass? && owner.instance_type.is_a?(GenericType))
+    end
+
+    # Whether *program_def* is one of its owner's methods.
+    private def declared?(program_def : Def) : Bool
+      owner = program_def.owner?.try(&.as?(ModuleType)) || return false
+      owner.defs.try(&.[program_def.name]?).try(&.any?(&.def.same?(program_def))) || false
     end
 
     # Takes *program_def* out of its owner's methods.

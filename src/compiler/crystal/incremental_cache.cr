@@ -637,7 +637,7 @@ module Crystal
     def self.classify_changes(
       changed_files : Set(String),
       old_signatures : Hash(String, FileTopLevelSignature)?,
-      new_signatures : Hash(String, FileTopLevelSignature)
+      new_signatures : Hash(String, FileTopLevelSignature),
     ) : {Set(String), Set(String)}
       body_only = Set(String).new
       structural = Set(String).new
