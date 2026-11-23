@@ -58,6 +58,10 @@ module Crystal
     # chain reads at run time.
     getter erased_type_vars_by_instance = Hash(UInt64, Set(String)).new
 
+    # Erased instances whose virtual type a typed-once copy calls methods on:
+    # they must still have no subclasses when type inference ends.
+    getter erased_instances_without_subclasses = Set(GenericClassInstanceType).new
+
     # Erased instances the program used directly before they were needed.
     getter refused_erased_instances = Set(UInt64).new
 
@@ -300,9 +304,17 @@ module Crystal
         end
         held = receiver_instance(var_type)
         held_erased = receiver_instance(erased_type)
-        unless held && held_erased && !erased_type.is_a?(VirtualType) &&
-               erased_instance(program, held).same?(held_erased)
-          return "read #{name} through a method typed for each instance: its type depends on the type argument (#{var_type} in #{instance})"
+        unless held && held_erased && erased_instance(program, held).same?(held_erased)
+          return "use #{name} only as the receiver of calls, and declare a bound on #{held.try(&.generic_type) || var_type} (it holds #{var_type} in #{instance})"
+        end
+        if erased_type.is_a?(VirtualType)
+          # A call on `Builder(Grant::Base+)+` dispatches over the erased
+          # instance's subclasses, which the object (a `Builder(Post)`) is not
+          # one of: the erased instance must have none, now and at the end.
+          unless held_erased.all_subclasses.empty?
+            return "keep #{held_erased} without subclasses: the calls on #{name} are typed against it"
+          end
+          program.erased_instances_without_subclasses << held_erased
         end
         called.each do |method_name|
           defs = held_erased.lookup_defs(method_name)
@@ -890,6 +902,15 @@ module Crystal
 end
 
 module Crystal::GenericTypeOnce
+  # Checks, once type inference ends, what the copies typed once for every
+  # instance assumed would stay true.
+  def self.check_assumptions(program : Program) : Nil
+    program.erased_instances_without_subclasses.each do |erased|
+      subclass = erased.all_subclasses.first? || next
+      ::raise "BUG: #{subclass} became a subclass of #{erased} after a method typed once for every instance called methods on #{erased}"
+    end
+  end
+
   # `CRYSTAL_GENERIC_TYPE_ONCE_PROBE=<file>`: for every method typed for an
   # instance of a generic class that declares `@[TypeBound]`, whether it
   # could be typed once for every instance and, when not, why. Writes one
