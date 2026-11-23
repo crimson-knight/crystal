@@ -44,11 +44,11 @@ module Crystal::InferReuse
     # the program was declared.
     getter? after_top_level : Bool
 
-    def initialize(@site, @after_top_level, &@rerun : -> String)
+    def initialize(@site, @after_top_level, @rerun : MacroRerun)
     end
 
     def rerun : String
-      @rerun.call
+      @rerun.run
     end
 
     # Fresh variable names a macro writes (`%name`), which differ on each run.
@@ -104,15 +104,37 @@ module Crystal::InferReuse
     end
   end
 
+  # How to run one macro expansion again: what `Program#expand_macro` got.
+  # It is data rather than a block so that a type-inference snapshot
+  # (`InferPersist`) can hold it.
+  class MacroRerun
+    def initialize(@program : Program, @a_macro : Macro?, @call : Call?, @node : ASTNode?, @scope : Type,
+                   @path_lookup : Type?, @free_vars : Hash(String, TypeVar)?, @a_def : Def?)
+    end
+
+    # Expands the macro again and returns its text.
+    def run : String
+      a_macro = @a_macro
+      call = @call
+      if a_macro && call
+        @program.expand_macro(a_macro, call, @scope, @path_lookup, @a_def)[0]
+      elsif node = @node
+        @program.expand_macro(node, @scope, @path_lookup, @free_vars, @a_def)[0]
+      else
+        raise Error.new("BUG: a macro rerun with neither a macro nor a node")
+      end
+    end
+  end
+
   # The macro expansions running now, innermost last, each with its
   # `MethodListExpansion` once it reads a list of methods.
   class MethodListFrames
-    record Frame, site : Location?, after_top_level : Bool, rerun : Proc(String)
+    record Frame, site : Location?, after_top_level : Bool, rerun : MacroRerun
 
     @list_of_frames = [] of Frame
     @list_of_expansions = [] of MethodListExpansion?
 
-    def push(site : Location?, after_top_level : Bool, rerun : Proc(String)) : Nil
+    def push(site : Location?, after_top_level : Bool, rerun : MacroRerun) : Nil
       @list_of_frames << Frame.new(site, after_top_level, rerun)
       @list_of_expansions << nil
     end
@@ -143,7 +165,7 @@ module Crystal::InferReuse
     # read; `nil` outside any expansion.
     def current : MethodListExpansion?
       frame = @list_of_frames.last? || return nil
-      @list_of_expansions[-1] ||= MethodListExpansion.new(frame.site, frame.after_top_level) { frame.rerun.call }
+      @list_of_expansions[-1] ||= MethodListExpansion.new(frame.site, frame.after_top_level, frame.rerun)
     end
   end
 

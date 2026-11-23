@@ -518,6 +518,24 @@ module Crystal
       end
     end
 
+    # Makes the parts of a program loaded from a type-inference snapshot
+    # (`InferPersist`) that a snapshot can not hold: the default blocks of
+    # two hashes, and the keys of `#unions`, which are object ids sorted by
+    # value and so differ in the loading process.
+    def adopt_after_snapshot : Nil
+      temp_vars = Hash(String, Int32).new { |hash, prefix| hash[prefix] = 1 }
+      temp_vars.merge!(@temp_vars)
+      @temp_vars = temp_vars
+      file_dependencies = Hash(String, Set(String)).new { |hash, key| hash[key] = Set(String).new }
+      file_dependencies.merge!(@file_dependencies)
+      @file_dependencies = file_dependencies
+      list_of_unions = @unions.values
+      @unions.clear
+      list_of_unions.each do |union|
+        @unions[union.union_types.map(&.opaque_id).sort!] = union
+      end
+    end
+
     private def make_union_type(types, opaque_ids)
       # NilType has opaque_id == 0
       has_nil = opaque_ids.first == 0

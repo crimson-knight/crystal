@@ -307,6 +307,7 @@ class Crystal::Command
       config.compiler.infer_reuse_handoff = handoff
       config.compiler.infer_reuse_argv = @original_options
     end
+    config.compiler.infer_persist_argv = @original_options
     config.compiler.infer_reuse_digest_filename = ENV.delete(InferReuse::DIGEST_VARIABLE)
     config.compile
   end

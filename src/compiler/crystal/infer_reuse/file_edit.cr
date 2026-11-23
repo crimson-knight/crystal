@@ -70,7 +70,7 @@ module Crystal::InferReuse
 
   # A method as `FileEditComparison` sees it: where its header and body are,
   # and the classes and modules around it.
-  private record DefSpan, a_def : Def, list_of_scopes : Array(ASTNode), key : String,
+  record DefSpan, a_def : Def, list_of_scopes : Array(ASTNode), key : String,
     first_line : Int32, column : Int32, header_last_line : Int32, end_line : Int32 do
     # The lines strictly inside the body (possibly none).
     def body_range : Range(Int32, Int32)
@@ -79,7 +79,7 @@ module Crystal::InferReuse
   end
 
   # Compares the old and new text of one file (see `FileEdit`).
-  private class FileEditComparison
+  class FileEditComparison
     @list_of_old_lines : Array(String)
     @list_of_new_lines : Array(String)
 

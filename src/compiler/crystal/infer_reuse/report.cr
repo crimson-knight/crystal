@@ -22,6 +22,9 @@ module Crystal::InferReuse
     property verify_seconds : Float64? = nil
     property verified_defs : Int32? = nil
     property verify_differences : Int32? = nil
+    # Set when the program was loaded from a snapshot (`InferPersist`).
+    property snapshot_load_seconds : Float64? = nil
+    property snapshot_bytes : Int64? = nil
 
     def initialize(@reused, @reason)
     end
