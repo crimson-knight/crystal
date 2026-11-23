@@ -375,7 +375,9 @@ module Crystal::InferReuse
       roots.each do |root|
         each_type(root, visited) do |type|
           next unless type.is_a?(DefInstanceContainer)
-          type.each_def_instance do |_, typed_def|
+          list_of_instances = type.def_instances?
+          list_of_block_instances = type.block_def_instances?
+          list_of_instances.try &.each_value do |typed_def|
             next unless names.includes?(typed_def.name)
             typed_def.each_observer do |observer|
               next unless observer.is_a?(Call) && seen.add?(observer.object_id)
@@ -384,8 +386,10 @@ module Crystal::InferReuse
               result << {observer, typed_def.name}
             end
           end
-          type.each_block_def_instance do |_, typed_def|
-            raise Refusal.new("a method named '#{typed_def.name}' is typed with blocks") if names.includes?(typed_def.name)
+          list_of_block_instances.try &.each_value do |list_of_typed_defs|
+            list_of_typed_defs.each do |typed_def|
+              raise Refusal.new("a method named '#{typed_def.name}' is typed with blocks") if names.includes?(typed_def.name)
+            end
           end
         end
       end
@@ -564,10 +568,12 @@ module Crystal::InferReuse
       roots.each do |root|
         each_type(root, visited) do |type|
           next unless type.is_a?(DefInstanceContainer)
-          type.each_def_instance do |key, typed_def|
+          list_of_instances = type.def_instances?
+          list_of_block_instances = type.block_def_instances?
+          list_of_instances.try &.each do |key, typed_def|
             result << {type, key, typed_def} if key.def_object_id == program_def.object_id
           end
-          type.each_block_def_instance do |key, _|
+          list_of_block_instances.try &.each_key do |key|
             raise Refusal.new("method '#{program_def.name}' has instances typed with a block") if key.def_object_id == program_def.object_id
           end
         end

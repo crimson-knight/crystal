@@ -906,10 +906,9 @@ module Crystal
       def_instances[key]?
     end
 
-    # Yields each key and typed def of `#def_instances`, without creating
-    # the table.
-    def each_def_instance(& : DefInstanceKey, Def ->) : Nil
-      @def_instances.try &.each { |key, typed_def| yield key, typed_def }
+    # `#def_instances`, or `nil` when it was never created.
+    def def_instances? : Hash(DefInstanceKey, Def)?
+      @def_instances
     end
 
     # Forgets the typed def kept under *key*.
