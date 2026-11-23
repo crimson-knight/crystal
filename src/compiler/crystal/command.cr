@@ -65,6 +65,7 @@ class Crystal::Command
         hierarchy                show type hierarchy
         implementations          show implementations for given call in location
         macro_code_coverage      generate a macro code coverage report
+        strict                   convert files to strict files from inferred types
         types                    show type of main variables
         unreachable              show methods that are never called
         --help, -h               show this help
@@ -283,6 +284,9 @@ class Crystal::Command
     when "macro_code_coverage".starts_with?(tool)
       options.shift
       macro_code_coverage
+    when "strict" == tool
+      options.shift
+      strict
     when "--help" == tool, "-h" == tool
       puts COMMANDS_USAGE
       exit
