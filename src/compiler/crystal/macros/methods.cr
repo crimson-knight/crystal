@@ -253,26 +253,51 @@ module Crystal
       end
       cmd = cmd.join " "
 
-      begin
-        result = `#{cmd}`
-      rescue exc : File::Error | IO::Error
-        # Taking the os_error message to avoid duplicating the "error executing process: "
-        # prefix of the error message and ensure uniqueness between all error messages.
-        node.raise "error executing command: #{cmd}: #{exc.os_error.try(&.message) || exc.message}"
-      rescue exc
-        node.raise "error executing command: #{cmd}: #{exc.message}"
+      # A target profile (see `Program#macro_shell_answers_by_command`) answers the
+      # commands a target's std library runs at macro time, such as
+      # `pkg-config bdw-gc --modversion`, so a program can be checked for a
+      # target whose libraries are not on this machine.
+      if answers = @program.macro_shell_answers_by_command
+        if answer = answers[cmd]?
+          # The dispatcher treats a nil result as an unknown macro method.
+          return @last = MacroId.new(answer)
+        end
       end
 
-      @program.infer_reuse_record.try &.add_command_output(cmd, $?.success? ? result : nil)
-
-      if $?.success?
-        @last = MacroId.new(result)
-      elsif result.empty?
-        node.raise "error executing command: #{cmd}, got exit status #{$?}"
-      else
-        node.raise "error executing command: #{cmd}, got exit status #{$?}:\n\n#{result}\n"
-      end
+      run_macro_system_command(node, cmd)
     end
+
+    {% if flag?(:wasm32) %}
+      # WASI has no subprocesses: macro `system`/backticks cannot work.
+      # Raise a proper macro error instead of referencing backticks/`$?`
+      # (Process::Status#to_s needs Signal, which doesn't exist on wasm32).
+      private def run_macro_system_command(node, cmd)
+        node.raise "macro `system` (backticks) is not supported on WASI: the platform has no subprocesses. A target profile can answer this command: #{cmd}"
+      end
+    {% else %}
+      private def run_macro_system_command(node, cmd)
+        begin
+          result = `#{cmd}`
+        rescue exc : File::Error | IO::Error
+          # Taking the os_error message to avoid duplicating the "error executing process: "
+          # prefix of the error message and ensure uniqueness between all error messages.
+          node.raise "error executing command: #{cmd}: #{exc.os_error.try(&.message) || exc.message}"
+        rescue exc
+          node.raise "error executing command: #{cmd}: #{exc.message}"
+        end
+
+        @program.infer_reuse_record.try &.add_command_output(cmd, $?.success? ? result : nil)
+
+        if $?.success?
+          @program.recorded_macro_shell_output_by_command.try &.[]=(cmd, result)
+          @last = MacroId.new(result)
+        elsif result.empty?
+          node.raise "error executing command: #{cmd}, got exit status #{$?}"
+        else
+          node.raise "error executing command: #{cmd}, got exit status #{$?}:\n\n#{result}\n"
+        end
+      end
+    {% end %}
 
     def interpret_raise(node)
       macro_raise(node, node.args, self, Crystal::TopLevelMacroRaiseException)

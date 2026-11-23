@@ -1372,7 +1372,11 @@ module Crystal
 
       if program.has_flag?("wasm32")
         @progress_tracker.stage("Codegen (wasm-opt)") do
-          run_wasm_opt(output_filename, release?)
+          # C-4 fix: the frontend-only build (-Dfrontend_no_fibers) removes the
+          # asyncify layer, so skip the --asyncify pass and the asyncify_helper
+          # merge. This is a runtime check of the *target* program's flags, not
+          # a macro flag on the compiler binary itself.
+          run_wasm_opt(output_filename, release?, program.has_flag?("frontend_no_fibers"))
         end
       end
 
@@ -2486,7 +2490,7 @@ module Crystal
       end
     end
 
-    private def run_wasm_opt(output_filename, optimize)
+    private def run_wasm_opt(output_filename, optimize, skip_fibers = false)
       quoted = Process.quote_posix(output_filename)
 
       # WASM post-link pipeline order matters:
@@ -2510,29 +2514,53 @@ module Crystal
       #
       # 5. -Oz (release only): Size optimization pass.
 
-      # Step 1: Asyncify for fiber support
-      # - Remove _start from instrumentation (it serves as the asyncify boundary)
-      # - Mark crystal_asyncify_switch as an async import so callers get
-      #   save/restore instrumentation around calls to it
-      run_wasm_opt_pass(quoted,
-        "--asyncify" \
-        " --pass-arg=asyncify-removelist@_start" \
-        " --pass-arg=asyncify-imports@env.crystal_asyncify_switch",
-        "asyncify")
+      # Steps 1+2 (asyncify + helper merge) are for fiber support only. The
+      # frontend-only build (-Dfrontend_no_fibers, C-4 fix) never switches
+      # fibers, so we skip them: the asyncify instrumentation is what inflates
+      # the VM call stack and traps in browsers. Step 3 (exnref) still runs.
+      unless skip_fibers
+        # Step 1: Asyncify for fiber support
+        # - Remove _start from instrumentation (it serves as the asyncify boundary)
+        # - Mark crystal_asyncify_switch as an async import so callers get
+        #   save/restore instrumentation around calls to it
+        run_wasm_opt_pass(quoted,
+          "--asyncify" \
+          " --pass-arg=asyncify-removelist@_start" \
+          " --pass-arg=asyncify-imports@env.crystal_asyncify_switch",
+          "asyncify")
 
-      # Step 2: Merge asyncify helper module
-      # asyncify_helper.wasm provides crystal_* wrapper functions that call
-      # the asyncify_* functions created by the asyncify pass. wasm-merge
-      # resolves: main's crystal_* imports → helper's exports, and
-      # helper's asyncify_* imports → main's exports.
-      run_wasm_merge(output_filename)
+        # Step 2: Merge asyncify helper module
+        # asyncify_helper.wasm provides crystal_* wrapper functions that call
+        # the asyncify_* functions created by the asyncify pass. wasm-merge
+        # resolves: main's crystal_* imports → helper's exports, and
+        # helper's asyncify_* imports → main's exports.
+        run_wasm_merge(output_filename)
+      end
 
-      # Step 3: Translate legacy EH to new EH format
+      # Step 3: Translate legacy EH to new EH format (browsers need exnref).
+      # Without asyncify this runs directly on the freshly-linked legacy-EH
+      # module, which is the correct order (asyncify, when present, must run
+      # before exnref translation).
       run_wasm_opt_pass(quoted, "--translate-to-exnref", "translate-to-exnref")
 
-      # Step 4: Spill pointers for GC
-      # TODO: Re-enable after verifying compatibility with asyncify
-      # run_wasm_opt_pass(quoted, "--spill-pointers", "spill-pointers")
+      # Step 4: Spill pointers for GC.
+      # Boehm's conservative collector scans linear memory for roots but CANNOT
+      # see a pointer held only in a wasm local; --spill-pointers stores
+      # pointer-typed locals to the shadow (C) stack at every call site so they
+      # stay visible as GC roots (otherwise a still-live object reachable only
+      # from a local can be collected -> use-after-free). This ran
+      # unconditionally in Phase 2; Phase 3 disabled it *solely* because its
+      # interaction with the asyncify instrumentation was unverified
+      # ("Re-enable after verifying compatibility with asyncify").
+      #
+      # The frontend build (skip_fibers / -Dfrontend_no_fibers, C-4 fix) removes
+      # asyncify entirely, so that concern does not apply: re-enable the pass on
+      # that path. Order: AFTER --translate-to-exnref (spill on the final EH
+      # form) and BEFORE -Oz (so the optimizer trims the spill overhead). The
+      # fiber path stays unspilled until asyncify compatibility is verified.
+      if skip_fibers
+        run_wasm_opt_pass(quoted, "--spill-pointers", "spill-pointers")
+      end
 
       if optimize
         # Step 5: Size optimization in release mode

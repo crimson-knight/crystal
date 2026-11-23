@@ -172,10 +172,6 @@ module Crystal
       visitor.modules
     end
 
-    def llvm_id
-      @llvm_id ||= LLVMId.new(self, stable_numbering.try(&.type_ids_by_stable_key))
-    end
-
     def llvm_typer
       @llvm_typer ||= LLVMTyper.new(self, LLVM::Context.new)
     end
