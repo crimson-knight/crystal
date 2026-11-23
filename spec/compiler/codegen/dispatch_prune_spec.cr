@@ -27,7 +27,8 @@ private GREETERS = <<-CRYSTAL
     end
 
     def only_through_never_made : Int32
-      2
+      value = 2
+      value
     end
   end
 
@@ -207,18 +208,22 @@ describe "Code gen: dispatch pruning" do
     run(code, flags: ["prune_dispatch"]).to_i.should eq(1)
   end
 
-  it "leaves out a call on a class nothing creates, behind is_a?" do
+  it "gives a def of a class nothing creates a stub, behind is_a?" do
     code = GREETERS + %(
       list = Pointer(Greeter).malloc(1_u64)
       list.value = Plain.new
       greeter = list.value
       if greeter.is_a?(NeverMade)
-        greeter.only_through_never_made
+        greeter.greet
       else
         greeter.greet
       end
       )
-    generated_function_names(code).any?(&.includes?("only_through_never_made")).should be_false
+    list_of_names = generated_function_names(code)
+    # The stub of `NeverMade#greet` stops the program; what its real body
+    # calls is not generated.
+    list_of_names.any?(&.includes?("NeverMade#greet")).should be_true
+    list_of_names.any?(&.includes?("only_through_never_made")).should be_false
     analysis_of(code).stats.dead_calls.should eq(1)
     run(code, flags: ["prune_dispatch"]).to_i.should eq(1)
   end

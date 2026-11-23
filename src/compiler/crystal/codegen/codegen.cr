@@ -297,6 +297,7 @@ module Crystal
     @raise_unreachable_type_fun : LLVMTypedFunction?
     @dispatch_prune : DispatchPrune::Analysis?
     @left_out_branch_count = 0
+    @stubbed_fun_count = 0
     @c_malloc_fun : LLVMTypedFunction?
     @c_realloc_fun : LLVMTypedFunction?
 
@@ -613,7 +614,7 @@ module Crystal
     def report_dispatch_prune : Nil
       return unless DispatchPrune.print_stats?
 
-      STDERR.printf("prune dispatch: %d dispatch branches left out, %d LLVM functions generated\n", @left_out_branch_count, @generated_fun_count)
+      STDERR.printf("prune dispatch: %d dispatch branches left out, %d functions stubbed, %d LLVM functions generated\n", @left_out_branch_count, @stubbed_fun_count, @generated_fun_count)
     end
 
     def report_owner_shape_sharing : Nil

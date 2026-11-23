@@ -16,11 +16,6 @@ class Crystal::CodeGenVisitor
       return false
     end
 
-    if (dispatch_prune = @dispatch_prune) && dispatch_prune.prunes_call?(node)
-      codegen_dead_call(node, dispatch_prune.mode)
-      return false
-    end
-
     owner = node.super? ? node.scope : node.target_def.owner
 
     call_args = prepare_call_args node, owner
@@ -421,14 +416,18 @@ class Crystal::CodeGenVisitor
     with_cloned_context do
       context.vars = new_vars
 
+      # The branches that no created type can select (see `DispatchPrune`)
+      # are left out; in check mode they are kept and stop the program. One
+      # branch always stays, so the code after the call has a value to work
+      # with even where the whole call is dead.
       dispatch_prune = @dispatch_prune
+      list_of_left_out = target_defs.map { |a_def| dispatch_prune ? dispatch_prune.prunes?(node, a_def) : false }
+      list_of_left_out[0] = false if list_of_left_out.all?
       left_out_any = false
       Phi.open(self, node, old_needs_value) do |phi|
         # Iterate all defs and check if any match the current types, given their ids (obj_type_id and arg_type_ids)
-        target_defs.each do |a_def|
-          # A branch that no created type can select is left out (see
-          # `DispatchPrune`); in check mode it is kept and stops the program.
-          left_out = dispatch_prune ? dispatch_prune.prunes?(node, a_def) : false
+        target_defs.each_with_index do |a_def, index|
+          left_out = list_of_left_out[index]
           if left_out && dispatch_prune.try(&.mode.on?)
             left_out_any = true
             @left_out_branch_count += 1
@@ -483,10 +482,10 @@ class Crystal::CodeGenVisitor
           phi.add @last, call.type
           position_at_end next_def_label
         end
-        # A development build stops with an "unreachable type" error where
-        # a left out type arrives after all; a release build keeps the plain
-        # `unreachable` that lets LLVM drop the last type check.
-        if left_out_any && !@program.has_flag?("release")
+        # Where a left out type arrives after all, the program stops with an
+        # "unreachable type" error, in release builds too: the check costs
+        # one cold call, and a wrong analysis must never run on silently.
+        if left_out_any
           codegen_unreachable_type(node, type_id_to_class_name(obj_type_id))
         end
         unreachable
@@ -496,36 +495,27 @@ class Crystal::CodeGenVisitor
     @needs_value = old_needs_value
   end
 
-  # A call whose receiver is a class nothing creates (see
-  # `DispatchPrune::Analysis#prunes_call?`): its receiver is evaluated, and
-  # then the program stops, as no execution gets past it. A development
-  # build, and check mode in any build, stops with an "unreachable type"
-  # error; a release build ends in `unreachable`.
-  private def codegen_dead_call(node : Call, mode : DispatchPrune::Mode) : Nil
-    if obj = node.obj
-      request_value(obj)
-      return if @builder.end
-    end
-
-    @left_out_branch_count += 1
-    if mode.check? || !@program.has_flag?("release")
-      codegen_unreachable_type(node, build_string_constant(node.target_def.owner.to_s))
-    end
-    unreachable
-  end
-
   # Stops the program with an "unreachable type" error: a value of the
   # type named by the string *type_name* reached *node*, a call compiled
   # without code for that type (see `DispatchPrune`). Does nothing when the
   # prelude has no `__crystal_raise_unreachable_type`.
   private def codegen_unreachable_type(node : Call, type_name : LLVM::Value) : Nil
-    func = crystal_raise_unreachable_type_fun
-    return unless func
+    codegen_unreachable_type(type_name, node.name, node.location)
+  end
 
-    location = node.location
+  # The same, for a call to the method *call_name* at *location*. Ends the
+  # current block with `unreachable` whether or not the prelude has the
+  # function.
+  private def codegen_unreachable_type(type_name : LLVM::Value, call_name : String, location : Location?) : Nil
+    func = crystal_raise_unreachable_type_fun
+    unless func
+      unreachable
+      return
+    end
+
     call_args = [
       cast_to_void_pointer(type_name),
-      cast_to_void_pointer(build_string_constant(node.name)),
+      cast_to_void_pointer(build_string_constant(call_name)),
       location ? cast_to_void_pointer(build_string_constant(location.expanded_location.to_s)) : llvm_context.void_pointer.null,
     ] of LLVM::Value
     call func, call_args

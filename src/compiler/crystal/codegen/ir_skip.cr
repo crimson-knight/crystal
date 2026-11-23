@@ -904,6 +904,8 @@ module Crystal
         @inline_depth = 0
 
         @code.mix(mangled_name)
+        # A def whose owner nothing creates gets a stub (see `DispatchPrune`).
+        @code.mix(@dispatch_prune.try(&.stubs?(typed_def)) || false)
         mix_type(self_type)
         begin
           if typed_def.is_a?(External)
@@ -1480,16 +1482,15 @@ module Crystal
 
       # Which branches of the call code generation leaves out (see
       # `DispatchPrune`): an edit that creates a type, or stops creating
-      # one, changes the code of exactly the functions with such a call.
+      # one, changes the code of exactly the functions with such a call
+      # (and of the defs that get a stub, see `#walk`).
       private def mix_dispatch_prune(node : Call, target_defs : Array(Def)) : Nil
         dispatch_prune = @dispatch_prune
         return unless dispatch_prune
 
-        if target_defs.size > 1
-          target_defs.each { |target_def| mix(dispatch_prune.prunes?(node, target_def)) }
-        else
-          mix(dispatch_prune.prunes_call?(node))
-        end
+        return unless target_defs.size > 1
+
+        target_defs.each { |target_def| mix(dispatch_prune.prunes?(node, target_def)) }
       end
 
       # What the call *node* reads from *target_def*, one of its target defs.

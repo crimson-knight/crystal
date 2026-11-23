@@ -37,8 +37,10 @@ module Crystal
   #   zeroed memory from `Pointer(T).malloc`, or a zeroed instance variable
   #   of an allocated object (see `#conjure` for why exact types are enough).
   #
-  # Code generation then asks `#prunes?` for each branch of a dispatch, with
-  # the same rule over the final set. The analysis is an
+  # Code generation then asks `#prunes?` for each branch of a dispatch, and
+  # `#stubs?` for each function it generates (a def owned by a class nothing
+  # creates gets a body that only stops the program), with the same rules
+  # over the final set. The analysis is an
   # over-approximation of what runs: the defs it walks include every def
   # code generation emits, since it follows every single-target call and
   # every dispatch branch code generation keeps.
@@ -101,6 +103,8 @@ module Crystal
       @conjured = Set(UInt64).new
       # Types whose instance variable initializers were walked.
       @allocated_types = Set(UInt64).new
+      # Target defs of `super` calls: never stubbed.
+      @super_targets = Set(UInt64).new
       @concrete_types_by_type_id = {} of UInt64 => Array(Type)
       @list_of_pending_defs = [] of Def
       # Dispatch branches not followed yet: the call and its target def.
@@ -167,31 +171,44 @@ module Crystal
         self
       end
 
-      # Whether code generation leaves the branch of *call* that goes to
-      # *a_def* out: no value of a created type can select it.
-      # Whether code generation replaces *call*, a call with a single target
-      # def, by an "unreachable type" stop: its receiver is a class nothing
-      # creates, so no execution gets to it.
-      def prunes_call?(call : Call) : Bool
+      # Whether code generation gives *a_def* a stub for its body, a stop
+      # with an "unreachable type" error: its owner is a class nothing
+      # creates, so no call to it ever runs. The calls stay as they are,
+      # and what only the real body would call is never generated.
+      def stubs?(a_def : Def) : Bool
         return false if @gave_up || @mode.off?
+        return false if @super_targets.includes?(a_def.object_id)
 
-        !single_target_live?(call, call.target_def)
+        !owner_live?(a_def)
       end
 
-      # A call with a single target def runs only with a receiver of the
-      # def's owner. A value whose static type is an exact class has that
-      # class at run time, and one whose static type is virtual has one of
-      # its subclasses, so a call on a class nothing creates never runs:
-      # `if io.is_a?(OpenSSL::SSL::Socket::Server)` guards such calls in a
-      # plain HTTP server. Other owners (the program, modules, metaclasses,
-      # structs) and `super` always count as live.
-      private def single_target_live?(call : Call, a_def : Def) : Bool
-        return true if call.super?
+      # A def with a single caller-independent receiver type runs only with
+      # a receiver of its owner. A value whose static type is an exact class
+      # has that class at run time, and one whose static type is virtual has
+      # one of its subclasses, so a def owned by a class nothing creates
+      # never runs: `if io.is_a?(OpenSSL::SSL::Socket::Server)` guards such
+      # calls in a plain HTTP server. Other owners (the program, modules,
+      # metaclasses, structs) always count as live, and so does a def typed
+      # once for several owners (`@[TypeOnce]`), which runs with receivers
+      # of other types.
+      private def owner_live?(a_def : Def) : Bool
+        return true if a_def.type_once?
         owner = a_def.owner?
         return true unless owner
         return true unless owner.is_a?(VirtualType) || prunable?(owner)
 
         live?(owner)
+      end
+
+      # A `super` call is followed whatever its owner (the walk stays on the
+      # safe side), and its target never gets a stub.
+      private def single_target_live?(call : Call, a_def : Def) : Bool
+        if call.super?
+          @super_targets << a_def.object_id
+          return true
+        end
+
+        owner_live?(a_def)
       end
 
       private def waiting_live?(call : Call, a_def : Def) : Bool
@@ -200,6 +217,8 @@ module Crystal
         count > 1 ? branch_live?(call, a_def) : single_target_live?(call, a_def)
       end
 
+      # Whether code generation leaves the branch of *call* that goes to
+      # *a_def* out: no value of a created type can select it.
       def prunes?(call : Call, a_def : Def) : Bool
         return false if @gave_up || @mode.off?
 
@@ -240,6 +259,7 @@ module Crystal
       # the call is a `super`, and each argument that is not autocast) can
       # hold a created type.
       private def branch_live?(call : Call, a_def : Def) : Bool
+        return true if a_def.type_once?
         unless call.super?
           return false unless live?(a_def.owner)
         end
