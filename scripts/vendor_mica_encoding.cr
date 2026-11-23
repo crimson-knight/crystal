@@ -21,8 +21,8 @@
 require "digest/sha256"
 require "file_utils"
 
-PINNED_COMMIT = "88d6ff9cd34cd344e2190fbc501b33ae309b1e34"
-PINNED_TREE   = "45d2c431fb8c354131a0305d59cac7eeb5a7c918"
+PINNED_COMMIT = "bc176e6ce906bc2e360a24f52e0de86eaf6515d3"
+PINNED_TREE   = "9b2d1442b760b2ccf10901eb550ca4fcb74d966b"
 
 # The parts of `Mica::Core` the encoding core uses, in require order.
 CORE_FILES = %w(position error)

@@ -54,15 +54,18 @@ module Crystal::Mica::Encoding
     ISO8859_1
     # US-ASCII: bytes 0x80 to 0xFF are errors.
     USASCII
-    # UTF-16 with a byte order mark: decoding reads one (big-endian when
-    # absent), encoding writes FE FF and big-endian code units.
+    # UTF-16 with a byte order mark, as glibc reads and writes it: decoding
+    # follows a byte order mark (little-endian when there is none), encoding
+    # writes FF FE and little-endian code units. (macOS libiconv uses
+    # big-endian; glibc, where Crystal programs are deployed, is followed.)
     UTF16
     # UTF-32 with a byte order mark, as `UTF16`.
     UTF32
     UTF32BE
     UTF32LE
     # UCS-2: UTF-16 code units without surrogate pairs (U+0000 to U+FFFF
-    # minus the surrogates). `UCS2` is big-endian without a byte order mark.
+    # minus the surrogates). `UCS2` is little-endian without a byte order
+    # mark, as glibc on every little-endian host.
     UCS2
     UCS2BE
     UCS2LE

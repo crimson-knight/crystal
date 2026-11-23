@@ -272,7 +272,7 @@ module Crystal::Mica::Encoding
   end
 
   # UTF-16 in either byte order; `UTF-16` writes the byte order mark
-  # FE FF first and then big-endian code units; UCS-2 has no surrogate
+  # FF FE first and then little-endian code units (glibc); UCS-2 has no surrogate
   # pairs, so code points above U+FFFF are unmappable.
   class UTF16Encoder < Encoder
     include EncoderLoop
@@ -283,7 +283,7 @@ module Crystal::Mica::Encoding
 
     def initialize(codec : Codec, error_mode : ErrorMode)
       super(codec, error_mode)
-      @big_endian = !(codec.utf16_le? || codec.ucs2_le?)
+      @big_endian = codec.utf16_be? || codec.ucs2_be?
       @ucs2 = codec.ucs2? || codec.ucs2_be? || codec.ucs2_le?
       @bom_pending = codec.utf16?
     end
@@ -326,7 +326,7 @@ module Crystal::Mica::Encoding
   end
 
   # UTF-32 in either byte order; `UTF-32` writes the byte order mark
-  # 00 00 FE FF first and then big-endian values.
+  # FF FE 00 00 first and then little-endian values, as glibc does.
   class UTF32Encoder < Encoder
     include EncoderLoop
 
@@ -335,7 +335,7 @@ module Crystal::Mica::Encoding
 
     def initialize(codec : Codec, error_mode : ErrorMode)
       super(codec, error_mode)
-      @big_endian = !codec.utf32_le?
+      @big_endian = codec.utf32_be?
       @bom_pending = codec.utf32?
     end
 

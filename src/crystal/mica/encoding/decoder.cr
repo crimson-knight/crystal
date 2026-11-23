@@ -87,10 +87,10 @@ module Crystal::Mica::Encoding
       case self
       when .utf8?
         UTF8Decoder.new(self, error_mode, strip_bom)
-      when .utf16_be?, .ucs2?, .ucs2_be?
+      when .utf16_be?, .ucs2_be?
         UTF16Decoder.new(self, error_mode, big_endian: true, strip_bom: strip_bom)
-      when .utf16_le?, .ucs2_le?, .utf16?
-        UTF16Decoder.new(self, error_mode, big_endian: !utf16_le? && !ucs2_le?, strip_bom: strip_bom)
+      when .utf16_le?, .ucs2_le?, .utf16?, .ucs2?
+        UTF16Decoder.new(self, error_mode, big_endian: false, strip_bom: strip_bom)
       when .utf32?, .utf32_be?, .utf32_le?
         UTF32Decoder.new(self, error_mode)
       when .gbk?, .gb18030?

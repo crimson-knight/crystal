@@ -2971,8 +2971,9 @@ describe "String" do
         it "reads iconv names with their iconv meaning, not the web's" do
           String.new(Bytes[0x80], "ISO-8859-1").should eq("\u0080")
           String.new(Bytes[0x80], "windows-1252").should eq("€")
-          "A".encode("UTF-16").should eq(Bytes[0xFE, 0xFF, 0x00, 0x41])
-          String.new(Bytes[0xFF, 0xFE, 0x41, 0x00], "UTF-16").should eq("A")
+          "A".encode("UTF-16").should eq(Bytes[0xFF, 0xFE, 0x41, 0x00])
+          String.new(Bytes[0xFE, 0xFF, 0x00, 0x41], "UTF-16").should eq("A")
+          "A".encode("UCS-2").should eq(Bytes[0x41, 0x00])
           expect_raises ArgumentError, "Invalid multibyte sequence" do
             String.new(Bytes[0x80], "US-ASCII")
           end

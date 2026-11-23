@@ -3,7 +3,7 @@
 # :nodoc:
 module Crystal::Mica
   VERSION = "0.2.0"
-  COMMIT  = "88d6ff9cd34cd344e2190fbc501b33ae309b1e34"
+  COMMIT  = "bc176e6ce906bc2e360a24f52e0de86eaf6515d3"
 end
 
 # Character-set conversion in Crystal, to the WHATWG Encoding Standard

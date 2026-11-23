@@ -36,8 +36,10 @@ UTF-32BE/LE, UCS-2, UCS-2BE/LE and BIG5-HKSCS.
 Names are read with their iconv meaning, so code written for iconv keeps
 its results: `ISO-8859-1` is exact Latin-1 (byte 0x80 is U+0080, not the
 euro sign a browser would read), `US-ASCII` rejects bytes over 0x7F,
-`UTF-16` writes a byte order mark and big-endian, `UCS-2` refuses
-characters outside the Basic Multilingual Plane, and `BIG5-HKSCS` decodes
+`UTF-16` and `UTF-32` write a byte order mark and then little-endian
+units, and `UTF-16`, `UTF-32` and `UCS-2` read little-endian when no mark
+says otherwise (glibc's behavior; macOS libiconv uses big-endian there),
+`UCS-2` refuses characters outside the Basic Multilingual Plane, and `BIG5-HKSCS` decodes
 and writes the four composed pairs (0x8862, 0x8864, 0x88A3, 0x88A5).
 
 Any other name raises:

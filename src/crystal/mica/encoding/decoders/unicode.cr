@@ -139,7 +139,7 @@ module Crystal::Mica::Encoding
 
   # UTF-16 in either byte order (the Encoding Standard's shared UTF-16
   # decoder), plus the iconv forms: `UTF-16` reads a byte order mark
-  # (big-endian without one) and UCS-2 treats every surrogate code unit as
+  # (little-endian without one, as glibc) and UCS-2 treats every surrogate code unit as
   # an error.
   class UTF16Decoder < Decoder
     @lead_byte = -1
@@ -189,7 +189,7 @@ module Crystal::Mica::Encoding
           @detect_bom = false
           next if unit == 0xFEFF
           if unit == 0xFFFE
-            @big_endian = false
+            @big_endian = !@big_endian
             next
           end
         end
@@ -252,7 +252,7 @@ module Crystal::Mica::Encoding
   end
 
   # UTF-32 in either byte order; `UTF-32` reads a byte order mark
-  # (big-endian without one). A value above U+10FFFF or a surrogate is an
+  # (little-endian without one, as glibc). A value above U+10FFFF or a surrogate is an
   # error covering its four bytes.
   class UTF32Decoder < Decoder
     @unit = 0_u32
@@ -264,14 +264,14 @@ module Crystal::Mica::Encoding
     def initialize(codec : Codec, error_mode : ErrorMode)
       super(codec, error_mode)
       @detect_bom = codec.utf32?
-      @big_endian = !codec.utf32_le?
+      @big_endian = codec.utf32_be?
     end
 
     def reset : Nil
       @unit = 0_u32
       @count = 0
       @detect_bom = @codec.utf32?
-      @big_endian = !@codec.utf32_le?
+      @big_endian = @codec.utf32_be?
     end
 
     def convert(input : Bytes, output : Bytes, last : Bool) : Result
@@ -299,7 +299,7 @@ module Crystal::Mica::Encoding
           @detect_bom = false
           next if unit == 0x0000FEFF_u32
           if unit == 0xFFFE0000_u32
-            @big_endian = false
+            @big_endian = !@big_endian
             next
           end
         end
