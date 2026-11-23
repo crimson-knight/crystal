@@ -107,6 +107,20 @@ module Crystal
       @def_nest_count += 1
     end
 
+    # Cleans up the body of *typed_def* (and the typed defs its calls reach)
+    # the way a call reaching it does, unless that already happened: for a
+    # typed def a build server typed again (see `InferReuse::Retyper`).
+    def transform_typed_def(typed_def : Def) : Nil
+      return unless @transformed.add?(typed_def)
+
+      current_def = @current_def
+      @current_def = typed_def
+      @def_nest_count += 1
+      typed_def.body = typed_def.body.transform(self)
+      @def_nest_count -= 1
+      @current_def = current_def
+    end
+
     def after_transform(node)
       case node
       when And, Or, If, RespondsTo, IsA, Assign

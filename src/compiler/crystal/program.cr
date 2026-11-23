@@ -83,6 +83,14 @@ module Crystal
     # files that were already parsed during the parallel parse phase.
     property pre_parsed_files : Hash(String, ASTNode)? = nil
 
+    # What this program's build read, for a build server that keeps the
+    # typed program for the next build (see `InferReuse::SourceRecord`).
+    property infer_reuse_record : InferReuse::SourceRecord? = nil
+
+    # Collects the typed defs that type inference creates while a build
+    # server types an edit again (see `InferReuse::Retyper`).
+    property infer_reuse_new_typed_defs : Array(Def)? = nil
+
     # All created unions in a program, indexed by an array of opaque
     # ids of each type in the union. The array (the key) is sorted
     # by this opaque id.

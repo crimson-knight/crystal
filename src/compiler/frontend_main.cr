@@ -43,6 +43,7 @@ require "./crystal/formatter"                   # Crystal::Formatter (used by th
 require "./crystal/codegen/owner_shape_sharing" # OwnerShapeSharing (read by semantic/memory_census.cr); no LLVM inside
 require "./crystal/codegen/stable_numbering"    # Program#stable_numbering (read by owner_shape_sharing.cr); no LLVM inside
 require "./crystal/codegen/llvm_id"             # Program#llvm_id (read by owner_shape_sharing.cr); no LLVM inside
+require "./crystal/infer_reuse/source_record"   # Program#infer_reuse_record type; plain data, no LLVM inside
 require "./crystal/macros"
 # IMPORTANT: semantic MUST be required before macros/* (mirroring
 # src/compiler/requires.cr). The macro interpreter's overload restrictions

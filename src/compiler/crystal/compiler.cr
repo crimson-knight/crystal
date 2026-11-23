@@ -364,6 +364,19 @@ module Crystal
     # no source files changed and the output binary already exists.
     @compilation_skipped : Bool = false
 
+    # The listening socket and status pipe from the build server that started
+    # this compiler, which keeps the typed program for the next build (see
+    # `InferReuse::Holder`).
+    property infer_reuse_handoff : InferReuse::Handoff? = nil
+
+    # The command line of this build, which a later build must repeat to reuse
+    # its typed program.
+    property infer_reuse_argv : Array(String)? = nil
+
+    # Where to write the digest of the typed program (see
+    # `InferReuse::TypedProgramDigest`), for a verification of a reused build.
+    property infer_reuse_digest_filename : String? = nil
+
     # Program that was created for the last compilation.
     property! program : Program
 
@@ -449,6 +462,22 @@ module Crystal
           program.macro_expansion_error_hook.try &.call(ex.cause)
         end
 
+        if digest_filename = @infer_reuse_digest_filename
+          File.write(digest_filename, InferReuse::TypedProgramDigest.new(program, node).to_json)
+        end
+
+        if (handoff = @infer_reuse_handoff) && (record = program.infer_reuse_record) && !@no_codegen
+          # Returns in the process that generates code; the program it typed
+          # stays with the build server. A later build may come back here
+          # with an edit re-typed in a copy of this program.
+          node = InferReuse::Holder.new(handoff).after_semantic(self, program, node, record)
+          if @incremental && !@no_cache
+            @current_cached_data = IncrementalCache.load(
+              CacheDir.instance.directory_for(source), Config.version, @codegen_target.to_s, @flags, @prelude
+            )
+          end
+        end
+
         unless @no_codegen
           release_semantic_only_data(program, node)
           units = codegen program, node, source, output_filename
@@ -531,6 +560,7 @@ module Crystal
       program.flags.concat @flags
       program.wants_doc = wants_doc?
       program.color = color?
+      program.infer_reuse_record = InferReuse::SourceRecord.new if @infer_reuse_handoff
       program.stdout = stdout
       program.show_error_trace = show_error_trace?
       program.progress_tracker = @progress_tracker
@@ -589,6 +619,7 @@ module Crystal
     end
 
     private def parse(program, source : Source)
+      program.infer_reuse_record.try &.add_source(source.filename, source.code)
       parser = program.new_parser(source.code)
       parser.filename = source.filename
       parser.wants_doc = wants_doc?
@@ -630,7 +661,10 @@ module Crystal
                   parser.filename = filename
                   parser.wants_doc = wants_doc?
                   parsed = parser.parse
-                  mutex.synchronize { result[filename] = parsed }
+                  mutex.synchronize do
+                    result[filename] = parsed
+                    program.infer_reuse_record.try &.add_source(filename, content)
+                  end
                 rescue
                   # Skip files that fail to parse -- semantic phase handles errors
                 end
@@ -646,6 +680,7 @@ module Crystal
           filenames.each do |filename|
             begin
               content = File.read(filename)
+              program.infer_reuse_record.try &.add_source(filename, content)
               parser = program.new_parser(content)
               parser.filename = filename
               parser.wants_doc = wants_doc?
@@ -660,6 +695,7 @@ module Crystal
         filenames.each do |filename|
           begin
             content = File.read(filename)
+            program.infer_reuse_record.try &.add_source(filename, content)
             parser = program.new_parser(content)
             parser.filename = filename
             parser.wants_doc = wants_doc?

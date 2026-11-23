@@ -78,6 +78,9 @@ class Crystal::Command
   # is not a compiler executable and compiles objects in-process.
   def self.run(options = ARGV, *, codegen_worker_executable : String? = nil)
     GCTuning.configure_from_env
+    # Takes the build server handoff out of the environment before anything
+    # starts another process.
+    InferReuse.handoff
     new(options, codegen_worker_executable).run
   end
 
@@ -85,6 +88,7 @@ class Crystal::Command
   @compiler : Compiler?
 
   def initialize(@options : Array(String), @codegen_worker_executable : String? = nil)
+    @original_options = @options.dup
     @color = Colorize.default_enabled?(STDOUT, STDERR)
     @error_trace = false
     @progress_tracker = ProgressTracker.new
@@ -101,6 +105,9 @@ class Crystal::Command
       options.shift
       init
     when "build".starts_with?(command)
+      if InferReuse.client?(options[1..])
+        InferReuse::Client.run(options.dup)
+      end
       options.shift
       build
       report_warnings
@@ -146,6 +153,10 @@ class Crystal::Command
     when command == "clear_cache"
       options.shift
       clear_cache
+    when command == InferReuse::Server::COMMAND
+      # Internal: started by `crystal build` to keep typed programs (see
+      # `InferReuse`).
+      InferReuse::Server.main(options[1]? || abort!("missing the build server socket", :USAGE_ERROR))
     when command == CodegenWorker::COMMAND
       # Internal: started by the compiler itself to build object files.
       CodegenWorker.new.perform
@@ -287,6 +298,11 @@ class Crystal::Command
   private def build
     config = create_compiler "build"
     config.compiler.object_stage_handoff = @object_stage_handoff
+    if handoff = InferReuse.handoff
+      config.compiler.infer_reuse_handoff = handoff
+      config.compiler.infer_reuse_argv = @original_options
+    end
+    config.compiler.infer_reuse_digest_filename = ENV.delete(InferReuse::DIGEST_VARIABLE)
     config.compile
   end
 

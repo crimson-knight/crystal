@@ -17,12 +17,12 @@ class Crystal::EventLoop::LibEvent < Crystal::EventLoop
   def initialize(parallelism : Int32)
   end
 
-  {% if flag?(:without_mt) %}
-    # Reinitializes the event loop after a fork.
-    def after_fork : Nil
-      event_base.reinit
-    end
-  {% end %}
+  # Also defined in multithreaded mode: the compiler build server forks while only
+  # one thread runs Crystal code (see `Crystal::InferReuse.fork_process`).
+  # Reinitializes the event loop after a fork.
+  def after_fork : Nil
+    event_base.reinit
+  end
 
   def run(blocking : Bool) : Bool
     flags = LibEvent2::EventLoopFlags::Once
