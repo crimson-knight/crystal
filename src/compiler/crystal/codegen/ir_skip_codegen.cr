@@ -32,7 +32,8 @@ class Crystal::CodeGenVisitor
     end
 
     walker = @ir_skip_walker ||= IrSkip::KeyWalker.new(@program, IrSkip::TypeDescriptors.new(@program),
-      @owner_shape_sharing, keeps_local_names: @debug.variables?, line_maps: ir_skip_session.try(&.line_maps))
+      @owner_shape_sharing, keeps_local_names: @debug.variables?, line_maps: ir_skip_session.try(&.line_maps),
+      dispatch_prune: @dispatch_prune)
     started_at = Time.instant
     walk = walker.walk(mangled_name, target_def, self_type)
     if session = ir_skip_session

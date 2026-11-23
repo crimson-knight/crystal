@@ -835,6 +835,15 @@ module Crystal
       # such a build drops.
       stable_numbering = @incremental && !@no_cache && @emit_targets.none? ? StableNumbering.load(output_dir) : nil
       program.stable_numbering = stable_numbering
+      # The branches a dispatch leaves out depend on the whole program, so the
+      # analysis runs before code generation, and the keys of IR skipping
+      # record each call's decisions (see `IrSkip::KeyWalker`).
+      program.dispatch_prune = nil
+      unless DispatchPrune.mode_for(program).off?
+        program.dispatch_prune = @progress_tracker.stage("Codegen (prune dispatch)") do
+          program.analyze_dispatch_prune(node)
+        end
+      end
       ir_skip_session = ir_skip_session_for(program, output_dir, is_single_module, stable_numbering, sources)
       program.ir_skip = ir_skip_session
       @last_ir_skip_stats = ir_skip_session.try(&.stats)
@@ -846,6 +855,7 @@ module Crystal
             module_spill: module_spill, module_segment_instructions: @module_segment_instructions.to_i64
         end
       end
+      program.dispatch_prune = nil
       if stable_numbering
         stable_numbering.type_ids_by_stable_key = program.llvm_id.type_ids_in_use_by_stable_key
         list_of_part_fun_counts_by_module_name = {} of String => Array(Int32)

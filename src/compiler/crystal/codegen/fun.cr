@@ -411,6 +411,12 @@ class Crystal::CodeGenVisitor
           end
 
           codegen_primitive(nil, body, target_def, primitive_params)
+        elsif !is_fun_literal && !is_closure && !is_exported_fun && @dispatch_prune.try(&.stubs?(target_def))
+          # Its owner is a class nothing creates (see `DispatchPrune`): the
+          # function only stops the program, and nothing its real body
+          # calls is generated.
+          @stubbed_fun_count += 1
+          codegen_unreachable_type(build_string_constant(target_def.owner.to_s), target_def.name, target_def.location)
         else
           accept target_def.body
         end

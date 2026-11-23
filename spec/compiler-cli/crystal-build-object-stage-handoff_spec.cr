@@ -38,7 +38,7 @@ describe "`crystal build` with the object stage handoff" do
         list_of_stage_names.count("Codegen (bc+obj)").should eq(1)
         list_of_stage_names.count("Codegen (linking)").should eq(1)
         list_of_stage_names.last(4).should eq(["Codegen (crystal)", "Codegen (bc+obj)", "Codegen (linking)", "dsymutil"])
-        build.output.should match(/\[\d+\/16\] \[\d+\/\d+\] Codegen \(bc\+obj\)/)
+        build.output.should match(/\[\d+\/17\] \[\d+\/\d+\] Codegen \(bc\+obj\)/)
 
         list_of_cache_files(cache_dir, "object-stage-handoff.json").should be_empty
         {% if flag?(:darwin) %}

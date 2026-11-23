@@ -22,7 +22,7 @@ private class InferReuseProject
 
   # Builds `main.cr` and returns the build result, what the program printed
   # (or `nil` when the build failed) and the build server's report.
-  def build : {Process::Result, String?, JSON::Any}
+  def build(list_of_extra_args = [] of String) : {Process::Result, String?, JSON::Any}
     File.delete?(report_filename)
     env = {
       "CRYSTAL_CACHE_DIR"                 => File.join(@directory, "cache"),
@@ -31,7 +31,7 @@ private class InferReuseProject
       "CRYSTAL_INFER_REUSE_REPORT"        => report_filename,
       "CRYSTAL_INFER_SERVER_IDLE_SECONDS" => "120",
     }
-    result = Process.capture_result(crystal, "build", "--incremental", "main.cr", "-o", "app", env: env, chdir: @directory)
+    result = Process.capture_result([crystal, "build", "--incremental", *list_of_extra_args, "main.cr", "-o", "app"], env: env, chdir: @directory)
     report = JSON.parse(File.exists?(report_filename) ? File.read(report_filename) : "{}")
     report["server_pid"]?.try { |pid| @list_of_server_pids << pid.as_i64 }
     printed = result.status.success? ? Process.capture_result(File.join(@directory, "app")).output : nil
@@ -93,8 +93,8 @@ private def with_project(name, &)
   end
 end
 
-private def expect_build(project, expected_output, reused : Bool)
-  result, printed, report = project.build
+private def expect_build(project, expected_output, reused : Bool, list_of_extra_args = [] of String)
+  result, printed, report = project.build(list_of_extra_args)
   result.should be_success
   printed.should eq(expected_output)
   report["reused"].as_bool.should eq(reused)
@@ -423,6 +423,52 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
 
       project.write("main.cr", MAIN.sub("Helper.value + 10", "Helper.value + 20"))
       expect_build(project, "Hello world\n21\n0\n", reused: true)
+    end
+  end
+
+  it "prunes dispatch again when a re-typed body creates a type that was left out" do
+    with_project("infer-reuse-prune-dispatch") do |project|
+      main = <<-CRYSTAL
+        module Greeter
+          abstract def greet : Int32
+        end
+
+        class Plain
+          include Greeter
+
+          def greet : Int32
+            1
+          end
+        end
+
+        class NeverMade
+          include Greeter
+
+          def greet : Int32
+            2
+          end
+        end
+
+        module Factory
+          def self.make(list : Array(Greeter)) : Nil
+            list << Plain.new
+            nil
+          end
+        end
+
+        list = [] of Greeter
+        Factory.make(list)
+        puts list.sum(&.greet)
+        CRYSTAL
+      project.write("main.cr", main)
+      flags = ["-Dprune_dispatch"]
+      expect_build(project, "1\n", reused: false, list_of_extra_args: flags)
+
+      project.write("main.cr", main.sub("    list << Plain.new\n", "    list << NeverMade.new\n"))
+      expect_build(project, "2\n", reused: true, list_of_extra_args: flags)
+
+      project.write("main.cr", main)
+      expect_build(project, "1\n", reused: true, list_of_extra_args: flags)
     end
   end
 
