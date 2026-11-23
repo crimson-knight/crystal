@@ -45,11 +45,17 @@ module Crystal::InferReuse
   # Internal: where the fresh type check of a verification writes its digest.
   DIGEST_VARIABLE = "CRYSTAL_INFER_REUSE_DIGEST"
 
-  # Environment variables that may differ between two builds that reuse the
-  # same typed program: none of them is read by type inference.
+  # Type inference reads the environment in two ways: through macros (`env`,
+  # recorded in `SourceRecord` and compared there) and through the
+  # compiler's own settings below. Two builds may reuse one typed program
+  # only when these read the same; the rest of the environment reaches only
+  # code generation and linking, which every build runs with its own.
+  COMPARED_VARIABLES = {"HOME", "XDG_CACHE_HOME", "LOCALAPPDATA", "USE_PCRE1", "MACOSX_DEPLOYMENT_TARGET"}
+
+  # The compiler's own variables that may differ between two builds that
+  # reuse one typed program.
   PER_BUILD_VARIABLES = {
-    "TMPDIR", "PWD", "OLDPWD", "SHLVL", "_", "CRYSTAL_WORKERS", REPORT_VARIABLE, VERIFY_VARIABLE,
-    "CRYSTAL_IR_SKIP_REPORT", "CRYSTAL_IR_SKIP_VERIFY",
+    "CRYSTAL_WORKERS", REPORT_VARIABLE, VERIFY_VARIABLE, "CRYSTAL_IR_SKIP_REPORT", "CRYSTAL_IR_SKIP_VERIFY",
   }
 
   DEFAULT_IDLE_SECONDS = 1800
@@ -86,10 +92,14 @@ module Crystal::InferReuse
     "/tmp/crystal-infer-#{digest[0, 20]}.sock"
   end
 
-  # The environment of a build without the per-build names, for comparing
-  # two builds.
+  # The part of a build's environment type inference reads outside macros:
+  # `COMPARED_VARIABLES` and the compiler's `CRYSTAL_` variables, without
+  # the per-build ones.
   def self.comparable_env(env : Hash(String, String)) : Hash(String, String)
-    env.reject { |name, _| PER_BUILD_VARIABLES.includes?(name) }
+    env.select do |name, _|
+      next false if PER_BUILD_VARIABLES.includes?(name)
+      COMPARED_VARIABLES.includes?(name) || name.starts_with?("CRYSTAL_")
+    end
   end
 
   # The listening socket and status pipe a fresh compiler process got from

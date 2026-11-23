@@ -4,8 +4,8 @@ module Crystal::InferReuse
   #
   # Reuse needs all of:
   #
-  # * the same argument list, working directory and environment (apart from
-  #   `PER_BUILD_VARIABLES`) as the build that typed the program;
+  # * the same argument list, working directory and compiler environment
+  #   (`InferReuse.comparable_env`) as the build that typed the program;
   # * no macro that ran a program (`run`), and every command, environment
   #   variable, file and file check a macro read giving the same answer;
   # * no warning from the kept build (a reused build would repeat it);
