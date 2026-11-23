@@ -425,12 +425,16 @@ module Crystal
           program.strict_tool_recorder = recorder
         end
         @last_warnings = compiler.warnings.infos.count(&.includes?("strict file:"))
+        @last_typed_once = recorder.declarations.count(&.a_def.type_once?)
         recorder
       rescue ex : CodeError
         ex
       end
 
       @last_warnings = 0
+      @last_typed_once = 0
+      @typed_once_before : Int32?
+      @typed_once_after : Int32?
 
       # What happened to each method over all rounds, by file and the method's
       # order among the file's defs.
@@ -452,6 +456,7 @@ module Crystal
           raise Stop.new(1)
         end
         @strict_warnings_before = @last_warnings
+        @typed_once_before = @last_typed_once
         recorder = first
 
         @max_rounds.times do
@@ -472,7 +477,10 @@ module Crystal
             break
           end
         end
-        @strict_warnings_after = @last_warnings if @verify
+        if @verify
+          @strict_warnings_after = @last_warnings
+          @typed_once_after = @last_typed_once
+        end
       end
 
       # Plans every declared def of the converted files from *recorder*.
@@ -860,6 +868,9 @@ module Crystal
         @output.puts "#{typed} methods typed, #{overrides} marked @[Override], #{left} left as they are (#{@builds} type inference builds)"
         if (before = @strict_warnings_before) && (after = @strict_warnings_after)
           @output.puts "strict-file warnings in the program: #{before} before, #{after} after"
+        end
+        if (before = @typed_once_before) && (after = @typed_once_after)
+          @output.puts "methods of these files typed once: #{before} before, #{after} after"
         end
       end
 
