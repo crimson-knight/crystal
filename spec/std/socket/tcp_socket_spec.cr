@@ -38,6 +38,33 @@ describe TCPSocket, tags: "network" do
             TCPSocket.new(address, port)
           end
         end
+
+        it "raises when connection is refused with a connect timeout" do
+          port = unused_local_tcp_port
+
+          error = expect_raises(Socket::ConnectError, "Error connecting to '#{address}:#{port}'") do
+            TCPSocket.new(address, port, connect_timeout: 5.seconds)
+          end
+          {% unless flag?(:win32) %}
+            error.os_error.should eq(Errno::ECONNREFUSED)
+          {% end %}
+        end
+
+        it "raises ECONNREFUSED from Socket#connect when connection is refused" do
+          port = unused_local_tcp_port
+
+          socket = Socket.tcp(family)
+          begin
+            error = expect_raises(Socket::ConnectError) do
+              socket.connect(Socket::IPAddress.new(address, port))
+            end
+            {% unless flag?(:win32) %}
+              error.os_error.should eq(Errno::ECONNREFUSED)
+            {% end %}
+          ensure
+            socket.close
+          end
+        end
       {% end %}
 
       it "raises when port is negative" do
