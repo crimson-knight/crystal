@@ -412,9 +412,20 @@ class Crystal::CodeGenVisitor
     with_cloned_context do
       context.vars = new_vars
 
+      dispatch_prune = @dispatch_prune
+      left_out_any = false
       Phi.open(self, node, old_needs_value) do |phi|
         # Iterate all defs and check if any match the current types, given their ids (obj_type_id and arg_type_ids)
         target_defs.each do |a_def|
+          # A branch that no created type can select is left out (see
+          # `DispatchPrune`); in check mode it is kept and stops the program.
+          left_out = dispatch_prune ? dispatch_prune.prunes?(node, a_def) : false
+          if left_out && dispatch_prune.try(&.mode.on?)
+            left_out_any = true
+            @left_out_branch_count += 1
+            next
+          end
+
           if is_super
             # A super call always matches the obj type
             result = int1(1)
@@ -441,6 +452,12 @@ class Crystal::CodeGenVisitor
 
           position_at_end current_def_label
 
+          if left_out
+            codegen_unreachable_type(node, obj_type_id)
+            position_at_end next_def_label
+            next
+          end
+
           # Prepare this specific call
           call.target_defs = [a_def] of Def
           call.obj.try &.set_type(a_def.owner)
@@ -457,11 +474,35 @@ class Crystal::CodeGenVisitor
           phi.add @last, call.type
           position_at_end next_def_label
         end
+        # A development build stops with an "unreachable type" error where
+        # a left out type arrives after all; a release build keeps the plain
+        # `unreachable` that lets LLVM drop the last type check.
+        if left_out_any && !@program.has_flag?("release")
+          codegen_unreachable_type(node, obj_type_id)
+        end
         unreachable
       end
     end
 
     @needs_value = old_needs_value
+  end
+
+  # Stops the program with an "unreachable type" error: a value whose type
+  # id is *obj_type_id* reached *node*, a dispatch compiled without a branch
+  # for its type (see `DispatchPrune`). Does nothing when the prelude has no
+  # `__crystal_raise_unreachable_type`.
+  private def codegen_unreachable_type(node : Call, obj_type_id : LLVM::Value) : Nil
+    func = crystal_raise_unreachable_type_fun
+    return unless func
+
+    location = node.location
+    call_args = [
+      cast_to_void_pointer(type_id_to_class_name(obj_type_id)),
+      cast_to_void_pointer(build_string_constant(node.name)),
+      location ? cast_to_void_pointer(build_string_constant(location.expanded_location.to_s)) : llvm_context.void_pointer.null,
+    ] of LLVM::Value
+    call func, call_args
+    unreachable
   end
 
   def codegen_call(node, target_def, self_type, call_args)

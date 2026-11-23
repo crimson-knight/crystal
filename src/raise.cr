@@ -313,6 +313,20 @@ fun __crystal_raise_overflow : NoReturn
   raise OverflowError.new
 end
 
+{% unless flag?(:interpreted) %}
+  # :nodoc:
+  #
+  # Called by a call whose dispatch leaves out the types the program never
+  # creates (dispatch pruning in the compiler), when a value of such a type
+  # reaches it after all. That is a compiler bug, so the program stops at
+  # once instead of raising an exception that code could rescue.
+  fun __crystal_raise_unreachable_type(type_name : Void*, call_name : Void*, location : Void*) : NoReturn
+    Crystal::System.print_error "Unreachable type: a value of type %s reached the call to `%s` at %s, which was compiled without a branch for that type because no code of the program creates it. This is a bug in the compiler's dispatch pruning (build with -Dno_prune_dispatch to work around it).\n",
+      type_name.as(String), call_name.as(String), location ? location.as(String) : "an unknown location"
+    LibC._exit(70)
+  end
+{% end %}
+
 {% if flag?(:interpreted) %}
   # :nodoc:
   def __crystal_raise_cast_failed(obj, type_name : String, location : String)
