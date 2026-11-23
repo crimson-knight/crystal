@@ -1385,7 +1385,11 @@ module Crystal
     private def release_semantic_only_data(program, node : ASTNode)
       @progress_tracker.stage("Semantic (release)") do
         program.release_semantic_only_data(node)
-        return_free_memory_to_os
+        # The code generation child of the build server (`InferReuse`)
+        # shares its heap pages with the server, which keeps the typed
+        # program: unmapping free blocks there returns nothing to the
+        # system, and the three full collections took about 3 s on Grant300.
+        return_free_memory_to_os unless @infer_reuse_handoff
       end
     end
 
