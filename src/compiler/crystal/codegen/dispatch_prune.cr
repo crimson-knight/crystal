@@ -179,7 +179,21 @@ module Crystal
         return false if @gave_up || @mode.off?
         return false if @super_targets.includes?(a_def.object_id)
 
-        !owner_live?(a_def)
+        !def_live?(a_def)
+      end
+
+      # A typed def is typed for the static types of its arguments, so each
+      # argument value it ever receives has one of their concrete types: a
+      # def with an argument type nothing creates never runs, like a def
+      # owned by a class nothing creates (see `owner_live?`).
+      private def def_live?(a_def : Def) : Bool
+        return false unless owner_live?(a_def)
+        return true if a_def.type_once?
+
+        a_def.args.all? do |arg|
+          arg_type = arg.type?
+          arg_type.nil? || live?(arg_type)
+        end
       end
 
       # A def with a single caller-independent receiver type runs only with
@@ -208,7 +222,7 @@ module Crystal
           return true
         end
 
-        owner_live?(a_def)
+        def_live?(a_def)
       end
 
       private def waiting_live?(call : Call, a_def : Def) : Bool

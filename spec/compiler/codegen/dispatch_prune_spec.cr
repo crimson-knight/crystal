@@ -228,6 +228,27 @@ describe "Code gen: dispatch pruning" do
     run(code, flags: ["prune_dispatch"]).to_i.should eq(1)
   end
 
+  it "gives a def whose argument type nothing creates a stub, behind is_a?" do
+    code = GREETERS + %(
+      def describe_never_made(greeter : NeverMade) : Int32
+        greeter.only_through_never_made
+      end
+
+      list = Pointer(Greeter).malloc(1_u64)
+      list.value = Plain.new
+      greeter = list.value
+      if greeter.is_a?(NeverMade)
+        describe_never_made(greeter)
+      else
+        greeter.greet
+      end
+      )
+    list_of_names = generated_function_names(code)
+    list_of_names.any?(&.includes?("describe_never_made")).should be_true
+    list_of_names.any?(&.includes?("only_through_never_made")).should be_false
+    run(code, flags: ["prune_dispatch"]).to_i.should eq(1)
+  end
+
   it "stops a development build with an unreachable type error when a left out type arrives" do
     code = %(
       require "prelude"
