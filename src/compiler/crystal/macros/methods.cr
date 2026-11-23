@@ -142,6 +142,7 @@ module Crystal
         arg.accept self
         cmd = @last.to_macro_id
         env_value = ENV[cmd]?
+        @program.infer_reuse_record.try &.add_env_read(cmd, env_value)
         @last = env_value ? StringLiteral.new(env_value) : NilLiteral.new
       end
     end
@@ -262,6 +263,8 @@ module Crystal
         node.raise "error executing command: #{cmd}: #{exc.message}"
       end
 
+      @program.infer_reuse_record.try &.add_command_output(cmd, $?.success? ? result : nil)
+
       if $?.success?
         @last = MacroId.new(result)
       elsif result.empty?
@@ -284,7 +287,9 @@ module Crystal
         arg.accept self
         filename = @last.to_macro_id
 
-        @last = BoolLiteral.new(File.exists?(filename))
+        exists = File.exists?(filename)
+        @program.infer_reuse_record.try &.add_file_check(filename, exists)
+        @last = BoolLiteral.new(exists)
       end
     end
 
@@ -294,8 +299,11 @@ module Crystal
         filename = @last.to_macro_id
 
         begin
-          @last = StringLiteral.new(File.read(filename))
+          content = File.read(filename)
+          @program.infer_reuse_record.try &.add_file_read(filename, content)
+          @last = StringLiteral.new(content)
         rescue ex
+          @program.infer_reuse_record.try &.add_file_read(filename, nil)
           node.raise ex.to_s unless nilable
           @last = NilLiteral.new
         end
@@ -323,6 +331,7 @@ module Crystal
       end
 
       result = @program.macro_run(filename, run_args)
+      @program.infer_reuse_record.try &.add_program_run(filename, run_args, result.status.success? ? result.stdout : nil)
       if result.status.success?
         @last = MacroId.new(result.stdout)
       else
@@ -1652,7 +1661,36 @@ module Crystal
   end
 
   class Def
+    # Macro methods of a def that read nothing of its body.
+    MACRO_METHODS_WITHOUT_BODY = {
+      "name", "args", "splat_index", "double_splat", "block_arg", "accepts_block?", "return_type",
+      "free_vars", "receiver", "visibility", "abstract?", "annotation", "annotations", "filename",
+      "line_number", "column_number", "end_line_number", "end_column_number", "doc", "doc_comment",
+      "==", "!=", "is_a?", "class_name", "nil?",
+    }
+
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+      unless MACRO_METHODS_WITHOUT_BODY.includes?(method)
+        # A build server re-types a changed method body alone only when no
+        # macro output can depend on it (see `InferReuse::Retyper`): it notes
+        # the lines of each method whose body a macro read.
+        interpreter.@program.infer_reuse_record.try do |record|
+          location = self.location
+          end_location = self.end_location
+          filename = location.try(&.filename)
+          if filename.is_a?(VirtualFile)
+            # A method a macro expansion wrote: its text came from a macro body
+            # (outside any method body, so an edit there types the program
+            # fresh) or from what macros read, which is recorded where read.
+          elsif location && end_location && filename.is_a?(String) && end_location.filename == filename
+            record.add_def_body_read(filename, @name, location.line_number, end_location.line_number)
+          else
+            place = name_loc.try { |macro_location| macro_location.macro_location || macro_location }
+            record.block("a macro read the body of method '#{@name}', which has no source lines (`#{method}` at #{place})")
+          end
+        end
+      end
+
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }

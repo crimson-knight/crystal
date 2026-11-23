@@ -4,9 +4,17 @@ class Crystal::FixMissingTypes < Crystal::Visitor
   @program : Program
   @fixed : Set(Def)
 
-  def initialize(mod)
+  # With *only*, the visitor descends into these typed defs only: the ones a
+  # build server typed again for an edit (see `InferReuse::Retyper`); every
+  # other typed def had its missing types fixed by the build that typed it.
+  def initialize(mod, *, @only : Set(Def)? = nil)
     @program = mod
     @fixed = Set(Def).new.compare_by_identity
+  end
+
+  # Fixes the missing types of *typed_def* and of the typed defs it reaches.
+  def fix_typed_def(typed_def : Def) : Nil
+    fix(typed_def)
   end
 
   def visit(node : Def)
@@ -74,15 +82,20 @@ class Crystal::FixMissingTypes < Crystal::Visitor
       block.type = @program.no_return
     end
 
-    node.each_target_def do |target_def|
-      if @fixed.add?(target_def)
-        target_def.type = @program.no_return unless target_def.type?
-        target_def.accept_children self
-      end
-    end
+    node.each_target_def { |target_def| fix(target_def) }
   end
 
   def visit(node : ASTNode)
     true
+  end
+
+  private def fix(target_def : Def) : Nil
+    if only = @only
+      return unless only.includes?(target_def)
+    end
+    if @fixed.add?(target_def)
+      target_def.type = @program.no_return unless target_def.type?
+      target_def.accept_children self
+    end
   end
 end
