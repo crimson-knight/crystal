@@ -147,20 +147,20 @@ describe "Semantic: typed once for every instance of a generic class" do
     code = RECORDS + %(
       @[TypeBound(T, Record)]
       class Holder(T)
-        def initialize(@item : T?)
+        def initialize(@items : Array(T))
         end
 
         @[TypeOnce]
         def present : Bool
-          !@item.nil?
+          !@items.nil?
         end
       end
 
-      Holder(First).new(nil).present
-      Holder(Second).new(nil).present
+      Holder(First).new(Array(First).new).present
+      Holder(Second).new(Array(Second).new).present
       )
     typed_copies(semantic(code, inject_primitives: true).program, "Holder", "present").should eq(2)
-    assert_warning code, "read @item through a method typed for each instance: its type depends on the type argument ((First | Nil) in Holder(First))"
+    assert_warning code, "read @items through a method typed for each instance: its type depends on the type argument (Array(First) in Holder(First))"
   end
 
 it "types once a method that only sets an instance variable whose type mentions the parameter to nil" do
@@ -179,6 +179,42 @@ it "types once a method that only sets an instance variable whose type mentions 
     Holder(First).new(nil, nil).forget
     Holder(Second).new(nil, nil).forget
     ), "forget", "Holder").should eq(1)
+end
+
+it "types once a method that reads an instance variable whose type is the bounded parameter" do
+  copies(RECORDS + %(
+    @[TypeBound(T, Record)]
+    class Holder(T)
+      def initialize(@item : T)
+      end
+
+      @[TypeOnce]
+      def present : Bool
+        !@item.nil?
+      end
+    end
+
+    Holder(First).new(First.new).present
+    Holder(Second).new(Second.new).present
+    ), "present", "Holder").should eq(1)
+end
+
+it "keeps one copy per instance when the method writes an instance variable whose type is the bounded parameter" do
+  assert_warning RECORDS + %(
+    @[TypeBound(T, Record)]
+    class Holder(T)
+      def initialize(@item : T)
+      end
+
+      @[TypeOnce]
+      def replace(other : Record) : Nil
+        @item = other.as(T)
+        nil
+      end
+    end
+
+    Holder(First).new(First.new).replace(First.new)
+    ), "Holder(T)#replace"
 end
 
   it "keeps one copy per instance when the return type mentions the parameter" do

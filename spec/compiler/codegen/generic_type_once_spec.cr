@@ -203,6 +203,23 @@ it "sets an instance variable whose type mentions the parameter to nil" do
     )).to_string.should eq("7 true true")
 end
 
+it "reads an instance variable whose type is the bounded parameter" do
+  run(MODELS + %(
+    @[TypeBound(M, Model)]
+    class Owned(M)
+      def initialize(@owner : M)
+      end
+
+      @[TypeOnce]
+      def owner_label : String
+        @owner.label + "@" + M.table
+      end
+    end
+
+    Owned(Post).new(Post.new).owner_label + " " + Owned(Admin).new(Admin.new).owner_label
+    )).to_string.should eq("post@posts admin@admins")
+end
+
   it "runs a class method typed once for every instance" do
     run(MODELS + %(
       class Query(M)

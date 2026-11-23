@@ -122,6 +122,8 @@ module Crystal
       property reason : String?
       # Instance variables the def and the methods it reaches on `self` use.
       getter instance_vars = Set(String).new
+      # Instance variables the scanned methods assign (other than to `nil`).
+      getter instance_vars_written = Set(String).new
       # Instance variables the scanned methods only set to `nil`.
       getter instance_vars_set_to_nil = Set(String).new
       # Methods called on `self` (for the subclass check).
@@ -272,6 +274,27 @@ module Crystal
       end
     end
 
+    # Whether an instance variable of type *var_type* in an instance can be
+    # read, never written, as *erased_type* in the erased instance: its type
+    # is the bounded parameter itself (`@owner : Owner`, maybe nilable), so
+    # the erased instance reads the same object as a wider type.
+    def self.widened_value?(var_type : Type, erased_type : Type, instance : GenericClassInstanceType) : Bool
+      return false unless holds_nil?(var_type) == holds_nil?(erased_type)
+      value = without_nil(var_type) || return false
+      erased_value = without_nil(erased_type) || return false
+      return false unless erased_value.is_a?(VirtualType)
+      bounds = instance.program.generic_bounds(instance.generic_type.as(GenericClassType)) || return false
+      return false unless bounds.each_value.any? { |bound| bound.virtual_type.same?(erased_value) }
+      value = value.base_type if value.is_a?(VirtualType)
+      value.is_a?(NonGenericClassType) && !value.struct? && value.implements?(erased_value.base_type)
+    end
+
+    private def self.without_nil(type : Type) : Type?
+      return type unless type.is_a?(UnionType)
+      members = type.union_types.reject(&.nil_type?)
+      members.size == 1 ? members.first : nil
+    end
+
     # Whether *type* is a union that holds `nil`.
     def self.holds_nil?(type : Type) : Bool
       type.is_a?(UnionType) && type.union_types.any?(&.nil_type?)
@@ -313,7 +336,8 @@ module Crystal
           erased_var = erased_vars[name]
           var_type = var.type? || return "declare the type of #{name}"
           erased_type = erased_var.type? || return "declare the type of #{name}"
-          if scan.instance_vars.includes?(name) && !var_type.same?(erased_type)
+          if scan.instance_vars.includes?(name) && !var_type.same?(erased_type) &&
+             (scan.instance_vars_written.includes?(name) || !GenericTypeOnce.widened_value?(var_type, erased_type, instance))
             return "read #{name} through a method typed for each instance: its type depends on the type argument (#{var_type} in #{instance})"
           end
           if !scan.instance_vars.includes?(name) && scan.instance_vars_set_to_nil.includes?(name) && !(GenericTypeOnce.holds_nil?(var_type) && GenericTypeOnce.holds_nil?(erased_type))
@@ -528,6 +552,16 @@ module Crystal
         if target.is_a?(InstanceVar) && node.value.is_a?(NilLiteral)
           @scan.instance_vars_set_to_nil << target.name
           return false
+        end
+        @scan.instance_vars_written << target.name if target.is_a?(InstanceVar)
+        true
+      end
+
+      # A pointer to an instance variable can write anything into it.
+      def visit(node : PointerOf) : Bool
+        exp = node.exp
+        if exp.is_a?(InstanceVar)
+          @scan.instance_vars_written << exp.name
         end
         true
       end
