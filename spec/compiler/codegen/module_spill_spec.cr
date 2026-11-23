@@ -221,6 +221,19 @@ describe "Compiler#resident_modules and Compiler#resident_ir_megabytes" do
     end
   end
 
+  it "generates the functions of a deep chain of calls after the chain, not inside it" do
+    with_tempfile("module_spill_deep_chain") do |directory|
+      Dir.mkdir_p(directory)
+      # Registry24.bonus calls Registry23.bonus and so on: a chain of 24
+      # functions in 24 modules.
+      executable, compiler = compile_module_spill_program(directory, 0, "deep_chain", resident_ir_megabytes: 1)
+
+      module_spill = compiler.last_module_spill.should_not be_nil
+      module_spill.deferred_fun_count.should be > 0
+      Process.capture(executable).should eq(MODULE_SPILL_PROGRAM_OUTPUT)
+    end
+  end
+
   it "keeps every module in memory with 0" do
     with_tempfile("module_spill_off") do |directory|
       Dir.mkdir_p(directory)
