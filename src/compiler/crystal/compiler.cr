@@ -687,9 +687,13 @@ module Crystal
 
       remove_spill_files_of_ended_compilations(output_dir)
 
-      ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
+      module_spill = ModuleSpill.new(@resident_modules, @resident_ir_megabytes.to_i64 * 1024 * 1024, target_machine.triple) do |type_name, part_index|
         File.join(output_dir, "#{CompilationUnit.file_basename(type_name, optimization_mode)}.#{Process.pid}.part#{part_index}.new.bc")
       end
+      if (memory_budget = @memory_budget) && module_spill.malloc_relief_bytes == 0
+        module_spill.malloc_relief_bytes = memory_budget.malloc_relief_bytes
+      end
+      module_spill
     end
 
     # Loads the modules in the bitcode files of *list_of_filenames* into
