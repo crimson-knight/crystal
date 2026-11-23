@@ -69,6 +69,8 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       node.raise "#{message}\n\n#{notes.join("\n")}"
     end
 
+    @program.infer_reuse_record.try &.add_require(filename, relative_to, filenames)
+
     if filenames
       nodes = Array(ASTNode).new(filenames.size)
 
@@ -105,6 +107,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     if (compiler = @program.compiler) && compiler.incremental?
       parse_cache = compiler.parse_cache
       content = File.read(filename)
+      @program.infer_reuse_record.try &.add_source(filename, content)
       content_hash = Crystal::Digest::MD5.hexdigest(content)
 
       if cached_ast = parse_cache.get(filename, content_hash)
@@ -139,7 +142,9 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       end
     else
       # Original code path (no incremental compilation)
-      parser = @program.new_parser(File.read(filename))
+      content = File.read(filename)
+      @program.infer_reuse_record.try &.add_source(filename, content)
+      parser = @program.new_parser(content)
       parser.filename = filename
       parser.wants_doc = @program.wants_doc?
       begin

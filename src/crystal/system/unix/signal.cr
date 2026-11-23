@@ -116,6 +116,10 @@ module Crystal::System::Signal
 
   # Replaces the signal pipe so the child process won't share the file
   # descriptors of the parent process and send it received signals.
+  #
+  # The signal loop the parent started waits on the old pipe, which nothing
+  # wakes up any more, so a child that keeps running (rather than exec a new
+  # program) gets a loop of its own on the new pipe.
   def self.after_fork
     @@pipe.each do |pipe_io|
       Crystal::EventLoop.remove(pipe_io)
@@ -123,6 +127,7 @@ module Crystal::System::Signal
     end
   ensure
     @@pipe = IO.pipe(read_blocking: false, write_blocking: true)
+    start_loop if @@setup_default_handlers.get(:relaxed)
   end
 
   # Resets signal handlers to `SIG_DFL`. This avoids the child to receive
