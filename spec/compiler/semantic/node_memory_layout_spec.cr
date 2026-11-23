@@ -9,8 +9,32 @@ private def names(list : SmallNodeList) : Array(String)
 end
 
 describe "SmallNodeList" do
-  it "takes two pointers" do
-    sizeof(SmallNodeList).should eq(16)
+  it "takes one pointer" do
+    sizeof(SmallNodeList).should eq(8)
+  end
+
+  it "holds one element inline, two in a pair, and three or more in an array" do
+    list = SmallNodeList.new.push(new_node("a"))
+    list.census_allocation.should be_nil
+    list = list.push(new_node("b"))
+    list.census_allocation.should be_a(SmallNodeList::NodePair)
+    list = list.push(new_node("c"))
+    list.census_allocation.should be_a(Array(ASTNode))
+    list = list.reject!(&.as(Var).name.==("b"))
+    list.census_allocation.should be_a(SmallNodeList::NodePair)
+    names(list).should eq(%w(a c))
+  end
+
+  it "yields elements pushed while iterating a list of one" do
+    list = SmallNodeList.new.push(new_node("a"))
+    pointer = pointerof(list)
+    seen = [] of String
+    pointer.value.each do |node|
+      seen << node.as(Var).name
+      pointer.value.push(new_node("b")) if seen.size == 1
+      pointer.value.push(new_node("c")) if seen.size == 2
+    end
+    seen.should eq(%w(a b c))
   end
 
   it "keeps insertion order across the inline slots and the array" do
@@ -120,11 +144,11 @@ describe "ASTNode memory layout" do
   it "keeps the most common nodes inside their collector cells" do
     # The collector adds one byte to every allocation, so a node stays in a
     # cell of 16 * n bytes while its instance size is at most 16 * n - 8.
-    instance_sizeof(Var).should be <= 88
-    instance_sizeof(MetaVar).should be <= 104
-    instance_sizeof(Crystal::Path).should be <= 104
-    instance_sizeof(Call).should be <= 152
-    instance_sizeof(Def).should be <= 216
+    instance_sizeof(Var).should be <= 72
+    instance_sizeof(MetaVar).should be <= 88
+    instance_sizeof(Crystal::Path).should be <= 88
+    instance_sizeof(Call).should be <= 136
+    instance_sizeof(Def).should be <= 200
   end
 
   it "stores flags without disturbing each other" do

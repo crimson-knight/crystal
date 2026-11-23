@@ -178,6 +178,15 @@ module Crystal
     # Has this visitor finished and let go of its variables?
     getter? vars_released = false
 
+    # Did this visitor reach a block, a proc literal or a proc pointer? Only
+    # those can closure a variable, so only then must a variable keep the
+    # list of its reads and assignments (`MetaVar#add_local_var`).
+    @reached_closure_site = false
+
+    # Did this visitor make the variables of the def it types? Visitors of
+    # blocks and proc literals share those of the def they are in.
+    @owns_def_meta_vars = false
+
     def initialize(program, vars = MetaVars.new, @typed_def = nil, meta_vars = nil)
       super(program, vars)
       @is_initialize = !!(typed_def && (
@@ -190,6 +199,7 @@ module Crystal
       # so the codegen phase knows the cumulative types to do allocas.
       unless meta_vars
         if typed_def = @typed_def
+          @owns_def_meta_vars = true
           meta_vars = typed_def.vars = MetaVars.new
         else
           meta_vars = @program.vars
@@ -1093,6 +1103,7 @@ module Crystal
     end
 
     def visit(node : Block)
+      @reached_closure_site = true
       return false if node.visited?
 
       node.visited = true
@@ -1291,6 +1302,8 @@ module Crystal
         @point_vars = nil
       end
 
+      release_local_var_lists
+
       @vars = MetaVars.new
       @vars_released = true
       @type_filters = nil
@@ -1300,6 +1313,23 @@ module Crystal
       @all_exception_handler_vars = nil
       @found_self_in_initialize_call = nil
       @used_ivars_in_calls_in_initialize = nil
+    end
+
+    # A variable of a def is closured only by a block, proc literal or proc
+    # pointer of that def, and the def is not visited again once typed (a
+    # late block or proc literal is typed by the visitor of the def it is
+    # in). So when the def had none, its variables can never become closured,
+    # and the lists of their reads and assignments, kept only to bind them
+    # to the variable if it does, are dropped.
+    private def release_local_var_lists : Nil
+      return if @reached_closure_site
+      return unless @owns_def_meta_vars
+      return unless @program.release_local_var_lists?
+
+      @meta_vars.each_value do |meta_var|
+        next if meta_var.closured?
+        @program.inference_release_stats.dropped_local_var_lists += 1 if meta_var.drop_local_vars
+      end
     end
 
     # Types the proc literal that the block of a call was turned into.
@@ -1385,6 +1415,7 @@ module Crystal
     end
 
     def visit(node : ProcLiteral)
+      @reached_closure_site = true
       return false if node.type?
 
       fun_vars = @vars.dup
@@ -1453,6 +1484,7 @@ module Crystal
     end
 
     def visit(node : ProcPointer)
+      @reached_closure_site = true
       obj = node.obj
 
       if obj

@@ -26,6 +26,10 @@ module Crystal
     @fingerprints = Hash(UInt64, TypedDefFingerprint).new
     @block_call_copies = [] of {Def, Call}
     @main_node : ASTNode?
+    # Untyped defs: bytes and kind of each, and the defs a cached typed copy
+    # was made from.
+    @untyped_def_bytes = [] of {UInt64, Bool, Int64}
+    @instantiated_def_ids = Set(UInt64).new
 
     # What codegen reads from one typed def: a hash over every node class and
     # node type in its body (and, through its calls, in the uncached typed
@@ -137,6 +141,7 @@ module Crystal
         io.printf("program  %-48s %12s         %10.1f MB\n", name, "", bytes / 1e6)
       end
       print_typed_defs_by_source(io)
+      print_untyped_defs(io)
       print_identical_copies(io)
       stats = @program.block_instance_stats
       io.printf("sharing  block instances typed %d, shared %d, reused by their first call %d, diverged %d, late yields %d, block type differs %d, yields depend on block %d\n",
@@ -185,8 +190,11 @@ module Crystal
     end
 
     def owned_bytes(value : SmallNodeList) : Int64
-      rest = value.@rest
-      rest.is_a?(Array(ASTNode)) ? owned_bytes(rest) : 0_i64
+      case allocation = value.census_allocation
+      when Array(ASTNode) then owned_bytes(allocation)
+      when SmallNodeList::NodePair then gc_bytes(allocation.as(Void*))
+      else 0_i64
+      end
     end
 
     def owned_bytes(value : Call::RareFields | Def::RareFields) : Int64
@@ -355,6 +363,22 @@ module Crystal
     private def add(category : String, count : Int, bytes : Int) : Nil
       current = @categories[category]? || {0_i64, 0_i64}
       @categories[category] = {current[0] + count, current[1] + bytes}
+    end
+
+    # Untyped defs by where they were written (a file or a macro expansion)
+    # and whether a cached typed copy was made from them.
+    private def print_untyped_defs(io : IO) : Nil
+      groups = Hash({Bool, Bool}, {Int64, Int64}).new
+      @untyped_def_bytes.each do |(def_id, from_macro, bytes)|
+        key = {from_macro, @instantiated_def_ids.includes?(def_id)}
+        current = groups[key]? || {0_i64, 0_i64}
+        groups[key] = {current[0] + 1, current[1] + bytes}
+      end
+      groups.to_a.sort_by { |entry| -entry[1][1] }.each do |(from_macro, typed), (count, bytes)|
+        written = from_macro ? "from a macro" : "written"
+        copied = typed ? "has a cached typed copy" : "no cached typed copy"
+        io.printf("untyped  %-48s %12d defs    %10.1f MB\n", "#{written}, #{copied}", count, bytes / 1e6)
+      end
     end
 
     # Typed defs grouped by the source def they were instantiated from: how
@@ -708,6 +732,7 @@ module Crystal
       if type.is_a?(DefInstanceContainer)
         if instances = type.@def_instances
           category = generic ? "typed defs (generic instance owners)" : "typed defs (plain owners)"
+          instances.each_key { |key| @instantiated_def_ids << key.def_object_id }
           instances.each_value do |typed_def|
             @cached_typed_defs << typed_def
             @cached_typed_def_ids << typed_def.object_id
@@ -719,7 +744,12 @@ module Crystal
       if type.is_a?(ModuleType)
         type.defs.try &.each_value do |list|
           list.each do |def_with_metadata|
-            with_category("untyped defs") { walk_node(def_with_metadata.def) }
+            untyped_def = def_with_metadata.def
+            before = @categories["untyped defs"]?.try(&.[1]) || 0_i64
+            with_category("untyped defs") { walk_node(untyped_def) }
+            after = @categories["untyped defs"]?.try(&.[1]) || 0_i64
+            from_macro = untyped_def.location.try(&.filename).is_a?(VirtualFile)
+            @untyped_def_bytes << {untyped_def.object_id, from_macro, after - before}
           end
         end
         type.macros.try &.each_value do |list|

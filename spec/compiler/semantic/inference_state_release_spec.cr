@@ -465,6 +465,90 @@ describe "MainVisitor#release_inference_state" do
   end
 end
 
+describe "MainVisitor#release_local_var_lists" do
+  it "drops the local var lists of a def that has no block or proc" do
+    result = semantic(%(
+      def plain(a)
+        b = a
+        c = b
+        b = c
+        b
+      end
+
+      plain(1)
+      ), inject_primitives: true)
+    typed_def(result, "plain").vars.not_nil!.each_value(&.local_vars?.should(be_false))
+    result.program.inference_release_stats.dropped_local_var_lists.should be > 0
+  end
+
+  it "keeps the local var lists of a def with a proc literal" do
+    result = semantic(%(
+      def with_proc(a)
+        b = a
+        f = -> { 1 }
+        f.call
+        b
+      end
+
+      with_proc(1)
+      ), inject_primitives: true)
+    typed_def(result, "with_proc").vars.not_nil!["b"].local_vars?.should be_true
+  end
+
+  # The first proc literal is typed (and its visitor finishes) before the
+  # second one closures `x`: the earlier reads of `x` must still get the
+  # type the closure assigns.
+  it "binds earlier reads when a later proc literal of the same def closures the variable" do
+    code = %(
+      def foo
+        x = 1
+        y = x
+        first = -> { 2 }
+        first.call
+        change = -> { x = "text" }
+        change.call
+        {y, x}
+      end
+
+      foo
+      )
+    released = semantic(code, inject_primitives: true)
+    kept = semantic_without_release(code)
+
+    last_type(released).should eq(last_type(kept))
+    last_type(released).should eq("Tuple(Int32 | String, Int32 | String)")
+  end
+
+  it "types the same with the lists kept" do
+    code = %(
+      def callee(n)
+        n > 0 ? 1 : "one"
+      end
+
+      def plain(n)
+        value = callee(n)
+        other = value
+        while other.is_a?(Int32)
+          other = nil
+        end
+        {value, other}
+      end
+
+      plain(1)
+      )
+    program = Program.new
+    program.release_local_var_lists = false
+    program.color = false
+    node = parse(code).as(Expressions)
+    node.expressions.unshift(Crystal::Require.new("primitives"))
+    node = program.semantic(program.normalize(node))
+    kept = SemanticResult.new(program, node)
+    released = semantic(code, inject_primitives: true)
+
+    last_type(released).should eq(last_type(kept))
+  end
+end
+
 describe "Call#recalculate" do
   # Every new instance of `Gen` makes the call on `Base+` look its matches up
   # again: first with the same result, then with one more target def.

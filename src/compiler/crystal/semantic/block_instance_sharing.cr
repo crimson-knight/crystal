@@ -348,6 +348,7 @@ module Crystal
     property kept_point_vars = 0_i64
     property point_vars_left_bound = 0_i64
     property restored_after_vars = 0_i64
+    property dropped_local_var_lists = 0_i64
   end
 
   class Program
@@ -361,6 +362,12 @@ module Crystal
     # `MainVisitor#release_inference_state`). `CRYSTAL_RELEASE_INFERENCE_STATE=0`
     # keeps all of it, as before.
     property? release_inference_state : Bool = ENV["CRYSTAL_RELEASE_INFERENCE_STATE"]? != "0"
+
+    # Whether a def visitor that reached no block or proc drops the lists of
+    # its variables' reads and assignments when it finishes (see
+    # `MainVisitor#release_local_var_lists`). `CRYSTAL_RELEASE_LOCAL_VAR_LISTS=0`
+    # keeps them.
+    property? release_local_var_lists : Bool = ENV["CRYSTAL_RELEASE_LOCAL_VAR_LISTS"]? != "0"
 
     getter inference_release_stats = InferenceReleaseStats.new
 
