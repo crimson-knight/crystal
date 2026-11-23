@@ -392,7 +392,7 @@ module Crystal::InferReuse
         ensure
           record.method_list_replay = nil
         end
-        unless new_output == output
+        unless MethodListExpansion.same_text?(new_output, output)
           raise Refusal.new("a macro that listed methods (#{place}) writes other code with the edit")
         end
         # The next edit compares against the lists this build would have read.

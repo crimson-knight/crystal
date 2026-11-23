@@ -50,6 +50,21 @@ module Crystal::InferReuse
     def rerun : String
       @rerun.call
     end
+
+    # Fresh variable names a macro writes (`%name`), which differ on each run.
+    FRESH_NAME = /__temp_(?:[0-9a-f]{8}_)?\d+/
+
+    # Whether two outputs of one expansion are the same program text: equal
+    # once the fresh variable names of each are numbered in the order they
+    # first appear.
+    def self.same_text?(text : String, other : String) : Bool
+      canonical(text) == canonical(other)
+    end
+
+    private def self.canonical(text : String) : String
+      number_by_name = {} of String => Int32
+      text.gsub(FRESH_NAME) { |name| "__fresh_#{number_by_name[name] ||= number_by_name.size}" }
+    end
   end
 
   # The macro expansions running now, innermost last, each with its
