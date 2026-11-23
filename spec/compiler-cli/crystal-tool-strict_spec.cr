@@ -27,8 +27,8 @@ describe "`crystal tool strict`" do
       source = "def twice(value)\n  value\nend\n\ntwice(1)\n"
       File.write(path, source)
 
-      Process.capture_result(crystal, "tool", "strict", "--prelude", "empty", "--check", path)
-        .should_not(be_success)
+      result = Process.capture_result(crystal, "tool", "strict", "--prelude", "empty", "--check", path)
+      result.status.exit_code.should eq(1)
       File.read(path).should eq(source)
     end
   end
