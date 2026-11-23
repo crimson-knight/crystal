@@ -42,6 +42,8 @@ class Crystal::Program
     # give an error otherwise
     processor.check_non_nilable_class_vars_without_initializers
 
+    lazy_def_bodies.defer_all if lazy_def_bodies_enabled?
+
     result = @progress_tracker.stage("Semantic (main)") do
       visit_main(node, process_finished_hooks: true, cleanup: cleanup, visitor: main_visitor)
     end

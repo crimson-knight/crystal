@@ -142,6 +142,8 @@ module Crystal
       end
       print_typed_defs_by_source(io)
       print_untyped_defs(io)
+      lazy = @program.lazy_def_bodies
+      io.printf("lazy     method bodies set aside %d, made again %d, verify mismatches %d\n", lazy.deferred, lazy.materialized, lazy.verify_mismatches)
       print_identical_copies(io)
       stats = @program.block_instance_stats
       io.printf("sharing  block instances typed %d, shared %d, reused by their first call %d, diverged %d, late yields %d, block type differs %d, yields depend on block %d\n",
@@ -191,9 +193,9 @@ module Crystal
 
     def owned_bytes(value : SmallNodeList) : Int64
       case allocation = value.census_allocation
-      when Array(ASTNode) then owned_bytes(allocation)
+      when Array(ASTNode)          then owned_bytes(allocation)
       when SmallNodeList::NodePair then gc_bytes(allocation.as(Void*))
-      else 0_i64
+      else                              0_i64
       end
     end
 
@@ -657,7 +659,17 @@ module Crystal
         content = mix(mix(content, class_id), type_id)
         content_without_owner = mix(mix(content_without_owner, class_id), erased.includes?(type_id) ? 1_u64 : type_id)
         collector.children.clear
-        current.accept_children(collector)
+        if current.is_a?(Def)
+          # Without making a body that was set aside (`LazyDefBodies`).
+          current.receiver.try &.accept(collector)
+          current.args.each &.accept(collector)
+          current.double_splat.try &.accept(collector)
+          current.block_arg.try &.accept(collector)
+          current.return_type.try &.accept(collector)
+          current.body_as_held.accept(collector)
+        else
+          current.accept_children(collector)
+        end
         stack.concat(collector.children)
         if current.is_a?(ExpandableNode)
           current.expanded.try { |expanded| stack << expanded }

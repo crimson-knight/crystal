@@ -2041,6 +2041,10 @@ module Crystal
       raise "BUG: reached a def body that was released after its function was generated"
     end
 
+    def visit(node : DeferredDefBody)
+      raise "BUG: reached a def body that was set aside and never made again"
+    end
+
     def check_proc_is_not_closure(value, type)
       check_fun_name = "~check_proc_is_not_closure"
       record_ir_effect(IrSkip::TraceKind::CheckProcIsNotClosure)

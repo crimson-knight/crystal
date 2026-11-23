@@ -111,5 +111,10 @@ module Crystal
       @str << "# body released after codegen"
       false
     end
+
+    def visit(node : DeferredDefBody)
+      @str << "# body set aside until it is needed"
+      false
+    end
   end
 end
