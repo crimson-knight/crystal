@@ -31,7 +31,7 @@ private class InferReuseProject
       "CRYSTAL_INFER_REUSE_REPORT"        => report_filename,
       "CRYSTAL_INFER_SERVER_IDLE_SECONDS" => "120",
     }
-    result = Process.capture_result(crystal, "build", "--incremental", *list_of_extra_args, "main.cr", "-o", "app", env: env, chdir: @directory)
+    result = Process.capture_result([crystal, "build", "--incremental", *list_of_extra_args, "main.cr", "-o", "app"], env: env, chdir: @directory)
     report = JSON.parse(File.exists?(report_filename) ? File.read(report_filename) : "{}")
     report["server_pid"]?.try { |pid| @list_of_server_pids << pid.as_i64 }
     printed = result.status.success? ? Process.capture_result(File.join(@directory, "app")).output : nil
@@ -450,18 +450,21 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
         end
 
         module Factory
-          def self.make : Greeter
-            Plain.new
+          def self.make(list : Array(Greeter)) : Nil
+            list << Plain.new
+            nil
           end
         end
 
-        puts Factory.make.greet
+        list = [] of Greeter
+        Factory.make(list)
+        puts list.sum(&.greet)
         CRYSTAL
       project.write("main.cr", main)
       flags = ["-Dprune_dispatch"]
       expect_build(project, "1\n", reused: false, list_of_extra_args: flags)
 
-      project.write("main.cr", main.sub("    Plain.new\n", "    NeverMade.new\n"))
+      project.write("main.cr", main.sub("    list << Plain.new\n", "    list << NeverMade.new\n"))
       expect_build(project, "2\n", reused: true, list_of_extra_args: flags)
 
       project.write("main.cr", main)
