@@ -1255,10 +1255,14 @@ module Crystal
         if n_threads == 1
           sequential_codegen(units)
         elsif (worker_executable = @codegen_worker_executable) && units.size > 1
+          units_started_at = Time.instant
           list_of_jobs = write_bitcode_and_release_modules(units)
+          @last_unit_write_seconds = (Time.instant - units_started_at).total_seconds
           # Every unit has its bitcode hash now, and this process may end
           # with the handoff below.
+          manifest_started_at = Time.instant
           finish_ir_skip_session(output_dir, units)
+          @last_manifest_seconds = (Time.instant - manifest_started_at).total_seconds
           unless list_of_jobs.empty?
             if object_stage_handoff?
               hand_off_object_stage(program, units, list_of_jobs, n_threads, worker_executable,
@@ -1446,10 +1450,13 @@ module Crystal
           # written now, under a pending name. The object stage gives it its
           # real name once the executable is linked: a build that fails
           # after this point leaves the previous cache in charge.
+          signatures_started_at = Time.instant
           extract_and_compare_signatures(program)
           pending_incremental_cache_filename = File.join(output_dir, IncrementalCache::PENDING_CACHE_FILENAME)
           save_incremental_cache(program, output_dir, IncrementalCache::PENDING_CACHE_FILENAME)
+          @last_signature_and_cache_seconds = (Time.instant - signatures_started_at).total_seconds
           incremental_stats_report = String.build do |io|
+            print_handoff_preparation_stats(io)
             print_parse_cache_stats(io)
             print_signature_stats(io)
           end
@@ -2037,6 +2044,25 @@ module Crystal
       io.puts " - hits: #{cache.hits}, misses: #{cache.misses} (#{sprintf("%.1f", cache.hit_rate)}% hit rate)"
     end
 
+    @last_signature_and_cache_seconds : Float64?
+    @last_unit_write_seconds : Float64?
+    @last_manifest_seconds : Float64?
+
+    # How long the compiler spent between IR generation and the handoff:
+    # writing the bitcode of changed units and checking the cached objects
+    # of the others, and saving the IR skip manifest.
+    private def print_handoff_preparation_stats(io : IO) : Nil
+      return unless @progress_tracker.stats?
+      unit_seconds = @last_unit_write_seconds
+      manifest_seconds = @last_manifest_seconds
+      return unless unit_seconds && manifest_seconds
+
+      io.puts
+      io.puts "Before the object stage handoff:"
+      io.puts " - units written or matched with their cached objects: #{unit_seconds.round(2)} s"
+      io.puts " - IR skip manifest saved: #{manifest_seconds.round(2)} s"
+    end
+
     private def print_signature_stats(io : IO = STDOUT)
       return unless @progress_tracker.stats?
       return unless @incremental
@@ -2048,6 +2074,9 @@ module Crystal
 
       io.puts
       io.puts "Signature tracking:"
+      if seconds = @last_signature_and_cache_seconds
+        io.puts " - signature pass and incremental cache, before the handoff: #{seconds.round(2)} s"
+      end
       io.puts " - Files with body-only changes: #{body_only}"
       io.puts " - Files with structural changes: #{structural}"
       if isolated > 0

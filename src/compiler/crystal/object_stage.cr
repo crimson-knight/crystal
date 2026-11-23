@@ -137,7 +137,9 @@ module Crystal
         @progress_tracker.progress = @handoff.progress?
         @compiler.progress_tracker = @progress_tracker
 
+        workers_started_at = Time.instant
         build_object_files
+        workers_seconds = (Time.instant - workers_started_at).total_seconds
         @compiler.verify_line_patches(@handoff.list_of_line_patch_checks)
         @compiler.link_object_files(@handoff.linker_name, @handoff.linker_command,
           @handoff.list_of_linker_arguments, @handoff.output_filename, @handoff.output_directory)
@@ -150,6 +152,7 @@ module Crystal
           print @handoff.stats_report_before_codegen
           @compiler.print_codegen_stats(@handoff.list_of_unit_summaries)
           puts " - object files were built and linked by a compiler process of their own (object stage handoff)"
+          puts " - object stage, from its start to the last object file: #{workers_seconds.round(2)} s"
           print @handoff.stats_report_after_codegen
         end
       end
