@@ -97,23 +97,23 @@ module Crystal
     end
   end
 
-# A bounded type parameter read at run time in a method typed once for
-# every instance of a generic class: the replacement of the path that
-# names it (see `MainVisitor#erased_type_var_owner`).
-class ErasedTypeVar < ASTNode
-  # The defining instance whose type parameter is read.
-  getter owner : Type
-  getter name : String
+  # A bounded type parameter read at run time in a method typed once for
+  # every instance of a generic class: the replacement of the path that
+  # names it (see `MainVisitor#erased_type_var_owner`).
+  class ErasedTypeVar < ASTNode
+    # The defining instance whose type parameter is read.
+    getter owner : Type
+    getter name : String
 
-  def initialize(@owner : Type, @name : String, @type : Type? = nil)
+    def initialize(@owner : Type, @name : String, @type : Type? = nil)
+    end
+
+    def clone_without_location
+      ErasedTypeVar.new(@owner, @name, @type)
+    end
+
+    def_equals_and_hash owner, name
   end
-
-  def clone_without_location
-    ErasedTypeVar.new(@owner, @name, @type)
-  end
-
-  def_equals_and_hash owner, name
-end
 
   module GenericTypeOnce
     # What a scan of a def against an erased instance found.
@@ -122,6 +122,8 @@ end
       property reason : String?
       # Instance variables the def and the methods it reaches on `self` use.
       getter instance_vars = Set(String).new
+      # Instance variables the scanned methods only set to `nil`.
+      getter instance_vars_set_to_nil = Set(String).new
       # Methods called on `self` (for the subclass check).
       getter self_calls = Set(String).new
       # Whether a bounded type parameter is read at run time.
@@ -158,7 +160,7 @@ end
       end
       bounds.empty? ? nil : bounds
     end
-    
+
     # The receiver instance of a call: the generic class instance it is, or
     # whose subclass or metaclass it is. `nil` for every other receiver.
     def self.receiver_instance(type : Type) : GenericClassInstanceType?
@@ -270,9 +272,17 @@ end
       end
     end
 
+    # Whether *type* is a union that holds `nil`.
+    def self.holds_nil?(type : Type) : Bool
+      type.is_a?(UnionType) && type.union_types.any?(&.nil_type?)
+    end
+
     # Instance-variable representations that are the same in two instances.
     def self.same_layout?(instance_type : Type, erased_type : Type) : Bool
       return true if instance_type.same?(erased_type)
+      # A proc is a function pointer and a closure pointer whatever its types.
+      return true if instance_type.is_a?(ProcInstanceType) && erased_type.is_a?(ProcInstanceType)
+      return true if instance_type.is_a?(NilableProcType) && erased_type.is_a?(NilableProcType)
       reference_like?(instance_type) && reference_like?(erased_type)
     end
 
@@ -305,6 +315,9 @@ end
           erased_type = erased_var.type? || return "declare the type of #{name}"
           if scan.instance_vars.includes?(name) && !var_type.same?(erased_type)
             return "read #{name} through a method typed for each instance: its type depends on the type argument (#{var_type} in #{instance})"
+          end
+          if !scan.instance_vars.includes?(name) && scan.instance_vars_set_to_nil.includes?(name) && !(GenericTypeOnce.holds_nil?(var_type) && GenericTypeOnce.holds_nil?(erased_type))
+            return "set #{name} to nil only when its type is a class or nil in every instance (it is #{var_type} in #{instance})"
           end
           unless same_layout?(var_type, erased_type)
             return "give #{name} a type with the same layout in every instance (it is #{var_type} in #{instance} and #{erased_type} in #{erased})"
@@ -366,23 +379,23 @@ end
           arg.default_value.try &.accept(self)
         end
         a_def.block_arg.try(&.restriction).try { |restriction| check_type_position(restriction, "the block type of '#{a_def.name}'") }
-return_type = a_def.return_type
-if return_type.is_a?(Self)
-  # `: self` returns the receiver: each instance's caller gets its own
-  # instance back (`Call#map_type`).
-  return fail("leave `: self` out of class methods") if @metaclass
-  exits = [] of ASTNode
-  collect_exits(a_def.body, exits)
-  unless exits.all? { |exit| self_valued?(exit) }
-    return fail("return `self` from every exit of '#{a_def.name}' (it declares `: self`)")
-  end
-  exits.each { |exit| @self_valued_allowed << exit.object_id }
-  @scan.returns_self = true if entry
-elsif return_type
-  check_type_position(return_type, "the return type of '#{a_def.name}'")
-end
-return unless @scan.ok?
-a_def.body.accept self
+        return_type = a_def.return_type
+        if return_type.is_a?(Self)
+          # `: self` returns the receiver: each instance's caller gets its own
+          # instance back (`Call#map_type`).
+          return fail("leave `: self` out of class methods") if @metaclass
+          exits = [] of ASTNode
+          collect_exits(a_def.body, exits)
+          unless exits.all? { |exit| self_valued?(exit) }
+            return fail("return `self` from every exit of '#{a_def.name}' (it declares `: self`)")
+          end
+          exits.each { |exit| @self_valued_allowed << exit.object_id }
+          @scan.returns_self = true if entry
+        elsif return_type
+          check_type_position(return_type, "the return type of '#{a_def.name}'")
+        end
+        return unless @scan.ok?
+        a_def.body.accept self
       end
 
       # The instance of *owner* in the erased instance's chain: the type that
@@ -508,6 +521,17 @@ a_def.body.accept self
         fail("leave #{node.name} out: each instance has its own class variables")
       end
 
+      # `@records = nil` stores a null in a nilable instance variable: the same
+      # in every instance whose variable is nilable, whatever it holds.
+      def visit(node : Assign) : Bool
+        target = node.target
+        if target.is_a?(InstanceVar) && node.value.is_a?(NilLiteral)
+          @scan.instance_vars_set_to_nil << target.name
+          return false
+        end
+        true
+      end
+
       def visit(node : InstanceVar) : Bool
         @scan.instance_vars << node.name
         false
@@ -588,60 +612,60 @@ a_def.body.accept self
       end
     end
 
-class Scanner
-  def visit(node : Expressions) : Bool
-    node.expressions.each_with_index do |expression, index|
-      @self_valued_allowed << expression.object_id if index < node.expressions.size - 1
+    class Scanner
+      def visit(node : Expressions) : Bool
+        node.expressions.each_with_index do |expression, index|
+          @self_valued_allowed << expression.object_id if index < node.expressions.size - 1
+        end
+        true
+      end
+
+      # Whether *node*'s value is the receiver: `self`, or a call on it to a
+      # method every definition of which declares `: self`.
+      private def self_valued?(node : ASTNode) : Bool
+        case node
+        when Var
+          node.name == "self"
+        when Call
+          obj = node.obj
+          return false if @metaclass
+          return false unless obj.nil? || self_valued?(obj)
+          defs = @erased.lookup_defs(node.name)
+          !defs.empty? && defs.all? { |callee| callee.return_type.is_a?(Self) }
+        else
+          false
+        end
+      end
+
+      # The expressions a method's body can return: its last expression and
+      # the value of each `return`.
+      private def collect_exits(body : ASTNode, exits : Array(ASTNode)) : Nil
+        last = body.is_a?(Expressions) ? (body.expressions.last? || body) : body
+        exits << last
+        body.accept(ReturnFinder.new { |value| exits << value })
+      end
     end
-    true
-  end
 
-  # Whether *node*'s value is the receiver: `self`, or a call on it to a
-  # method every definition of which declares `: self`.
-  private def self_valued?(node : ASTNode) : Bool
-    case node
-    when Var
-      node.name == "self"
-    when Call
-      obj = node.obj
-      return false if @metaclass
-      return false unless obj.nil? || self_valued?(obj)
-      defs = @erased.lookup_defs(node.name)
-      !defs.empty? && defs.all? { |callee| callee.return_type.is_a?(Self) }
-    else
-      false
+    # Calls the block with the value of each `return` of a method body.
+    class ReturnFinder < Visitor
+      def initialize(&@block : ASTNode ->)
+      end
+
+      def visit(node : ASTNode) : Bool
+        true
+      end
+
+      def visit(node : Return) : Bool
+        @block.call(node.exp || NilLiteral.new)
+        false
+      end
+
+      def visit(node : ProcLiteral) : Bool
+        false
+      end
     end
-  end
 
-  # The expressions a method's body can return: its last expression and
-  # the value of each `return`.
-  private def collect_exits(body : ASTNode, exits : Array(ASTNode)) : Nil
-    last = body.is_a?(Expressions) ? (body.expressions.last? || body) : body
-    exits << last
-    body.accept(ReturnFinder.new { |value| exits << value })
-  end
-end
-
-# Calls the block with the value of each `return` of a method body.
-class ReturnFinder < Visitor
-  def initialize(&@block : ASTNode ->)
-  end
-
-  def visit(node : ASTNode) : Bool
-    true
-  end
-
-  def visit(node : Return) : Bool
-    @block.call(node.exp || NilLiteral.new)
-    false
-  end
-
-  def visit(node : ProcLiteral) : Bool
-    false
-  end
-end
-
-# Calls the block with each single-name path in a type expression.
+    # Calls the block with each single-name path in a type expression.
     class NameFinder < Visitor
       def initialize(&@block : String ->)
       end
@@ -678,21 +702,21 @@ end
     end
   end
 
-class Call
-  # The caller's receiver, when this call reaches a method typed once for
-  # every instance that returns `self`: the call's type is the receiver's,
-  # not the erased instance the copy was typed with.
-  rare_property erased_self_receiver : Type?
+  class Call
+    # The caller's receiver, when this call reaches a method typed once for
+    # every instance that returns `self`: the call's type is the receiver's,
+    # not the erased instance the copy was typed with.
+    rare_property erased_self_receiver : Type?
 
-  def map_type(type)
-    if (receiver = erased_self_receiver) && (target = target_defs.try(&.first?)) && type.same?(target.owner)
-      receiver
-    else
-      type
+    def map_type(type)
+      if (receiver = erased_self_receiver) && (target = target_defs.try(&.first?)) && type.same?(target.owner)
+        receiver
+      else
+        type
+      end
     end
-  end
 
-  # The match of a typed-once method of a generic class, typed against the
+    # The match of a typed-once method of a generic class, typed against the
     # erased instance (see `generic_type_once.cr`), or `nil` when the method
     # keeps a copy per instance.
     private def generic_type_once_match(match : Match) : Match?

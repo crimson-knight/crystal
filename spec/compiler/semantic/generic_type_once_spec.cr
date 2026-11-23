@@ -163,6 +163,24 @@ describe "Semantic: typed once for every instance of a generic class" do
     assert_warning code, "read @item through a method typed for each instance: its type depends on the type argument ((First | Nil) in Holder(First))"
   end
 
+it "types once a method that only sets an instance variable whose type mentions the parameter to nil" do
+  copies(RECORDS + %(
+    @[TypeBound(T, Record)]
+    class Holder(T)
+      def initialize(@item : T?, @callback : Proc(T, Int32)?)
+      end
+
+      @[TypeOnce]
+      def forget : Nil
+        @item = nil
+      end
+    end
+
+    Holder(First).new(nil, nil).forget
+    Holder(Second).new(nil, nil).forget
+    ), "forget", "Holder").should eq(1)
+end
+
   it "keeps one copy per instance when the return type mentions the parameter" do
     code = BOX + %(
       class Box(T)
@@ -252,8 +270,8 @@ describe "Semantic: typed once for every instance of a generic class" do
       ), "write the check is_a?(T) without T"
   end
 
-it "gives each caller its own instance back from a method that returns self" do
-  code = BOX + %(
+  it "gives each caller its own instance back from a method that returns self" do
+    code = BOX + %(
     class Box(T)
       def bump : Nil
         @count = @count + 1
@@ -274,14 +292,14 @@ it "gives each caller its own instance back from a method that returns self" do
     Box(First).new(1).twice!
     Box(Second).new(2).twice!
     )
-  program = semantic(code, inject_primitives: true).program
-  typed_copies(program, "Box", "twice!").should eq(1)
-  typed_copies(program, "Box", "step!").should eq(1)
-  assert_type(code, inject_primitives: true) { generic_class("Box", types["Second"]) }
-end
+    program = semantic(code, inject_primitives: true).program
+    typed_copies(program, "Box", "twice!").should eq(1)
+    typed_copies(program, "Box", "step!").should eq(1)
+    assert_type(code, inject_primitives: true) { generic_class("Box", types["Second"]) }
+  end
 
-it "keeps one copy per instance when a method that returns self passes its result on" do
-  assert_warning BOX + %(
+  it "keeps one copy per instance when a method that returns self passes its result on" do
+    assert_warning BOX + %(
     def take(value) : Int32
       1
     end
@@ -300,10 +318,10 @@ it "keeps one copy per instance when a method that returns self passes its resul
 
     Box(First).new(1).hand
     ), "use the result of 'step!' (it is `self`) only to call methods on, or drop it"
-end
+  end
 
-it "keeps one copy per instance when a method that declares self returns something else" do
-  assert_warning BOX + %(
+  it "keeps one copy per instance when a method that declares self returns something else" do
+    assert_warning BOX + %(
     class Box(T)
       @[TypeOnce]
       def other! : self
@@ -313,7 +331,7 @@ it "keeps one copy per instance when a method that declares self returns somethi
 
     Box(First).new(1).other!
     ), "return `self` from every exit of 'other!'"
-end
+  end
 
   it "types a class method once for every instance" do
     copies(BOX + %(
@@ -396,26 +414,26 @@ end
   it "types a fully typed method of a strict file once for every instance" do
     program = semantic(%(
       require "strict"
-  
+
       class Item
       end
-  
+
       class Book < Item
       end
-  
+
       class Song < Item
       end
-  
+
       @[TypeBound(T, Item)]
       class Shelf(T)
         def initialize(@count : Int32)
         end
-  
+
         def total(extra : Int32) : Int32
           @count + extra
         end
       end
-  
+
       Shelf(Book).new(1).total(1)
       Shelf(Song).new(2).total(2)
       ), inject_primitives: true).program
