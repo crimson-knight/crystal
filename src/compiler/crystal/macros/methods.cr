@@ -245,21 +245,36 @@ module Crystal
       raise SkipMacroException.new(@str.to_s, macro_expansion_pragmas)
     end
 
+    def interpret_system(node)
+      cmd = node.args.map do |arg|
+        arg.accept self
+        @last.to_macro_id
+      end
+      cmd = cmd.join " "
+
+      # A target profile (see `Program#macro_shell_answers_by_command`) answers the
+      # commands a target's std library runs at macro time, such as
+      # `pkg-config bdw-gc --modversion`, so a program can be checked for a
+      # target whose libraries are not on this machine.
+      if answers = @program.macro_shell_answers_by_command
+        if answer = answers[cmd]?
+          @last = MacroId.new(answer)
+          return
+        end
+      end
+
+      run_macro_system_command(node, cmd)
+    end
+
     {% if flag?(:wasm32) %}
       # WASI has no subprocesses: macro `system`/backticks cannot work.
       # Raise a proper macro error instead of referencing backticks/`$?`
       # (Process::Status#to_s needs Signal, which doesn't exist on wasm32).
-      def interpret_system(node)
-        node.raise "macro `system` (backticks) is not supported on WASI: the platform has no subprocesses"
+      private def run_macro_system_command(node, cmd)
+        node.raise "macro `system` (backticks) is not supported on WASI: the platform has no subprocesses. A target profile can answer this command: #{cmd}"
       end
     {% else %}
-      def interpret_system(node)
-        cmd = node.args.map do |arg|
-          arg.accept self
-          @last.to_macro_id
-        end
-        cmd = cmd.join " "
-
+      private def run_macro_system_command(node, cmd)
         begin
           result = `#{cmd}`
         rescue exc : File::Error | IO::Error
@@ -271,6 +286,7 @@ module Crystal
         end
 
         if $?.success?
+          @program.recorded_macro_shell_output_by_command.try &.[]=(cmd, result)
           @last = MacroId.new(result)
         elsif result.empty?
           node.raise "error executing command: #{cmd}, got exit status #{$?}"

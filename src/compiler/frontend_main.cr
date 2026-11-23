@@ -54,6 +54,7 @@ require "./crystal/semantic"
 require "./crystal/macros/*"
 require "./crystal/frontend/type_layout"
 require "./crystal/frontend/patches"
+require "./crystal/frontend/target_profile"
 
 Log.setup_from_env(default_level: :warn, default_sources: "crystal.*")
 
@@ -120,10 +121,14 @@ module Crystal
       stats = false
       defines = [] of String
       filenames = [] of String
+      profile_path = nil
+      record_profile_path = nil
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: crystal-frontend [options] file.cr\n\nOptions:"
         opts.on("--target TRIPLE", "Target triple to analyze for (default: #{Config.host_target})") { |t| target = t }
+        opts.on("--target-profile FILE", "Target profile JSON: target, flags and recorded macro shell output") { |path| profile_path = path }
+        opts.on("--record-target-profile FILE", "Write a target profile with the macro shell output this check needed (native builds only)") { |path| record_profile_path = path }
         opts.on("--prelude NAME", "Prelude to use (default: prelude)") { |p| prelude = p }
         opts.on("--error-format FORMAT", "Error output format: text|json (default: text)") { |f| error_format = f }
         opts.on("-D FLAG", "--define FLAG", "Define a compile-time flag for the analyzed program") { |f| defines << f }
@@ -155,8 +160,11 @@ module Crystal
       end
       source_code = File.read(filename)
 
+      profile = profile_path.try { |path| FrontendTargetProfile.load(path) }
+      target ||= profile.try(&.target)
+
       begin
-        analyze(filename, source_code, target, prelude, error_format, color, stats, defines)
+        analyze(filename, source_code, target, prelude, error_format, color, stats, defines, profile, record_profile_path)
       rescue ex : Crystal::CodeError
         ex.color = color
         if error_format == "json"
@@ -176,7 +184,7 @@ module Crystal
       end
     end
 
-    def self.analyze(filename, source_code, target, prelude, error_format, color, stats, defines = [] of String) : Nil
+    def self.analyze(filename, source_code, target, prelude, error_format, color, stats, defines = [] of String, profile : FrontendTargetProfile? = nil, record_profile_path : String? = nil) : Nil
       progress_tracker = ProgressTracker.new
       progress_tracker.stats = stats
 
@@ -187,6 +195,8 @@ module Crystal
       program.color = color
       program.progress_tracker = progress_tracker
       program.flags.concat(defines)
+      profile.try &.apply(program)
+      program.recorded_macro_shell_output_by_command = {} of String => String if record_profile_path
 
       node = progress_tracker.stage("Parse") do
         program.requires.add filename
@@ -207,6 +217,11 @@ module Crystal
       node = program.semantic(node)
 
       program.warnings.report(STDERR)
+
+      if record_profile_path
+        recorded = FrontendTargetProfile.new(program.codegen_target.to_s, defines, program.recorded_macro_shell_output_by_command || {} of String => String)
+        File.write(record_profile_path, recorded.to_pretty_json)
+      end
 
       if error_format == "json"
         JSON.build(STDOUT) do |json|

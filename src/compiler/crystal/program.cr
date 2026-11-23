@@ -180,6 +180,16 @@ module Crystal
       property compiler : Compiler?
     {% end %}
 
+    # The output of each shell command a macro runs (backticks or `system`),
+    # by the exact command text, from a target profile. A command found here
+    # is not run. Lets a compiler without subprocesses (WASI) check a program
+    # for a target whose std library asks `pkg-config` for library versions.
+    property macro_shell_answers_by_command : Hash(String, String)? = nil
+
+    # When set, each macro shell command that succeeds is stored here with its
+    # output, to record a target profile (see `FrontendTargetProfile`).
+    property recorded_macro_shell_output_by_command : Hash(String, String)? = nil
+
     {% unless flag?(:without_llvm) %}
       # Read only by codegen (fun.cr); a frontend-only build has no Compiler.
       property optimization_mode = Compiler::OptimizationMode::O0
