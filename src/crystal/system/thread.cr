@@ -123,6 +123,28 @@ class Thread
     end
   {% end %}
 
+  # :nodoc:
+  #
+  # In a child process that `fork` made from a multithreaded program only the
+  # calling thread exists: drops the others from the thread list, so that the
+  # garbage collector's hooks never reach them. The compiler's build server
+  # (`Crystal::InferReuse.fork_process`) uses it.
+  def self.keep_only_current_after_fork : Nil
+    current = Thread.current
+    # Without allocating: a collection now would still see the other threads.
+    loop do
+      other = nil
+      unsafe_each do |thread|
+        unless thread.same?(current)
+          other = thread
+          break
+        end
+      end
+      break unless other
+      threads.delete(other)
+    end
+  end
+
   def self.unsafe_each(&)
     # nothing to iterate when @@threads is nil + don't lazily allocate in a
     # method called from a GC collection callback!
