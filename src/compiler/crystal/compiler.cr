@@ -2684,7 +2684,7 @@ module Crystal
       # corrupted file that later would cause compilation issues. Moving a file
       # is an atomic operation so no corrupted `.o` file should be generated.
       def compile(isolate_context = false)
-        if must_compile?
+        if must_compile? && !patch_main_module_lines
           isolate_module_context if isolate_context
           update_bitcode_cache
           compile_to_object
