@@ -947,6 +947,38 @@ module Crystal
       run_dsymutil(output_filename) unless File.exists?(dwarf_filename)
     end
 
+    # Whether dsymutil runs in the background after an incremental build
+    # links: the build ends without waiting for the `<output>.dwarf`
+    # companion, which appears a few seconds later. Only when nothing asked
+    # for dsymutil explicitly (`crystal run` and `crystal spec` ask, because
+    # they run the program right away; so does `--dsymutil`).
+    def dwarf_companion_in_background? : Bool
+      @incremental && @dsymutil.nil?
+    end
+
+    # Starts dsymutil for *filename* and returns without waiting for it. It
+    # writes the companion under a temporary name and renames it into place,
+    # so a program never reads a partial file (a program that starts before
+    # then prints its backtraces without file and line). The process keeps
+    # *build_lock*, the locked `compiler.lock` of the cache directory, until
+    # it ends: the next build of the same program waits for it before it
+    # touches the object files dsymutil reads or links a new executable.
+    protected def start_dsymutil_in_background(filename : String, build_lock : IO::FileDescriptor?) : Nil
+      dsymutil = Process.find_executable("dsymutil")
+      return unless dsymutil
+
+      @progress_tracker.stage("dsymutil") do
+        script = %("$1" --flat -o "$2.dwarf.tmp" "$2" && mv -f "$2.dwarf.tmp" "$2.dwarf" || rm -f "$2.dwarf.tmp")
+        build_lock.try &.close_on_exec = false
+        begin
+          Process.new("/bin/sh", ["-c", script, "sh", dsymutil, filename],
+            input: Process::Redirect::Close, output: Process::Redirect::Close, error: Process::Redirect::Close)
+        ensure
+          build_lock.try &.close_on_exec = true
+        end
+      end
+    end
+
     protected def run_dsymutil(filename)
       dsymutil = Process.find_executable("dsymutil")
       return unless dsymutil
@@ -1449,6 +1481,7 @@ module Crystal
           list_of_warnings: warnings.infos,
           error_on_warnings: warnings.error_on_warnings?,
           list_of_line_patch_checks: @list_of_line_patch_checks,
+          writes_dwarf_companion_in_background: writes_dwarf_companion && dwarf_companion_in_background?,
         )
         handoff_filename = File.join(output_dir, "object-stage-handoff.json")
         File.write(handoff_filename, handoff.to_json)

@@ -56,6 +56,9 @@ module Crystal
         getter output_directory : String
         getter output_filename : String
         getter? writes_dwarf_companion : Bool
+        # Whether dsymutil runs in the background (see
+        # `Compiler#start_dsymutil_in_background`).
+        getter? writes_dwarf_companion_in_background : Bool = false
         getter? cleans_cache_directory : Bool
 
         # The open, locked `compiler.lock` of the output directory, inherited
@@ -93,7 +96,8 @@ module Crystal
                        @stage_started_at_unix_ms, @stage_progress, @stage_progress_total,
                        @list_of_unit_summaries, @stats_report_before_codegen, @stats_report_after_codegen,
                        @pending_incremental_cache_filename, @list_of_warnings, @error_on_warnings,
-                       @list_of_line_patch_checks = [] of LinePatch::Verification::Check)
+                       @list_of_line_patch_checks = [] of LinePatch::Verification::Check,
+                       @writes_dwarf_companion_in_background = false)
         end
 
         # A compiler that builds objects, links and reports as the one this
@@ -184,7 +188,12 @@ module Crystal
       private def write_dwarf_companion : Nil
         {% if flag?(:darwin) %}
           File.delete?("#{@handoff.output_filename}.dwarf")
-          @compiler.run_dsymutil(@handoff.output_filename) if @handoff.writes_dwarf_companion?
+          return unless @handoff.writes_dwarf_companion?
+          if @handoff.writes_dwarf_companion_in_background?
+            @compiler.start_dsymutil_in_background(@handoff.output_filename, @build_lock)
+          else
+            @compiler.run_dsymutil(@handoff.output_filename)
+          end
         {% end %}
       end
     end
