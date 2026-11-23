@@ -27,9 +27,13 @@ module Crystal::InferReuse
     LibC.sigdelset(pointerof(new_mask), Crystal::System::Thread.sig_resume)
     LibC.pthread_sigmask(LibC::SIG_SETMASK, pointerof(new_mask), pointerof(old_mask))
     begin
+      # No collection runs while the process is copied.
+      GC.lock_write
       pid = LibC.fork
       errno = Errno.value
+      GC.unlock_write
       if pid == 0
+        Thread.keep_only_current_after_fork
         Crystal::EventLoop.current.after_fork
         Crystal::System::Signal.after_fork
         Crystal::System::SignalChildHandler.after_fork

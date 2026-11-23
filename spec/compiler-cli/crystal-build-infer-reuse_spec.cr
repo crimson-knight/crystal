@@ -126,7 +126,7 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
   it "types the whole program again when a callee's signature changes" do
     with_project("infer-reuse-signature") do |project|
       expect_build(project, "Hello world\n11\n0\n", reused: false)
-      project.write("helper.cr", HELPER.sub("def self.value : Int32\n    1", "def self.value : Int64\n    1_i64"))
+      project.write("helper.cr", HELPER.sub("def self.value : Int32\n", "def self.value(offset : Int32 = 0) : Int32\n"))
       report = expect_build(project, "Hello world\n11\n0\n", reused: false)
       report["reason"].as_s.should contain("outside a method body")
     end
@@ -160,7 +160,8 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
   it "types the whole program again for a reopened class" do
     with_project("infer-reuse-reopen") do |project|
       expect_build(project, "Hello world\n11\n0\n", reused: false)
-      project.write("helper.cr", HELPER + "class Counter\n  def greet(name : String) : String\n    \"Reopened \#{name}\"\n  end\nend\n")
+      # A reopening after the class: its method replaces the original.
+      project.write("main.cr", MAIN.sub("counter = Counter.new\n", "class Counter\n  def greet(name : String) : String\n    \"Reopened \#{name}\"\n  end\nend\n\ncounter = Counter.new\n"))
       report = expect_build(project, "Reopened world\n11\n0\n", reused: false)
       report["reason"].as_s.should contain("lines")
     end
@@ -214,7 +215,7 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
       expect_build(project, "Hello world\n11\n0\n", reused: false)
       project.write("main.cr", MAIN.sub("Helper.value + 10", "Helper.value + \"x\""))
       result, printed, _ = project.build
-      result.should_not be_success
+      result.status.success?.should be_false
       printed.should be_nil
       result.error.should contain("expected argument #1 to 'Int32#+'")
 
