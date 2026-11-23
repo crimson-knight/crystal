@@ -217,6 +217,29 @@ it "keeps one copy per instance when the method writes an instance variable whos
     ), "Holder(T)#replace"
 end
 
+it "types once a method of an instance whose unread struct field has the same layout in every instance" do
+  copies(RECORDS + %(
+    struct Hooks(T)
+      def initialize(@before : Proc(T, Int32)?, @after : Proc(T, Int32)?)
+      end
+    end
+
+    @[TypeBound(T, Record)]
+    class Holder(T)
+      def initialize(@hooks : Hooks(T)?, @count : Int32)
+      end
+
+      @[TypeOnce]
+      def count : Int32
+        @count
+      end
+    end
+
+    Holder(First).new(nil, 1).count
+    Holder(Second).new(nil, 2).count
+    ), "count", "Holder").should eq(1)
+end
+
   it "keeps one copy per instance when the return type mentions the parameter" do
     code = BOX + %(
       class Box(T)
