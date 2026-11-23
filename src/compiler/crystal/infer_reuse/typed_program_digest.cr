@@ -122,6 +122,12 @@ module Crystal::InferReuse
 
       @digest = Crystal::Digest::SHA1.new
 
+      # Fresh variable names (`__temp_*`) numbered in the order they appear in
+      # the body: the compiler numbers them from a counter of the whole
+      # program, so a body typed again by a build server gets other numbers
+      # than a fresh type check gives it, for the same code.
+      @number_by_fresh_name = {} of String => Int32
+
       def initialize(@text : IO?)
       end
 
@@ -167,7 +173,9 @@ module Crystal::InferReuse
         case node
         when Call
           io << node.name
-        when Var, InstanceVar, ClassVar, Global, Arg
+        when Var, Arg
+          io << canonical_name(node.name)
+        when InstanceVar, ClassVar, Global
           io << node.name
         when NumberLiteral
           io << node.value << node.kind
@@ -176,6 +184,11 @@ module Crystal::InferReuse
         when Path
           io << node.names.join("::")
         end
+      end
+
+      private def canonical_name(name : String) : String
+        return name unless name.matches_full?(MethodListExpansion::FRESH_NAME)
+        "__fresh_#{@number_by_fresh_name[name] ||= @number_by_fresh_name.size}"
       end
     end
   end
