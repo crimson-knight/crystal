@@ -329,22 +329,23 @@ abstract class Crystal::EventLoop::Polling < Crystal::EventLoop
   end
 
   def connect(socket : ::Socket, address : ::Socket::Addrinfo | ::Socket::Address, timeout : Time::Span?) : IO::Error?
-    loop do
-      ret = LibC.connect(socket.fd, address, address.size)
-      return unless ret == -1
+    ret = LibC.connect(socket.fd, address, address.size)
+    return unless ret == -1
 
-      case Errno.value
-      when Errno::EISCONN
-        return
+    errno = Errno.value
+
+    loop do
+      case errno
       when Errno::EINPROGRESS, Errno::EALREADY
         wait_writable(socket, timeout) do
           return IO::TimeoutError.new("Connect timed out")
         end
-        if errno = System::Socket.pending_connect_error(socket.fd)
-          return ::Socket::ConnectError.from_os_error("connect", errno)
-        end
+        # the result of the connect is the socket error; calling connect(2)
+        # again reports EISCONN for a refused connect on macOS 27
+        errno = Crystal::System::Socket.system_error(socket.fd)
+        return if errno.none?
       else
-        return ::Socket::ConnectError.from_errno("connect")
+        return ::Socket::ConnectError.from_os_error("connect", errno)
       end
     end
   end
