@@ -17,6 +17,7 @@ module Crystal
   GET_EXCEPTION_NAME     = "__crystal_get_exception"
   ONCE_INIT              = "__crystal_once_init"
   ONCE                   = "__crystal_once"
+  UNREACHABLE_TYPE_NAME  = "__crystal_raise_unreachable_type"
 
   class Program
     def run(code, filename : String? = nil, debug = Debug::Default)
@@ -168,6 +169,7 @@ module Crystal
       visitor.finish
       visitor.run_peak_probe(node) if PeakProbe.enabled?
       visitor.report_owner_shape_sharing
+      visitor.report_dispatch_prune
 
       visitor.modules
     end
@@ -292,6 +294,10 @@ module Crystal
     @realloc_fun : LLVMTypedFunction?
     @raise_overflow_fun : LLVMTypedFunction?
     @raise_cast_failed_fun : LLVMTypedFunction?
+    @raise_unreachable_type_fun : LLVMTypedFunction?
+    @dispatch_prune : DispatchPrune::Analysis?
+    @left_out_branch_count = 0
+    @stubbed_fun_count = 0
     @c_malloc_fun : LLVMTypedFunction?
     @c_realloc_fun : LLVMTypedFunction?
 
@@ -302,8 +308,12 @@ module Crystal
                    @llvm_context : LLVM::Context = LLVM::Context.new)
       discard_local_value_names(@llvm_context)
       @abi = ABI.from(@program.target_machine)
+      # Before owner shapes, which can release typed bodies the analysis reads.
+      @dispatch_prune = @program.dispatch_prune || @program.analyze_dispatch_prune(@node)
       if @program.share_owner_shapes?
-        @owner_shape_sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
+        sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
+        @owner_shape_sharing = sharing
+        @dispatch_prune.try &.keep_shared_representatives(sharing)
       end
       # LLVM::Context.register(@llvm_context, "main")
       @llvm_mod = configure_module(@llvm_context.new_module("main_module"))
@@ -574,7 +584,7 @@ module Crystal
         case node.name
         when MALLOC_NAME, MALLOC_ATOMIC_NAME, REALLOC_NAME, RAISE_NAME,
              @codegen.personality_name, GET_EXCEPTION_NAME, RAISE_OVERFLOW_NAME,
-             RAISE_CAST_FAILED_NAME, ONCE_INIT, ONCE
+             RAISE_CAST_FAILED_NAME, ONCE_INIT, ONCE, UNREACHABLE_TYPE_NAME
           @codegen.accept node
         end
 
@@ -601,6 +611,14 @@ module Crystal
 
     # Prints the sharing counters to standard error when
     # `CRYSTAL_OWNER_SHAPES_STATS` is set.
+    # Prints, with `CRYSTAL_PRUNE_DISPATCH_STATS=1`, how many dispatch
+    # branches code generation left out and how many functions it generated.
+    def report_dispatch_prune : Nil
+      return unless DispatchPrune.print_stats?
+
+      STDERR.printf("prune dispatch: %d dispatch branches left out, %d functions stubbed, %d LLVM functions generated\n", @left_out_branch_count, @stubbed_fun_count, @generated_fun_count)
+    end
+
     def report_owner_shape_sharing : Nil
       return unless ENV["CRYSTAL_OWNER_SHAPES_STATS"]?.presence
       if sharing = @owner_shape_sharing
@@ -2608,6 +2626,20 @@ module Crystal
         check_main_fun RAISE_OVERFLOW_NAME, raise_overflow_fun
       else
         raise Error.new("Missing __crystal_raise_overflow function, either use std-lib's prelude or define it")
+      end
+    end
+
+    # The function that stops the program when a value of a type left out
+    # of a dispatch reaches it (see `DispatchPrune`), or `nil` when the
+    # prelude has none.
+    def crystal_raise_unreachable_type_fun : LLVMTypedFunction?
+      @raise_unreachable_type_fun ||= begin
+        fun_ref = typed_fun?(@main_mod, UNREACHABLE_TYPE_NAME)
+        fun_ref.try &.func.add_attribute(LLVM::Attribute::Cold)
+        fun_ref
+      end
+      if raise_unreachable_type_fun = @raise_unreachable_type_fun
+        check_main_fun UNREACHABLE_TYPE_NAME, raise_unreachable_type_fun
       end
     end
 
