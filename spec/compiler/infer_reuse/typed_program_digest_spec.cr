@@ -1,7 +1,7 @@
 require "../../spec_helper"
 
 private def digest_after_fresh_names(code : String, count_of_fresh_names : Int32) : Crystal::InferReuse::TypedProgramDigest
-  program = new_program
+  program = Crystal::Program.new
   count_of_fresh_names.times { program.new_temp_var_name }
   node = program.normalize(parse(code))
   node = program.semantic(node)
