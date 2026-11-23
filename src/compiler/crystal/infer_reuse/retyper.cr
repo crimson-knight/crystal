@@ -188,8 +188,11 @@ module Crystal::InferReuse
       new_typed_defs = program.infer_reuse_new_typed_defs = [] of Def
 
       list_of_retypes = @list_of_changed_defs.map do |changed|
-        location = changed.old_def.location.not_nil!
-        program_def = def_by_location[{location.filename, location.line_number, location.column_number}]? ||
+        location = changed.old_def.location || raise Refusal.new("method '#{changed.old_def.name}' has no location")
+        filename = location.filename
+        raise Refusal.new("method '#{changed.old_def.name}' is not in a source file") unless filename.is_a?(String)
+        key = {filename, location.line_number, location.column_number}
+        program_def = def_by_location[key]? || program_def_in_types(changed.old_def.name, key) ||
                       raise Refusal.new("can't find method '#{changed.old_def.name}' of #{location} in the program")
         raise Refusal.new("method '#{program_def.name}' of #{location} is not the parsed one") unless program_def.name == changed.new_def.name
         check_eligible(program_def, changed)
@@ -276,6 +279,27 @@ module Crystal::InferReuse
           result[{filename, location.line_number, location.column_number}] = node
         end
       end
+    end
+
+    # The program's def named *name* at *key* (file, line, column), from the
+    # types that hold it: for a file whose parsed nodes the program no longer
+    # reaches from its main node.
+    private def program_def_in_types(name : String, key : {String, Int32, Int32}) : Def?
+      visited = Set(UInt64).new
+      roots = [program.as(Type)]
+      program.file_modules.each_value { |file_module| roots << file_module }
+      found = nil
+      roots.each do |root|
+        each_type(root, visited) do |type|
+          next if found
+          type.defs.try &.[name]?.try &.each do |item|
+            item_location = item.def.location
+            next unless item_location
+            found = item.def if {item_location.filename, item_location.line_number, item_location.column_number} == key
+          end
+        end
+      end
+      found
     end
 
     # Every typed instance of *program_def*, with the type that keeps it and
