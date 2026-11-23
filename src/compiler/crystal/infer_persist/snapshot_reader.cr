@@ -6,46 +6,66 @@ module Crystal::InferPersist
   # their text before that. Fields are then filled in file order: every
   # object other than a hash, then every hash.
   class SnapshotReader
-    @list_of_objects = [] of Void*
+    # Every object by number, in memory from `malloc`: it is needed only
+    # while the snapshot is read, and a collector heap keeps the pages it
+    # grew to (8 bytes per object, about 400 MB for Grant300). Collection is
+    # off while it is in use (see `Session#read_snapshot`), so the objects it
+    # alone points at stay.
+    @objects = Pointer(Void*).null
+    @object_count = 0
     @class_index_by_type_id = {} of Int32 => Int32
     @hash_class_indexes = Set(Int32).new
+    # Whether class number *n* is a hash, by number.
+    @hash_class = Slice(Bool).empty
 
     def initialize(@input : ByteInput, @list_of_externals : Array(Void*))
       InferPersist.persistable_case(:register, 0, nil)
+      @hash_class = Slice(Bool).new((@hash_class_indexes.max? || 0) + 1) { |index| @hash_class_indexes.includes?(index) }
     end
+
+    # The number of objects the last `#read` made.
+    getter object_count : Int32
 
     def read : Roots
       count = @input.read_varint.to_i32
-      list_of_class_indexes = Slice(Int32).new(count) { @input.read_varint.to_i32 }
-      @list_of_objects = Array(Void*).new(count)
-      strings = list_of_class_indexes.count(STRING_CLASS)
-      list_of_strings = Array(String).new(strings)
-      strings.times do
-        bytesize = @input.read_varint.to_i32
-        list_of_strings << @input.read_string(bytesize)
-      end
-      string_position = 0
-      list_of_class_indexes.each do |index|
-        if index == STRING_CLASS
-          @list_of_objects << list_of_strings[string_position].as(Void*)
-          string_position += 1
-        else
-          @list_of_objects << allocate_object(index)
+      @object_count = count
+      class_indexes = Pointer(Int32).new(LibC.malloc(count.to_u64 * 4).address)
+      @objects = Pointer(Void*).new(LibC.malloc(count.to_u64 * 8).address)
+      raise Error.new("snapshot: out of memory for #{count} objects") if class_indexes.null? || @objects.null?
+      begin
+        count.times { |position| class_indexes[position] = @input.read_varint.to_i32 }
+        # The strings section holds the text of every string, in object order.
+        count.times do |position|
+          if class_indexes[position] == STRING_CLASS
+            bytesize = @input.read_varint.to_i32
+            @objects[position] = @input.read_string(bytesize).as(Void*)
+          end
         end
-      end
-      list_of_strings.clear
+        count.times do |position|
+          index = class_indexes[position]
+          @objects[position] = allocate_object(index) unless index == STRING_CLASS
+        end
 
-      list_of_class_indexes.each_with_index do |index, position|
-        next if index == STRING_CLASS || @hash_class_indexes.includes?(index)
-        fill_object(index, @list_of_objects.unsafe_fetch(position))
+        count.times do |position|
+          index = class_indexes[position]
+          next if index == STRING_CLASS || hash_class?(index)
+          fill_object(index, @objects[position])
+        end
+        count.times do |position|
+          index = class_indexes[position]
+          next unless hash_class?(index)
+          fill_object(index, @objects[position])
+        end
+        read_ref.as(Roots)
+      ensure
+        LibC.free(class_indexes.as(Void*))
+        LibC.free(@objects.as(Void*))
+        @objects = Pointer(Void*).null
       end
-      list_of_class_indexes.each_with_index do |index, position|
-        next unless @hash_class_indexes.includes?(index)
-        fill_object(index, @list_of_objects.unsafe_fetch(position))
-      end
-      roots = read_ref.as(Roots)
-      @list_of_objects = [] of Void*
-      roots
+    end
+
+    private def hash_class?(index : Int32) : Bool
+      index < @hash_class.size && @hash_class.unsafe_fetch(index)
     end
 
     protected def register_class(type_id : Int32, index : Int32, hash : Bool) : Nil
@@ -68,7 +88,7 @@ module Crystal::InferPersist
       if code <= @list_of_externals.size
         return @list_of_externals[code - 1]
       end
-      @list_of_objects[code - @list_of_externals.size - 1]
+      @objects[object_number(code)]
     end
 
     # The object a reference names, as *type*. A pointer can be cast to
@@ -93,13 +113,19 @@ module Crystal::InferPersist
       {% end %}
     end
 
+    private def object_number(code : UInt64) : Int32
+      number = code - @list_of_externals.size - 1
+      raise Error.new("snapshot: reference to object #{number} of #{@object_count}") unless number < @object_count.to_u64
+      number.to_i32
+    end
+
     private def read_object_id : UInt64
       code = @input.read_varint
       return @input.read_u64 if code == 0
       if code <= @list_of_externals.size
         return @list_of_externals[code - 1].address
       end
-      @list_of_objects[code - @list_of_externals.size - 1].address
+      @objects[object_number(code)].address
     end
 
     private def fill_fields(object : Array(T)) : Nil forall T

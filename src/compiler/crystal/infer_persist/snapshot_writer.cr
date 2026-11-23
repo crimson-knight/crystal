@@ -27,6 +27,9 @@ module Crystal::InferPersist
     @hash_class_indexes = Set(Int32).new
     @dropped_type_ids = Set(Int32).new
     @list_of_class_indexes = [] of Int32
+    # `@class_index_by_type_id` and `@hash_class_indexes` as slices, read once per object.
+    @class_by_type_id = Slice(Int32).empty
+    @hash_class = Slice(Bool).empty
     getter object_count = 0
     # What the snapshot could not hold; the write fails when any is found.
     getter list_of_problems = Set(String).new
@@ -34,6 +37,10 @@ module Crystal::InferPersist
 
     def initialize(@roots : Roots, @compiler : Compiler)
       InferPersist.persistable_case(:register, 0, nil)
+      max_type_id = @class_index_by_type_id.keys.max? || 0
+      @class_by_type_id = Slice(Int32).new(max_type_id + 1, -1)
+      @class_index_by_type_id.each { |type_id, index| @class_by_type_id[type_id] = index }
+      @hash_class = Slice(Bool).new((@hash_class_indexes.max? || 0) + 1) { |index| @hash_class_indexes.includes?(index) }
       {% for name in DROPPED %}
         @dropped_type_ids << {{name.id}}.crystal_instance_type_id
       {% end %}
@@ -71,14 +78,14 @@ module Crystal::InferPersist
       each_object do |object|
         index = @list_of_class_indexes[position]
         position += 1
-        next if index == STRING_CLASS || @hash_class_indexes.includes?(index)
+        next if index == STRING_CLASS || hash_class?(index)
         InferPersist.persistable_case(:write, index, object)
       end
       position = 0
       each_object do |object|
         index = @list_of_class_indexes[position]
         position += 1
-        next unless @hash_class_indexes.includes?(index)
+        next unless hash_class?(index)
         InferPersist.persistable_case(:write, index, object)
       end
       write_ref(@roots)
@@ -107,7 +114,12 @@ module Crystal::InferPersist
     private def class_index(pointer : Void*) : Int32
       type_id = pointer.as(Int32*).value
       return STRING_CLASS if type_id == String.crystal_instance_type_id
-      @class_index_by_type_id[type_id]? || -1
+      return -1 if type_id < 0 || type_id >= @class_by_type_id.size
+      @class_by_type_id.unsafe_fetch(type_id)
+    end
+
+    private def hash_class?(index : Int32) : Bool
+      0 <= index < @hash_class.size && @hash_class.unsafe_fetch(index)
     end
 
     private def external_code(object : Compiler) : Int32?

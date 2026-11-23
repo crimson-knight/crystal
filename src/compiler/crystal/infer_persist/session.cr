@@ -69,14 +69,16 @@ module Crystal::InferPersist
         externals = [@compiler.as(Void*), STDOUT.as(Void*), STDERR.as(Void*)]
         GC.disable
         begin
-          roots = SnapshotReader.new(ByteInput.new(file), externals).read
+          reader = SnapshotReader.new(ByteInput.new(file), externals)
+          roots = reader.read
+          reader_object_count = reader.object_count
         ensure
           GC.enable
         end
         Location.restore(roots.location_tables)
         seconds = (Time.instant - started).total_seconds
         if @compiler.progress_tracker.stats?
-          STDOUT.puts "Semantic (infer persist): loaded #{bytesize} bytes in #{seconds.round(2)} s, GC heap #{(GC.stats.heap_size // 1_000_000)} MB"
+          STDOUT.puts "Semantic (infer persist): loaded #{bytesize} bytes (#{reader_object_count} objects) in #{seconds.round(2)} s, GC heap #{(GC.stats.heap_size // 1_000_000)} MB"
         end
         {"loaded", roots, seconds, bytesize}
       end
