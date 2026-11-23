@@ -1,0 +1,17 @@
+{
+  "target": "aarch64-apple-darwin",
+  "list_of_flags": [
+    "without_mt",
+    "use_pcre2"
+  ],
+  "macro_shell_answers_by_command": {
+    "pkg-config \"bdw-gc\" --silence-errors --modversion || printf \"0.0.0\"": "8.2.12\n",
+    "sh -c 'hash pkg-config 2> /dev/null || printf %s false'": "",
+    "sh -c 'test -f $(pkg-config --silence-errors --variable=includedir libcrypto)/openssl/opensslv.h || printf %s false'": "",
+    "sh -c 'printf \"#include <openssl/opensslv.h>\nLIBRESSL_VERSION_NUMBER\" | ${CC:-cc} $(pkg-config --cflags --silence-errors libcrypto || true) -E -'": "# 1 \"<stdin>\"\n# 1 \"<built-in>\" 1\n# 1 \"<built-in>\" 3\n# 482 \"<built-in>\" 3\n# 1 \"<command line>\" 1\n# 1 \"<built-in>\" 2\n# 1 \"<stdin>\" 2\n# 1 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/opensslv.h\" 1\n# 126 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/opensslv.h\"\n# 1 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/macros.h\" 1\n# 14 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/macros.h\"\n# 1 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/configuration.h\" 1\n# 15 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/macros.h\" 2\n# 127 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/opensslv.h\" 2\n# 2 \"<stdin>\" 2\nLIBRESSL_VERSION_NUMBER\n",
+    "sh -c 'hash pkg-config 2> /dev/null && pkg-config --silence-errors --modversion libcrypto || printf %s 0.0.0'": "4.1.0\n",
+    "sh -c 'test -f $(pkg-config --silence-errors --variable=includedir libssl)/openssl/opensslv.h || printf %s false'": "",
+    "sh -c 'printf \"#include <openssl/opensslv.h>\nLIBRESSL_VERSION_NUMBER\" | ${CC:-cc} $(pkg-config --cflags --silence-errors libssl || true) -E -'": "# 1 \"<stdin>\"\n# 1 \"<built-in>\" 1\n# 1 \"<built-in>\" 3\n# 482 \"<built-in>\" 3\n# 1 \"<command line>\" 1\n# 1 \"<built-in>\" 2\n# 1 \"<stdin>\" 2\n# 1 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/opensslv.h\" 1\n# 126 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/opensslv.h\"\n# 1 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/macros.h\" 1\n# 14 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/macros.h\"\n# 1 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/configuration.h\" 1\n# 15 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/macros.h\" 2\n# 127 \"/opt/homebrew/Cellar/openssl@4/4.1.0/include/openssl/opensslv.h\" 2\n# 2 \"<stdin>\" 2\nLIBRESSL_VERSION_NUMBER\n",
+    "sh -c 'hash pkg-config 2> /dev/null && pkg-config --silence-errors --modversion libssl || printf %s 0.0.0'": "4.1.0\n"
+  }
+}
