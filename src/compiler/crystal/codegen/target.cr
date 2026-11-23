@@ -326,8 +326,8 @@ class Crystal::Codegen::Target
         m
       end
     {% else %}
-      target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
-    {% end %}
+                target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
+              {% end %}
 
     # FIXME: We need to disable global isel until https://reviews.llvm.org/D80898 is released,
     # or we fixed generating values for 0 sized types.

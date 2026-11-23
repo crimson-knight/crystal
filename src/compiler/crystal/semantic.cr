@@ -76,6 +76,7 @@ class Crystal::Program
       visitor.vars = main_visitor.vars.dup unless main_visitor.vars.empty?
 
       node.accept visitor
+      infer_reuse_record.try &.declarations_complete = true
       visitor.process_finished_hooks
       StrictDefChecker.new(self).run
       visitor.new_expansions

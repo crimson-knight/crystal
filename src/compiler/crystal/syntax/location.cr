@@ -24,6 +24,11 @@ struct Crystal::Location
   @@last_filename : String?
   @@last_file_index = 0_u32
   @@overflow = [] of {UInt32, Int32, Int32}
+  # Line shifts of files a build server edited in place (see `.shift_lines`),
+  # by file index, and the first index of each file that has more than one.
+  @@line_shift_by_file_index = {} of UInt32 => LineShift
+  @@first_index_by_file_index = {} of UInt32 => UInt32
+  @@has_line_shifts = false
   {% if flag?(:preview_mt) %}
     @@mutex = Thread::Mutex.new
   {% end %}
@@ -67,14 +72,123 @@ struct Crystal::Location
 
   protected def unpack : {UInt32, Int32, Int32}
     bits = @bits
-    if bits & OVERFLOW != 0
-      Location.overflow_at((bits & ~OVERFLOW).to_i32!)
-    else
-      {
-        (bits >> (LINE_BITS + COLUMN_BITS)).to_u32!,
-        ((bits >> COLUMN_BITS) & ((1_u64 << LINE_BITS) - 1)).to_i32!,
-        (bits & ((1_u64 << COLUMN_BITS) - 1)).to_i32!,
-      }
+    unpacked =
+      if bits & OVERFLOW != 0
+        Location.overflow_at((bits & ~OVERFLOW).to_i32!)
+      else
+        {
+          (bits >> (LINE_BITS + COLUMN_BITS)).to_u32!,
+          ((bits >> COLUMN_BITS) & ((1_u64 << LINE_BITS) - 1)).to_i32!,
+          (bits & ((1_u64 << COLUMN_BITS) - 1)).to_i32!,
+        }
+      end
+    return unpacked unless @@has_line_shifts
+    Location.shifted(unpacked)
+  end
+
+  # *unpacked* with its line moved by the shifts of its file version, and
+  # its file index replaced by the file's first index, so that two words for
+  # one place in two versions of a file unpack the same.
+  protected def self.shifted(unpacked : {UInt32, Int32, Int32}) : {UInt32, Int32, Int32}
+    file_index, line_number, column_number = unpacked
+    if shift = @@line_shift_by_file_index[file_index]?
+      line_number = shift.apply(line_number)
+    end
+    {@@first_index_by_file_index[file_index]? || file_index, line_number, column_number}
+  end
+
+  # Starts a new version of *filename*: locations made from now on get a new
+  # file index, so that a later `.shift_lines` leaves them alone. Returns the
+  # indexes of the earlier versions. A build server calls this before it
+  # parses the new text of a file it edits in place.
+  def self.start_new_version(filename : String) : Array(UInt32)
+    synchronize do
+      earlier = @@file_indexes[filename]?
+      return [] of UInt32 unless earlier
+      first = @@first_index_by_file_index[earlier]? || earlier
+      list_of_indexes = [first]
+      @@first_index_by_file_index.each { |index, its_first| list_of_indexes << index if its_first == first }
+      @@files << filename
+      index = (@@files.size - 1).to_u32
+      @@file_indexes[filename] = index
+      @@first_index_by_file_index[index] = first
+      @@last_filename = nil
+      @@has_line_shifts = true
+      list_of_indexes
+    end
+  end
+
+  # Moves the line of every location in the file versions *list_of_indexes*
+  # (from `.start_new_version`) by *shift*, after any earlier shift: for a
+  # build server that keeps nodes parsed from an earlier text of a file it
+  # edited. Each node keeps its word; the line moves when it is read.
+  def self.shift_lines(list_of_indexes : Array(UInt32), shift : LineShift) : Nil
+    synchronize do
+      list_of_indexes.each do |index|
+        earlier = @@line_shift_by_file_index[index]?
+        @@line_shift_by_file_index[index] = earlier ? earlier.then(shift) : shift
+      end
+      @@has_line_shifts = true
+    end
+  end
+
+  # A map from the line numbers of one text of a file to those of a later
+  # text: steps of {first line, offset}, sorted by line, where a line moves by
+  # the offset of the last step at or before it. Lines before the first step
+  # stay where they are.
+  struct LineShift
+    getter list_of_steps : Array({Int32, Int32})
+
+    def initialize(list_of_steps : Array({Int32, Int32}))
+      @list_of_steps = LineShift.merged(list_of_steps)
+    end
+
+    def apply(line_number : Int32) : Int32
+      line_number + offset_at(line_number)
+    end
+
+    def offset_at(line_number : Int32) : Int32
+      index = @list_of_steps.bsearch_index { |(first_line, _)| first_line > line_number } || @list_of_steps.size
+      index == 0 ? 0 : @list_of_steps[index - 1][1]
+    end
+
+    # Whether no line moves.
+    def identity? : Bool
+      @list_of_steps.all? { |(_, offset)| offset == 0 }
+    end
+
+    # This shift followed by *other*.
+    def then(other : LineShift) : LineShift
+      first_step = @list_of_steps.first? || return other
+      list_of_steps = [] of {Int32, Int32}
+      # Lines before this shift's first step stay, so only *other* moves them.
+      other.list_of_steps.each do |(other_first, other_offset)|
+        list_of_steps << {other_first, other_offset} if other_first < first_step[0]
+      end
+      @list_of_steps.each_with_index do |(first_line, offset), index|
+        last_line = @list_of_steps[index + 1]?.try { |(next_first, _)| next_first - 1 }
+        list_of_steps << {first_line, offset + other.offset_at(first_line + offset)}
+        other.list_of_steps.each do |(other_first, other_offset)|
+          step_line = other_first - offset
+          next unless first_line < step_line
+          next if last_line && step_line > last_line
+          list_of_steps << {step_line, offset + other_offset}
+        end
+      end
+      LineShift.new(list_of_steps)
+    end
+
+    protected def self.merged(list_of_steps : Array({Int32, Int32})) : Array({Int32, Int32})
+      result = [] of {Int32, Int32}
+      list_of_steps.sort_by(&.[0]).each do |step|
+        last = result.last?
+        if last && last[0] == step[0]
+          result[-1] = step
+        elsif last.nil? || last[1] != step[1]
+          result << step
+        end
+      end
+      result
     end
   end
 
@@ -142,7 +256,7 @@ struct Crystal::Location
     return true if @bits == other.bits
     # Two words can only stand for the same location when one of them is in
     # the overflow table.
-    return false if (@bits | other.bits) & OVERFLOW == 0
+    return false if (@bits | other.bits) & OVERFLOW == 0 && !@@has_line_shifts
     unpack == other.unpack
   end
 

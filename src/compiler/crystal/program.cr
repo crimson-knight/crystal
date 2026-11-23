@@ -95,6 +95,11 @@ module Crystal
     # server types an edit again (see `InferReuse::Retyper`).
     property infer_reuse_new_typed_defs : Array(Def)? = nil
 
+    # How many instances of generic types (including tuples and procs) this
+    # program made, so that a build server can tell whether re-typing an edit
+    # needed a new one.
+    property generic_instance_count = 0
+
     # All created unions in a program, indexed by an array of opaque
     # ids of each type in the union. The array (the key) is sorted
     # by this opaque id.

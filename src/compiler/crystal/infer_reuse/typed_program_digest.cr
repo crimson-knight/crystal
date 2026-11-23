@@ -122,6 +122,12 @@ module Crystal::InferReuse
 
       @digest = Crystal::Digest::SHA1.new
 
+      # Fresh variable names (`__temp_*`) numbered in the order they appear in
+      # the body: the compiler numbers them from a counter of the whole
+      # program, so a body typed again by a build server gets other numbers
+      # than a fresh type check gives it, for the same code.
+      @number_by_fresh_name = {} of String => Int32
+
       def initialize(@text : IO?)
       end
 
@@ -130,6 +136,12 @@ module Crystal::InferReuse
       end
 
       def visit(node : ASTNode) : Bool
+        # A method or macro definition in the program's source is not code:
+        # its typed instances are digested on their own, from the calls that
+        # reach them. (A build server adds and removes methods in its types
+        # without changing the parsed nodes that declared them.)
+        return false if node.is_a?(Def) || node.is_a?(Macro)
+
         text = String.build do |io|
           io << node.class.name << ' ' << node.type? << ' '
           # An `Expressions` gets a location or not depending on how its file
@@ -154,17 +166,16 @@ module Crystal::InferReuse
         if node.responds_to?(:expanded) && (expanded = node.expanded)
           expanded.accept self if expanded.is_a?(ASTNode)
         end
-        # A method or macro definition in the program's source is not code:
-        # its typed instances are digested on their own, from the calls that
-        # reach them.
-        !node.is_a?(Def) && !node.is_a?(Macro)
+        true
       end
 
       private def label(node : ASTNode, io : IO) : Nil
         case node
         when Call
           io << node.name
-        when Var, InstanceVar, ClassVar, Global, Arg
+        when Var, Arg
+          io << canonical_name(node.name)
+        when InstanceVar, ClassVar, Global
           io << node.name
         when NumberLiteral
           io << node.value << node.kind
@@ -172,9 +183,12 @@ module Crystal::InferReuse
           io << node
         when Path
           io << node.names.join("::")
-        when Def, Macro
-          io << node.name
         end
+      end
+
+      private def canonical_name(name : String) : String
+        return name unless name.matches_full?(MethodListExpansion::FRESH_NAME)
+        "__fresh_#{@number_by_fresh_name[name] ||= @number_by_fresh_name.size}"
       end
     end
   end
