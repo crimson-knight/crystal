@@ -91,7 +91,8 @@ describe "Code generation: symbol names on ELF targets" do
         versions = Process.capture([readelf, "-V", "-W", executable])
         versions.should_not contain("Version definition section")
         versions.should_not contain("Ancestor#step")
-        defined_symbols_with(nm, executable, "@").should be_empty
+        # (GNU ld adds local `e843419@...` stubs of its own on arm64.)
+        defined_symbols_with(nm, executable, "@Ancestor#step").should be_empty
         defined_symbols_with(nm, executable, "~at~Ancestor#step").size.should eq(40 * 8)
       end
     end
