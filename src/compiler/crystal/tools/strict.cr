@@ -45,6 +45,9 @@ module Crystal
       property return_text : String?
       property? needs_override = false
 
+      # Whether the return type was widened to the one the build reported.
+      property? return_widened = false
+
       # The earlier def with the same signature this one replaced.
       property replaced : Def?
 
@@ -82,6 +85,21 @@ module Crystal
       def location : Location
         @a_def.location.not_nil!
       end
+    end
+
+    # Source text for a type as the compiler prints it in a message
+    # (`(String | Nil)`, `Animal+`), or `nil` when it does not parse as a type.
+    def self.type_name_text(name : String) : String?
+      text = name.delete('+')
+      text = text[1...-1] if text.starts_with?('(') && text.ends_with?(')')
+      Planner.parse_restriction(text)
+      members = text.split(" | ")
+      if members.size == 2 && (nil_index = members.index("Nil")) && !members[1 - nil_index].includes?(' ')
+        text = "#{members[1 - nil_index]}?"
+      end
+      text
+    rescue Crystal::SyntaxException
+      nil
     end
 
     # What happened to one method over all rounds.
@@ -297,13 +315,17 @@ module Crystal
         @entries = @files.map(&.filename) if @entries.empty?
 
         writes_to_disk = !@check && !@dry_run
+        completed = false
         begin
           convert
           @files.each { |file| file.text = formatted(file) }
           print_report
           print_diffs if @dry_run
+          completed = true
         ensure
-          unless writes_to_disk
+          # The verification builds edit the files in place; a run that only
+          # reports, or that stops early, puts every file back as it was.
+          if !writes_to_disk || !completed
             @files.each { |file| File.write(file.filename, file.original_text) if File.read(file.filename) != file.original_text }
           end
         end
@@ -462,7 +484,7 @@ module Crystal
           file.in_program = true
           ast_defs = file_ast_defs(file)
           ast_def = ast_defs[location_key(location)]? || next
-          plan = planner.plan(declaration)
+          plan = planner.plan(declaration, ast_def)
           plan.ordinal = ast_defs.keys.index!(location_key(location))
           if rejection = @rejections[{filename, plan.ordinal}]?
             plan.clear_types(rejection)
@@ -543,7 +565,23 @@ module Crystal
             insertions << Insertion.new(1, 1, "#{STRICT_MARKER}\n")
           end
         end
-        source.apply(insertions)
+        with_strict_require(source.apply(insertions))
+      end
+
+      STRICT_REQUIRE = %(require "strict")
+
+      # A strict file that uses `@[Override]` requires `strict`, which
+      # declares the annotation on a compiler without strict files (the
+      # `strict` shard).
+      private def with_strict_require(text : String) : String
+        return text unless text.includes?("@[Override]")
+        return text if text.each_line.any? { |line| line.strip == STRICT_REQUIRE }
+        first_line, _, rest = text.partition('\n')
+        if first_line.rstrip == STRICT_MARKER
+          "#{first_line}\n#{STRICT_REQUIRE}\n#{rest}"
+        else
+          "#{STRICT_REQUIRE}\n#{text}"
+        end
       end
 
       private def location_key(location : Location) : {Int32, Int32}
@@ -578,7 +616,7 @@ module Crystal
             return nil
           end
 
-          next write_units(units) if add_missing_override(units, result)
+          next write_units(units) if add_missing_override(units, result) || widen_return_type(units, result)
           blamed = blame(units, result)
           blamed = bisect(units) if blamed.empty?
           return nil if blamed.empty?
@@ -617,6 +655,25 @@ module Crystal
             plan.needs_override = true
             return true
           end
+        end
+        false
+      end
+
+      # A return type read from the callers is too narrow once a parameter is
+      # written wider than they pass (a default value, an inherited type, a
+      # union): the build names the type the body returns, which is written in
+      # its place, once.
+      private def widen_return_type(units : Array(Unit), error : CodeError) : Bool
+        error_frames(error).reverse_each do |frame|
+          message, filename, line, column = frame
+          match = message.match(/must return .+ but it is returning (.+)$/) || next
+          unit = unit_at(units, filename, line, column, edited_only: true) || next
+          plan = unit.plan || next
+          next if plan.return_widened? || plan.return_text.nil?
+          text = StrictTool.type_name_text(match[1].strip) || next
+          plan.return_text = text
+          plan.return_widened = true
+          return true
         end
         false
       end

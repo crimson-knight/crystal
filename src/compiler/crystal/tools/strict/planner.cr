@@ -16,13 +16,15 @@ module Crystal::StrictTool
       end
     end
 
-    def plan(declaration : StrictToolRecorder::Declaration) : MethodPlan
+    # Plans the def of *declaration*; *written* is the same def as parsed
+    # from its file, before type inference added restrictions of its own.
+    def plan(declaration : StrictToolRecorder::Declaration, written : Def) : MethodPlan
       a_def = declaration.a_def
       owner = declaration.owner
       plan = MethodPlan.new(a_def, owner, Planner.describe(owner, a_def))
       plan.replaced = declaration.replaced
 
-      to_write = missing_types(a_def)
+      to_write = missing_types(written, a_def)
       return plan if to_write.empty?
 
       if reason = skip_reason(a_def, owner, declaration.replaced)
@@ -38,7 +40,7 @@ module Crystal::StrictTool
 
       scope = scope_of(owner)
       reasons = [] of String
-      fill_arg_types(plan, a_def, instances, scope, reasons)
+      fill_arg_types(plan, a_def, written, instances, scope, reasons)
       fill_block_type(plan, a_def, instances, scope, reasons) if to_write.includes?(:block)
       fill_return_type(plan, a_def, instances, scope, reasons) if to_write.includes?(:return)
 
@@ -48,16 +50,16 @@ module Crystal::StrictTool
       plan
     end
 
-    # What *a_def* leaves unwritten: `:args`, `:block`, `:return`.
-    private def missing_types(a_def : Def) : Array(Symbol)
+    # What *written* leaves unwritten: `:args`, `:block`, `:return`.
+    private def missing_types(written : Def, a_def : Def) : Array(Symbol)
       missing = [] of Symbol
-      missing << :args if a_def.args.any? { |arg| !arg.name.empty? && arg.restriction.nil? }
-      if (block_arg = a_def.block_arg) && block_arg.restriction.nil? && a_def.uses_block_arg?
+      missing << :args if written.args.any? { |arg| !arg.name.empty? && arg.restriction.nil? }
+      if (block_arg = written.block_arg) && block_arg.restriction.nil? && a_def.uses_block_arg?
         missing << :block
       elsif a_def.block_arity && !a_def.uses_block_arg?
         missing << :block
       end
-      missing << :return unless a_def.return_type || a_def.name == "initialize"
+      missing << :return unless written.return_type || a_def.name == "initialize"
       missing
     end
 
@@ -107,11 +109,12 @@ module Crystal::StrictTool
       nil
     end
 
-    private def fill_arg_types(plan : MethodPlan, a_def : Def, instances : Array(StrictToolRecorder::Instance), scope : Type, reasons : Array(String)) : Nil
+    private def fill_arg_types(plan : MethodPlan, a_def : Def, written : Def, instances : Array(StrictToolRecorder::Instance), scope : Type, reasons : Array(String)) : Nil
       program = scope.program
       a_def.args.each_with_index do |arg, index|
-        next if arg.name.empty? || arg.restriction
+        next if arg.name.empty? || written.args[index]?.try(&.restriction)
         types = [] of Type
+        default_types = [] of Type
         omitted = false
         instances.each do |instance|
           if type = instance.arg_types[index]?
@@ -125,13 +128,13 @@ module Crystal::StrictTool
           end
           omitted = true
           if type = default_type_in_body(instance.typed_def, arg.name)
-            types << type
+            default_types << type
           end
         end
 
         if default_value = arg.default_value
           if literal_type = literal_type(program, default_value)
-            types << literal_type
+            default_types << literal_type
           elsif !omitted
             reasons << "the default value of parameter '#{arg.name}' is never used, so its type is not known"
             next
@@ -139,10 +142,24 @@ module Crystal::StrictTool
         end
 
         label = "parameter '#{arg.name}'"
-        if text = inherited_text(a_def, plan.owner, scope, types) { |inherited| inherited.args[index]?.try(&.restriction) }
+        all_types = types + default_types
+        if text = inherited_text(a_def, plan.owner, scope, all_types) { |inherited| inherited.args[index]?.try(&.restriction) }
           plan.arg_texts[index] = text
           next
         end
+
+        # The callers agree; the default value's type joins theirs.
+        callers = unique_types(types)
+        if callers.size <= 1 && !default_types.empty?
+          merged = program.type_merge(unique_types(all_types).map(&.as(Type?)))
+          if merged && (text = type_text(merged, scope))
+            plan.arg_texts[index] = text
+          else
+            reasons << "#{label} can't be written in the source"
+          end
+          next
+        end
+
         case decided = decide(types, scope, label, plan)
         when String
           plan.arg_texts[index] = decided
@@ -211,32 +228,32 @@ module Crystal::StrictTool
       end
     end
 
-# The type an inherited method with the same name and number of
-# parameters declares where *a_def* leaves it out (the node the block
-# picks), written for *scope*, when every type in *types* fits it.
-# Writing the inherited type keeps the method an override.
-private def inherited_text(a_def : Def, owner : ModuleType, scope : Type, types : Array(Type), nil_fits_all = false, & : Def -> ASTNode?) : String?
-  return nil if types.empty?
-  owner.ancestors.each do |ancestor|
-    list = ancestor.defs.try(&.[a_def.name]?) || next
-    list.each do |item|
-      inherited = item.def
-      next unless inherited.args.size == a_def.args.size && inherited.splat_index.nil? && inherited.double_splat.nil?
-      next if inherited.free_vars
-      restriction = yield(inherited) || next
-      declared = begin
-        ancestor.instance_type.lookup_type?(restriction, allow_typeof: false)
-      rescue CodeError
-        nil
+    # The type an inherited method with the same name and number of
+    # parameters declares where *a_def* leaves it out (the node the block
+    # picks), written for *scope*, when every type in *types* fits it.
+    # Writing the inherited type keeps the method an override.
+    private def inherited_text(a_def : Def, owner : ModuleType, scope : Type, types : Array(Type), nil_fits_all = false, & : Def -> ASTNode?) : String?
+      return nil if types.empty?
+      owner.ancestors.each do |ancestor|
+        list = ancestor.defs.try(&.[a_def.name]?) || next
+        list.each do |item|
+          inherited = item.def
+          next unless inherited.args.size == a_def.args.size && inherited.splat_index.nil? && inherited.double_splat.nil?
+          next if inherited.free_vars
+          restriction = yield(inherited) || next
+          declared = begin
+            ancestor.instance_type.lookup_type?(restriction, allow_typeof: false)
+          rescue CodeError
+            nil
+          end
+          next unless declared
+          # A method declared to return Nil returns nil whatever its body gives.
+          next unless (nil_fits_all && declared.nil_type?) || types.all? { |type| type.implements?(declared) }
+          return type_text(declared, scope)
+        end
       end
-      next unless declared
-      # A method declared to return Nil returns nil whatever its body gives.
-      next unless (nil_fits_all && declared.nil_type?) || types.all? { |type| type.implements?(declared) }
-      return type_text(declared, scope)
+      nil
     end
-  end
-  nil
-end
 
     private def same_type?(type : Type?, receiver : Type) : Bool
       return false unless type
