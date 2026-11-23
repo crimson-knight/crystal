@@ -1160,7 +1160,10 @@ module Crystal
           link_flags += " -L/usr/local/lib"
         end
 
-        link_flags = use_modern_linker(link_flags)
+        # On macOS the system linker (ld-prime, Xcode 15 and later) links a
+        # large program faster than ld64.lld: 0.7 s against 1.6 to 4 s for
+        # Grant300's 7,759 objects (notes/rebuild-30s.md), so it stays.
+        link_flags = use_modern_linker(link_flags) unless program.has_flag?("darwin")
 
         {DEFAULT_LINKER, %(#{DEFAULT_LINKER} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{program.lib_flags(@cross_compile)}), object_names}
       end
