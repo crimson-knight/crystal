@@ -54,11 +54,45 @@ module Crystal::InferReuse
     # Fresh variable names a macro writes (`%name`), which differ on each run.
     FRESH_NAME = /__temp_(?:[0-9a-f]{8}_)?\d+/
 
-    # Whether two outputs of one expansion are the same program text: equal
-    # once the fresh variable names of each are numbered in the order they
-    # first appear.
-    def self.same_text?(text : String, other : String) : Bool
-      canonical(text) == canonical(other)
+    # The file the expansion's output was parsed as, once it was parsed.
+    property virtual_file : VirtualFile? = nil
+
+    # Compares two outputs of this expansion. Returns the shift that takes
+    # the lines of *before* to those of *after* when both are the same
+    # program: equal once the fresh variable names of each are numbered in
+    # the order they first appear and, when they differ only in lines that
+    # hold nothing but whitespace (a macro loop that ran once more over a
+    # method it skips), parsed to the same nodes. Returns `nil` otherwise.
+    def self.compare(program : Program, before : String, after : String) : Location::LineShift?
+      canonical_before = canonical(before)
+      canonical_after = canonical(after)
+      return Location::LineShift.new([{1, 0}]) if canonical_before == canonical_after
+
+      list_of_before = canonical_before.lines
+      list_of_after = canonical_after.lines
+      return nil unless list_of_before.reject(&.blank?) == list_of_after.reject(&.blank?)
+      return nil unless parsed_text(program, canonical_before) == parsed_text(program, canonical_after)
+
+      list_of_steps = [{1, 0}]
+      after_index = 0
+      list_of_before.each_with_index do |line, before_index|
+        next if line.blank?
+        while list_of_after[after_index].blank?
+          after_index += 1
+        end
+        offset = after_index - before_index
+        list_of_steps << {before_index + 1, offset} unless list_of_steps.last[1] == offset
+        after_index += 1
+      end
+      Location::LineShift.new(list_of_steps)
+    end
+
+    # The text of the nodes *text* parses to, or `nil` when it does not parse
+    # on its own.
+    private def self.parsed_text(program : Program, text : String) : String?
+      program.new_parser(text).parse.to_s
+    rescue CodeError
+      nil
     end
 
     private def self.canonical(text : String) : String
@@ -85,8 +119,21 @@ module Crystal::InferReuse
     def pop(output : String?) : MethodListExpansion?
       @list_of_frames.pop?
       expansion = @list_of_expansions.pop?
-      expansion.try &.output = output
+      if expansion
+        expansion.output = output
+        @last_finished = expansion
+      end
       expansion
+    end
+
+    @last_finished : MethodListExpansion?
+
+    # Gives *virtual_file* to the expansion that just produced *source*, when
+    # it read a list of methods.
+    def attach(source : String, virtual_file : VirtualFile) : Nil
+      expansion = @last_finished || return
+      @last_finished = nil
+      expansion.virtual_file = virtual_file if expansion.output.same?(source) || expansion.output == source
     end
 
     # The `MethodListExpansion` of the innermost expansion, made on its first

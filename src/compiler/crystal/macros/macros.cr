@@ -76,6 +76,7 @@ class Crystal::Program
     parser = @program.new_parser(generated_source, var_scopes: [vars.dup])
     virtual_file = VirtualFile.new(the_macro, generated_source, node.location)
     @program.virtual_files << virtual_file
+    infer_reuse_record.try &.method_list_frames.attach(generated_source, virtual_file)
     VirtualFile.current_program_files = @program.virtual_files
     parser.filename = virtual_file
     parser.macro_expansion_pragmas = macro_expansion_pragmas
