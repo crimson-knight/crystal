@@ -123,24 +123,42 @@ describe "Semantic: typed once for every instance of a generic class" do
       ), "size", "Pair").should eq(2)
   end
 
-  it "keeps one copy per instance when an instance variable's layout differs between instances" do
-    code = RECORDS + %(
-      @[TypeBound(T, Record)]
-      class Holder(T)
-        def initialize(@item : T | Int32)
-        end
-
-        @[TypeOnce]
-        def one : Int32
-          1
-        end
+  it "types once a method of instances whose unread union field has members of equal layouts" do
+    copies(RECORDS + %(
+    @[TypeBound(T, Record)]
+    class Holder(T)
+      def initialize(@item : T | Int32)
       end
 
-      Holder(First).new(1).one
-      Holder(Second).new(2).one
-      )
+      @[TypeOnce]
+      def one : Int32
+        1
+      end
+    end
+
+    Holder(First).new(1).one
+    Holder(Second).new(2).one
+    ), "one", "Holder").should eq(1)
+  end
+
+  it "keeps one copy per instance when it cannot show that an instance variable has the same layout in every instance" do
+    code = RECORDS + %(
+    @[TypeBound(T, Record)]
+    class Holder(T)
+      def initialize(@pair : Tuple(T, Int32))
+      end
+
+      @[TypeOnce]
+      def one : Int32
+        1
+      end
+    end
+
+    Holder(First).new({First.new, 1}).one
+    Holder(Second).new({Second.new, 2}).one
+    )
     typed_copies(semantic(code, inject_primitives: true).program, "Holder", "one").should eq(2)
-    assert_warning code, "method 'Holder(T)#one' is typed for each instance of Holder(T), as before. To have it typed once for every instance, give @item a type with the same layout in every instance"
+    assert_warning code, "method 'Holder(T)#one' is typed for each instance of Holder(T), as before. To have it typed once for every instance, give @pair a type with the same layout in every instance"
   end
 
   it "keeps one copy per instance when the method reads an instance variable whose type mentions the parameter" do
@@ -163,8 +181,8 @@ describe "Semantic: typed once for every instance of a generic class" do
     assert_warning code, "read @items through a method typed for each instance: its type depends on the type argument (Array(First) in Holder(First))"
   end
 
-it "types once a method that only sets an instance variable whose type mentions the parameter to nil" do
-  copies(RECORDS + %(
+  it "types once a method that only sets an instance variable whose type mentions the parameter to nil" do
+    copies(RECORDS + %(
     @[TypeBound(T, Record)]
     class Holder(T)
       def initialize(@item : T?, @callback : Proc(T, Int32)?)
@@ -179,10 +197,10 @@ it "types once a method that only sets an instance variable whose type mentions 
     Holder(First).new(nil, nil).forget
     Holder(Second).new(nil, nil).forget
     ), "forget", "Holder").should eq(1)
-end
+  end
 
-it "types once a method that reads an instance variable whose type is the bounded parameter" do
-  copies(RECORDS + %(
+  it "types once a method that reads an instance variable whose type is the bounded parameter" do
+    copies(RECORDS + %(
     @[TypeBound(T, Record)]
     class Holder(T)
       def initialize(@item : T)
@@ -197,10 +215,10 @@ it "types once a method that reads an instance variable whose type is the bounde
     Holder(First).new(First.new).present
     Holder(Second).new(Second.new).present
     ), "present", "Holder").should eq(1)
-end
+  end
 
-it "keeps one copy per instance when the method writes an instance variable whose type is the bounded parameter" do
-  assert_warning RECORDS + %(
+  it "keeps one copy per instance when the method writes an instance variable whose type is the bounded parameter" do
+    assert_warning RECORDS + %(
     @[TypeBound(T, Record)]
     class Holder(T)
       def initialize(@item : T)
@@ -215,10 +233,10 @@ it "keeps one copy per instance when the method writes an instance variable whos
 
     Holder(First).new(First.new).replace(First.new)
     ), "Holder(T)#replace"
-end
+  end
 
-it "types once a method of an instance whose unread struct field has the same layout in every instance" do
-  copies(RECORDS + %(
+  it "types once a method of an instance whose unread struct field has the same layout in every instance" do
+    copies(RECORDS + %(
     struct Hooks(T)
       def initialize(@before : Proc(T, Int32)?, @after : Proc(T, Int32)?)
       end
@@ -238,7 +256,7 @@ it "types once a method of an instance whose unread struct field has the same la
     Holder(First).new(nil, 1).count
     Holder(Second).new(nil, 2).count
     ), "count", "Holder").should eq(1)
-end
+  end
 
   it "keeps one copy per instance when the return type mentions the parameter" do
     code = BOX + %(
@@ -392,8 +410,8 @@ end
     ), "return `self` from every exit of 'other!'"
   end
 
-it "keeps one copy per instance when a method called on an instance variable holding a generic instance reads its parameter as a type" do
-  assert_warning BOX + %(
+  it "keeps one copy per instance when a method called on an instance variable holding a generic instance reads its parameter as a type" do
+    assert_warning BOX + %(
     class Box(T)
       def check(value : Record) : Bool
         value.is_a?(T)
@@ -413,7 +431,7 @@ it "keeps one copy per instance when a method called on an instance variable hol
 
     Outer(First).new(Box(First).new(1)).ok
     ), "call on @box only methods typed once for every instance of Box(T)"
-end
+  end
 
   it "types a class method once for every instance" do
     copies(BOX + %(

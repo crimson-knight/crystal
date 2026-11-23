@@ -377,6 +377,7 @@ module Crystal
       # Two instances of one generic struct whose fields have the same layouts
       # (`AssociationCallbacks(Post)`, a struct of nilable procs).
       if instance_type.is_a?(GenericClassInstanceType) && erased_type.is_a?(GenericClassInstanceType) &&
+         instance_type.class == GenericClassInstanceType && erased_type.class == GenericClassInstanceType &&
          instance_type.struct? && erased_type.struct? && instance_type.generic_type.same?(erased_type.generic_type)
         fields = instance_type.all_instance_vars
         erased_fields = erased_type.all_instance_vars
