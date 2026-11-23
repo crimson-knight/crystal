@@ -56,6 +56,8 @@ module Crystal::InferReuse
   # reuse one typed program.
   PER_BUILD_VARIABLES = {
     "CRYSTAL_WORKERS", REPORT_VARIABLE, VERIFY_VARIABLE, "CRYSTAL_IR_SKIP_REPORT", "CRYSTAL_IR_SKIP_VERIFY",
+    # How a type-inference snapshot is written (`InferPersist`), not what it holds.
+    "CRYSTAL_INFER_PERSIST_SAVE",
   }
 
   DEFAULT_IDLE_SECONDS = 1800
