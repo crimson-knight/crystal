@@ -270,8 +270,20 @@ module Crystal
         type = type.base_type if type.is_a?(VirtualType)
         return unless prunable?(type)
         return if @created.includes?(type.object_id)
+        return if forgotten?(type)
 
         @created << type.object_id
+      end
+
+      # `CRYSTAL_PRUNE_DISPATCH_FORGET=Name` makes the analysis miss that the
+      # class *Name* is created, so the specs can prove that the
+      # "unreachable type" fallback and check mode stop the program. Never
+      # use it for a real build.
+      @forgotten_type_name : String? = ENV["CRYSTAL_PRUNE_DISPATCH_FORGET"]?.presence
+
+      private def forgotten?(type : Type) : Bool
+        name = @forgotten_type_name
+        name ? type.to_s == name : false
       end
 
       # Marks every concrete type of *type*, and the type arguments of each,
@@ -281,7 +293,7 @@ module Crystal
         @conjured << type.object_id
 
         concrete_types_of(type).each do |concrete|
-          @created << concrete.object_id if prunable?(concrete)
+          @created << concrete.object_id if prunable?(concrete) && !forgotten?(concrete)
           case concrete
           when PointerInstanceType
             conjure(concrete.element_type)
