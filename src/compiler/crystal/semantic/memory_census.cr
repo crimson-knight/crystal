@@ -114,7 +114,7 @@ module Crystal
         end
       end
       @program.virtual_files.each do |virtual_file|
-        add("macro expansion sources (VirtualFile text)", 1, gc_bytes(virtual_file.source.as(Void*)) + gc_bytes(virtual_file.as(Void*)))
+        add("macro expansion sources (VirtualFile text)", 1, (virtual_file.source_in_heap.try { |text| gc_bytes(text.as(Void*)) } || 0_i64) + gc_bytes(virtual_file.as(Void*)))
       end
       @program_fields = @program.census_field_bytes(self)
       @main_node = main_node

@@ -29,6 +29,25 @@ class Crystal::Call
     self.before_vars = nil
   end
 
+  # Resolves this call to *new_def* where it resolved to *old_def*, a typed
+  # def of the same type that a build server typed again (see
+  # `InferReuse::Retyper`).
+  def retarget(old_def : Def, new_def : Def) : Nil
+    defs = @target_defs
+    if defs.same?(old_def)
+      @target_defs = new_def
+    elsif defs.is_a?(Array)
+      defs.map! { |a_def| a_def.same?(old_def) ? new_def : a_def }
+    end
+    # The call observes its target defs even where it no longer lists them
+    # as dependencies (type inference released those edges), so the next
+    # build server finds it as a caller of *new_def*.
+    unless replace_dependency(old_def, new_def)
+      old_def.remove_observer(self)
+      new_def.add_observer(self)
+    end
+  end
+
   # Yields each def this call resolved to, without building an array.
   def each_target_def(& : Def ->) : Nil
     defs = @target_defs
@@ -549,10 +568,15 @@ class Crystal::Call
       unless typed_def
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
         newly_typed_def = typed_def
+        program.infer_reuse_new_typed_defs.try &.<< typed_def
+        program.infer_reuse_record.try &.add_uncached_call(match.def.name) unless use_cache
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
         # Later calls can reach this copy with narrower types than it declares.
         typed_def.type_once = match.def.type_once?
         program.type_once_typed += 1 if typed_once
+        if recorder = program.strict_tool_recorder
+          recorder.record_instance(match.def, self_type || match_owner, match.arg_types, named_args_types, block_arg_type, typed_def)
+        end
         if records = program.instantiation_records
           records[typed_def.object_id] = InstantiationRecord.new(match.def, self_type || match_owner, match.arg_types, named_args_types, block_type, !use_cache)
         end

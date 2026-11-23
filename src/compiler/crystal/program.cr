@@ -70,6 +70,10 @@ module Crystal
     # keeps the files alive for as long as it lives.
     getter virtual_files = [] of VirtualFile
 
+    # Where the text of this program's macro expansions is kept (see
+    # `MacroSourceStore`), opened on the first expansion.
+    getter(macro_source_store : MacroSourceStore?) { MacroSourceStore.open }
+
     # If `true`, error messages can be colorized
     property? color = true
 
@@ -82,6 +86,19 @@ module Crystal
     # Used by require_file in semantic_visitor.cr to skip re-parsing
     # files that were already parsed during the parallel parse phase.
     property pre_parsed_files : Hash(String, ASTNode)? = nil
+
+    # What this program's build read, for a build server that keeps the
+    # typed program for the next build (see `InferReuse::SourceRecord`).
+    property infer_reuse_record : InferReuse::SourceRecord? = nil
+
+    # Collects the typed defs that type inference creates while a build
+    # server types an edit again (see `InferReuse::Retyper`).
+    property infer_reuse_new_typed_defs : Array(Def)? = nil
+
+    # How many instances of generic types (including tuples and procs) this
+    # program made, so that a build server can tell whether re-typing an edit
+    # needed a new one.
+    property generic_instance_count = 0
 
     # All created unions in a program, indexed by an array of opaque
     # ids of each type in the union. The array (the key) is sorted

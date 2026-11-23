@@ -65,6 +65,7 @@ class Crystal::Command
         hierarchy                show type hierarchy
         implementations          show implementations for given call in location
         macro_code_coverage      generate a macro code coverage report
+        strict                   convert files to strict files from inferred types
         types                    show type of main variables
         unreachable              show methods that are never called
         --help, -h               show this help
@@ -78,13 +79,18 @@ class Crystal::Command
   # is not a compiler executable and compiles objects in-process.
   def self.run(options = ARGV, *, codegen_worker_executable : String? = nil)
     GCTuning.configure_from_env
+    # Takes the build server handoff out of the environment before anything
+    # starts another process.
+    InferReuse.handoff
     new(options, codegen_worker_executable).run
   end
 
   private getter options
   @compiler : Compiler?
+  @memory_budget : MemoryBudget?
 
   def initialize(@options : Array(String), @codegen_worker_executable : String? = nil)
+    @original_options = @options.dup
     @color = Colorize.default_enabled?(STDOUT, STDERR)
     @error_trace = false
     @progress_tracker = ProgressTracker.new
@@ -101,6 +107,9 @@ class Crystal::Command
       options.shift
       init
     when "build".starts_with?(command)
+      if InferReuse.client?(options[1..])
+        InferReuse::Client.run(options.dup)
+      end
       options.shift
       build
       report_warnings
@@ -146,6 +155,10 @@ class Crystal::Command
     when command == "clear_cache"
       options.shift
       clear_cache
+    when command == InferReuse::Server::COMMAND
+      # Internal: started by `crystal build` to keep typed programs (see
+      # `InferReuse`).
+      InferReuse::Server.main(options[1]? || abort!("missing the build server socket", :USAGE_ERROR))
     when command == CodegenWorker::COMMAND
       # Internal: started by the compiler itself to build object files.
       CodegenWorker.new.perform
@@ -272,6 +285,9 @@ class Crystal::Command
     when "macro_code_coverage".starts_with?(tool)
       options.shift
       macro_code_coverage
+    when "strict" == tool
+      options.shift
+      strict
     when "--help" == tool, "-h" == tool
       puts COMMANDS_USAGE
       exit
@@ -287,6 +303,11 @@ class Crystal::Command
   private def build
     config = create_compiler "build"
     config.compiler.object_stage_handoff = @object_stage_handoff
+    if handoff = InferReuse.handoff
+      config.compiler.infer_reuse_handoff = handoff
+      config.compiler.infer_reuse_argv = @original_options
+    end
+    config.compiler.infer_reuse_digest_filename = ENV.delete(InferReuse::DIGEST_VARIABLE)
     config.compile
   end
 
@@ -639,6 +660,9 @@ class Crystal::Command
           raise Error.new("Invalid object memory budget: #{megabytes}") if megabyte_count < 1
           compiler.codegen_worker_memory_budget_bytes = megabyte_count * 1024 * 1024
         end
+        opts.on("--memory-budget SIZE", "Fit the compilation in about SIZE of memory, for example 4G or 4096M (also CRYSTAL_MEMORY_BUDGET): collect garbage more often near the budget, keep less LLVM IR in memory, share the budget among the object file workers") do |size|
+          @memory_budget = MemoryBudget.parse(size)
+        end
         opts.on("--no-object-stage-handoff", "Build object files and link from the compiler process that generated the code") do
           @object_stage_handoff = false
         end
@@ -727,6 +751,11 @@ class Crystal::Command
       if output_path.extension.empty?
         output_filename += output_extension
       end
+    end
+
+    # The memory budget: --memory-budget, or else CRYSTAL_MEMORY_BUDGET.
+    if memory_budget = @memory_budget || ENV["CRYSTAL_MEMORY_BUDGET"]?.presence.try { |size| MemoryBudget.parse(size) }
+      memory_budget.apply(compiler)
     end
 
     # CRYSTAL_NO_CACHE env var (command-line flags take precedence)

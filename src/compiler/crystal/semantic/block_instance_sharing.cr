@@ -323,6 +323,11 @@ module Crystal
       list << typed_def
     end
 
+    # `#block_def_instances`, or `nil` when it was never created.
+    def block_def_instances? : Hash(DefInstanceKey, Array(Def))?
+      @block_def_instances
+    end
+
     def lookup_block_def_instances(key : DefInstanceKey) : Array(Def)?
       @block_def_instances.try &.[key]?
     end

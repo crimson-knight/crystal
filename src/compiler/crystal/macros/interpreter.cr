@@ -51,7 +51,13 @@ module Crystal
 
         next if vars.has_key?(macro_arg.name)
 
-        default_value = default_value.expand_node(call.location, call.end_location) if default_value.is_a?(MagicConstant)
+        if default_value.is_a?(MagicConstant)
+          if default_value.name.magic_line? || default_value.name.magic_end_line?
+            line_location = default_value.name.magic_line? ? call.location : call.end_location
+            program.infer_reuse_record.try &.add_line_read(line_location.try(&.expanded_location))
+          end
+          default_value = default_value.expand_node(call.location, call.end_location)
+        end
         vars[macro_arg.name] = default_value.clone
       end
 
@@ -80,6 +86,13 @@ module Crystal
                    @in_macro = false, @call : Call? = nil)
       @str = IO::Memory.new(512) # Can't be String::Builder because of `{{debug}}`
       @last = Nop.new
+    end
+
+    # Notes that macro output depends on the line number of *location*, for
+    # a build server that moves lines of the kept program (see
+    # `InferReuse::SourceRecord#add_line_read`).
+    def record_line_read(location : Location?) : Nil
+      @program.infer_reuse_record.try &.add_line_read(location)
     end
 
     def define_var(name : String, value : ASTNode) : Nil

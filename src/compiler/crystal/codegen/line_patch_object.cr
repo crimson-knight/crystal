@@ -136,6 +136,7 @@ module Crystal::LinePatch
     SEGMENT_COMMAND_SIZE  =       72
     SECTION_TYPE_MASK     = 0xff_u32
     ZEROFILL_SECTION_TYPE = [0x1_u32, 0xc_u32, 0x12_u32]
+    S_ATTR_DEBUG          = 0x02000000_u32
 
     # Where the segment command starts, and where each section header is.
     @segment_offset = 0
@@ -209,15 +210,23 @@ module Crystal::LinePatch
       end
 
       # The section changes size: it must be the last one, in the file and
-      # in memory, so nothing else in the segment moves.
+      # in memory, so nothing else in the segment moves. Zero-fill sections
+      # (`__common`, `__thread_bss`: the main module's globals) have no
+      # bytes in the file and sit at the end of memory; a debug section,
+      # which the linker does not place, then moves past them in memory.
       section_address = u64(header_offset + 32)
+      is_debug_section = (u32(header_offset + 64) & S_ATTR_DEBUG) != 0
+      moves_past_zero_fill = false
       @list_of_section_header_offsets.each do |other_header_offset|
         next if other_header_offset == header_offset
         other_type = u32(other_header_offset + 64) & SECTION_TYPE_MASK
         other_size = u64(other_header_offset + 40)
         next if other_size == 0
         if u64(other_header_offset + 32) >= section_address
-          raise Refusal.new("#{section.name} is not the last section in memory")
+          unless is_debug_section && ZEROFILL_SECTION_TYPE.includes?(other_type)
+            raise Refusal.new("#{section.name} is not the last section in memory")
+          end
+          moves_past_zero_fill = true
         end
         next if ZEROFILL_SECTION_TYPE.includes?(other_type)
         if u32(other_header_offset + 48) >= section.file_offset
@@ -245,6 +254,13 @@ module Crystal::LinePatch
         ObjectFile.put_u32(new_bytes, field_offset, value + shift)
       end
       ObjectFile.put_u64(new_bytes, header_offset + 40, new_contents.size)
+      if moves_past_zero_fill
+        memory_end_of_others = @list_of_section_header_offsets.max_of do |other_header_offset|
+          other_header_offset == header_offset ? 0_u64 : u64(other_header_offset + 32) + u64(other_header_offset + 40)
+        end
+        alignment = 1_i64 << u32(header_offset + 52)
+        ObjectFile.put_u64(new_bytes, header_offset + 32, ObjectFile.align_up(memory_end_of_others.to_i64, alignment))
+      end
 
       # The segment covers the new end.
       segment_file_offset = u64(@segment_offset + 40)
@@ -253,7 +269,8 @@ module Crystal::LinePatch
       memory_end = 0_u64
       @list_of_section_header_offsets.each do |other_header_offset|
         size = other_header_offset == header_offset ? new_contents.size.to_u64 : u64(other_header_offset + 40)
-        memory_end = Math.max(memory_end, u64(other_header_offset + 32) + size)
+        address = IO::ByteFormat::LittleEndian.decode(UInt64, new_bytes[other_header_offset + 32, 8])
+        memory_end = Math.max(memory_end, address + size)
         other_type = u32(other_header_offset + 64) & SECTION_TYPE_MASK
         next if ZEROFILL_SECTION_TYPE.includes?(other_type)
         file_end = Math.max(file_end, u32(other_header_offset + 48).to_u64 + size)

@@ -1,5 +1,11 @@
-{% unless flag?(:without_iconv) %}
+# The engine: Mica's WHATWG Encoding Standard implementation by default
+# (`src/crystal/mica_encoding.cr`), iconv under `-Duse_libiconv` or
+# `-Duse_iconv`, nothing under `-Dwithout_iconv`.
+{% if flag?(:without_iconv) %}
+{% elsif flag?(:use_libiconv) || flag?(:use_iconv) %}
   require "crystal/iconv"
+{% else %}
+  require "crystal/mica_encoding"
 {% end %}
 
 class IO
@@ -27,31 +33,60 @@ end
 
 class IO
   private class Encoder
-    def initialize(@encoding_options : EncodingOptions)
-      @iconv = Crystal::Iconv.new("UTF-8", encoding_options.name, encoding_options.invalid)
-      @closed = false
-    end
-
-    def write(io : IO, slice : Bytes) : Nil
-      inbuf_ptr = slice.to_unsafe
-      inbytesleft = LibC::SizeT.new(slice.size)
-      outbuf = uninitialized UInt8[1024]
-      while inbytesleft > 0
-        outbuf_ptr = outbuf.to_unsafe
-        outbytesleft = LibC::SizeT.new(outbuf.size)
-        err = @iconv.convert(pointerof(inbuf_ptr), pointerof(inbytesleft), pointerof(outbuf_ptr), pointerof(outbytesleft))
-        if err == Crystal::Iconv::ERROR && Errno.value != Errno::E2BIG
-          @iconv.handle_invalid(pointerof(inbuf_ptr), pointerof(inbytesleft))
-        end
-        io.write(outbuf.to_slice[0, outbuf.size - outbytesleft])
+    {% if flag?(:use_libiconv) || flag?(:use_iconv) %}
+      def initialize(@encoding_options : EncodingOptions)
+        @iconv = Crystal::Iconv.new("UTF-8", encoding_options.name, encoding_options.invalid)
+        @closed = false
       end
-    end
 
-    def close : Nil
-      return if @closed
-      @closed = true
-      @iconv.close
-    end
+      def write(io : IO, slice : Bytes) : Nil
+        inbuf_ptr = slice.to_unsafe
+        inbytesleft = LibC::SizeT.new(slice.size)
+        outbuf = uninitialized UInt8[1024]
+        while inbytesleft > 0
+          outbuf_ptr = outbuf.to_unsafe
+          outbytesleft = LibC::SizeT.new(outbuf.size)
+          err = @iconv.convert(pointerof(inbuf_ptr), pointerof(inbytesleft), pointerof(outbuf_ptr), pointerof(outbytesleft))
+          if err == Crystal::Iconv::ERROR && Errno.value != Errno::E2BIG
+            @iconv.handle_invalid(pointerof(inbuf_ptr), pointerof(inbytesleft))
+          end
+          io.write(outbuf.to_slice[0, outbuf.size - outbytesleft])
+        end
+      end
+
+      def close : Nil
+        return if @closed
+        @closed = true
+        @iconv.close
+      end
+    {% else %}
+      @encoder : Crystal::Mica::Encoding::Encoder
+
+      def initialize(@encoding_options : EncodingOptions)
+        codec = Crystal::MicaEncoding.codec(encoding_options.name, "UTF-8", encoding_options.name)
+        @encoder = codec.encoder(Crystal::MicaEncoding.error_mode(encoding_options.invalid))
+        @closed = false
+      end
+
+      def write(io : IO, slice : Bytes) : Nil
+        buffer = uninitialized UInt8[1024]
+        output = buffer.to_slice
+        # Each write is converted on its own, as with iconv: a sequence left
+        # open at the end is an error, and shift states (ISO-2022-JP, a held
+        # BIG5-HKSCS letter) are closed so the bytes written so far decode.
+        loop do
+          result = @encoder.convert(slice, output, last: true)
+          io.write(output[0, result.written])
+          raise Crystal::MicaEncoding.conversion_error(result.problem) if result.error?
+          slice += result.read
+          break unless result.output_full?
+        end
+      end
+
+      def close : Nil
+        @closed = true
+      end
+    {% end %}
 
     def finalize : Nil
       close
@@ -64,76 +99,110 @@ class IO
 
     property out_slice : Bytes
 
-    @in_buffer : Pointer(UInt8)
+    {% if flag?(:use_libiconv) || flag?(:use_iconv) %}
+      @in_buffer : Pointer(UInt8)
 
-    def initialize(@encoding_options : EncodingOptions)
-      @iconv = Crystal::Iconv.new(encoding_options.name, "UTF-8", encoding_options.invalid)
-      @buffer = Bytes.new((GC.malloc_atomic(BUFFER_SIZE).as(UInt8*)), BUFFER_SIZE)
-      @in_buffer = @buffer.to_unsafe
-      @in_buffer_left = LibC::SizeT.new(0)
-      @out_buffer = Bytes.new((GC.malloc_atomic(OUT_BUFFER_SIZE).as(UInt8*)), OUT_BUFFER_SIZE)
-      @out_slice = Bytes.empty
-      @closed = false
-    end
+      def initialize(@encoding_options : EncodingOptions)
+        @iconv = Crystal::Iconv.new(encoding_options.name, "UTF-8", encoding_options.invalid)
+        @buffer = Bytes.new((GC.malloc_atomic(BUFFER_SIZE).as(UInt8*)), BUFFER_SIZE)
+        @in_buffer = @buffer.to_unsafe
+        @in_buffer_left = LibC::SizeT.new(0)
+        @out_buffer = Bytes.new((GC.malloc_atomic(OUT_BUFFER_SIZE).as(UInt8*)), OUT_BUFFER_SIZE)
+        @out_slice = Bytes.empty
+        @closed = false
+      end
 
-    def read(io : IO) : Nil
-      loop do
-        return unless @out_slice.empty?
+      def read(io : IO) : Nil
+        loop do
+          return unless @out_slice.empty?
 
-        if @in_buffer_left == 0
-          @in_buffer = @buffer.to_unsafe
-          @in_buffer_left = LibC::SizeT.new(io.read(@buffer))
-        end
-
-        # If, after refilling the buffer, we couldn't read new bytes
-        # it means we reached the end
-        break if @in_buffer_left == 0
-
-        # Convert bytes using iconv
-        out_buffer = @out_buffer.to_unsafe
-        out_buffer_left = LibC::SizeT.new(OUT_BUFFER_SIZE)
-        result = @iconv.convert(pointerof(@in_buffer), pointerof(@in_buffer_left), pointerof(out_buffer), pointerof(out_buffer_left))
-        @out_slice = @out_buffer[0, OUT_BUFFER_SIZE - out_buffer_left]
-
-        # Check for errors
-        if result == Crystal::Iconv::ERROR
-          case Errno.value
-          when Errno::EILSEQ
-            # For an illegal sequence we just skip one byte and we'll continue next
-            @iconv.handle_invalid(pointerof(@in_buffer), pointerof(@in_buffer_left))
-          when Errno::EINVAL
-            # EINVAL means "An incomplete multibyte sequence has been encountered in the input."
-            old_in_buffer_left = @in_buffer_left
-
-            # On invalid multibyte sequence we try to read more bytes
-            # to see if they complete the sequence
-            refill_in_buffer(io)
-
-            # If we couldn't read anything new, we raise or skip
-            if old_in_buffer_left == @in_buffer_left
-              @iconv.handle_invalid(pointerof(@in_buffer), pointerof(@in_buffer_left))
-            end
-          else
-            # Not an error we can handle
+          if @in_buffer_left == 0
+            @in_buffer = @buffer.to_unsafe
+            @in_buffer_left = LibC::SizeT.new(io.read(@buffer))
           end
 
-          # Continue decoding after an error
-          next
+          # If, after refilling the buffer, we couldn't read new bytes
+          # it means we reached the end
+          break if @in_buffer_left == 0
+
+          # Convert bytes using iconv
+          out_buffer = @out_buffer.to_unsafe
+          out_buffer_left = LibC::SizeT.new(OUT_BUFFER_SIZE)
+          result = @iconv.convert(pointerof(@in_buffer), pointerof(@in_buffer_left), pointerof(out_buffer), pointerof(out_buffer_left))
+          @out_slice = @out_buffer[0, OUT_BUFFER_SIZE - out_buffer_left]
+
+          # Check for errors
+          if result == Crystal::Iconv::ERROR
+            case Errno.value
+            when Errno::EILSEQ
+              # For an illegal sequence we just skip one byte and we'll continue next
+              @iconv.handle_invalid(pointerof(@in_buffer), pointerof(@in_buffer_left))
+            when Errno::EINVAL
+              # EINVAL means "An incomplete multibyte sequence has been encountered in the input."
+              old_in_buffer_left = @in_buffer_left
+
+              # On invalid multibyte sequence we try to read more bytes
+              # to see if they complete the sequence
+              refill_in_buffer(io)
+
+              # If we couldn't read anything new, we raise or skip
+              if old_in_buffer_left == @in_buffer_left
+                @iconv.handle_invalid(pointerof(@in_buffer), pointerof(@in_buffer_left))
+              end
+            else
+              # Not an error we can handle
+            end
+
+            # Continue decoding after an error
+            next
+          end
+
+          break
         end
-
-        break
       end
-    end
 
-    private def refill_in_buffer(io)
-      buffer_remaining = BUFFER_SIZE - @in_buffer_left - (@in_buffer - @buffer.to_unsafe)
-      if buffer_remaining < 64
-        @buffer.copy_from(@in_buffer, @in_buffer_left)
-        @in_buffer = @buffer.to_unsafe
-        buffer_remaining = BUFFER_SIZE - @in_buffer_left
+      private def refill_in_buffer(io)
+        buffer_remaining = BUFFER_SIZE - @in_buffer_left - (@in_buffer - @buffer.to_unsafe)
+        if buffer_remaining < 64
+          @buffer.copy_from(@in_buffer, @in_buffer_left)
+          @in_buffer = @buffer.to_unsafe
+          buffer_remaining = BUFFER_SIZE - @in_buffer_left
+        end
+        @in_buffer_left += LibC::SizeT.new(io.read(Slice.new(@in_buffer + @in_buffer_left, buffer_remaining)))
       end
-      @in_buffer_left += LibC::SizeT.new(io.read(Slice.new(@in_buffer + @in_buffer_left, buffer_remaining)))
-    end
+    {% else %}
+      @decoder : Crystal::Mica::Encoding::Decoder
+
+      def initialize(@encoding_options : EncodingOptions)
+        codec = Crystal::MicaEncoding.codec(encoding_options.name, encoding_options.name, "UTF-8")
+        @decoder = codec.decoder(Crystal::MicaEncoding.error_mode(encoding_options.invalid))
+        @buffer = Bytes.new((GC.malloc_atomic(BUFFER_SIZE).as(UInt8*)), BUFFER_SIZE)
+        @in_start = 0
+        @in_end = 0
+        @at_end = false
+        @finished = false
+        @out_buffer = Bytes.new((GC.malloc_atomic(OUT_BUFFER_SIZE).as(UInt8*)), OUT_BUFFER_SIZE)
+        @out_slice = Bytes.empty
+        @closed = false
+      end
+
+      # Fills `out_slice` with decoded UTF-8; leaves it empty at the end.
+      def read(io : IO) : Nil
+        while @out_slice.empty?
+          return if @finished
+          if @in_start == @in_end && !@at_end
+            @in_start = 0
+            @in_end = io.read(@buffer)
+            @at_end = @in_end == 0
+          end
+          result = @decoder.convert(@buffer[@in_start, @in_end - @in_start], @out_buffer, last: @at_end)
+          @in_start += result.read
+          @out_slice = @out_buffer[0, result.written]
+          raise Crystal::MicaEncoding.conversion_error(result.problem) if result.error?
+          @finished = true if @at_end && !result.output_full?
+        end
+      end
+    {% end %}
 
     def read_byte(io : IO) : UInt8?
       read(io)
@@ -247,7 +316,9 @@ class IO
       return if @closed
       @closed = true
 
-      @iconv.close
+      {% if flag?(:use_libiconv) || flag?(:use_iconv) %}
+        @iconv.close
+      {% end %}
     end
 
     def finalize : Nil

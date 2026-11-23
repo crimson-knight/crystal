@@ -2958,6 +2958,39 @@ describe "String" do
         end
       end
 
+      {% unless flag?(:use_libiconv) || flag?(:use_iconv) %}
+        it "names the flag that brings iconv back for an encoding outside the built-in set" do
+          expect_raises ArgumentError, "Invalid encoding: UTF-7 (the built-in engine knows" do
+            "Hello".encode("UTF-7")
+          end
+          expect_raises ArgumentError, "build with -Duse_libiconv or -Duse_iconv for others" do
+            String.new(Bytes[0x2B], "EBCDIC-US")
+          end
+        end
+
+        it "reads iconv names with their iconv meaning, not the web's" do
+          String.new(Bytes[0x80], "ISO-8859-1").should eq("\u0080")
+          String.new(Bytes[0x80], "windows-1252").should eq("€")
+          "A".encode("UTF-16").should eq(Bytes[0xFF, 0xFE, 0x41, 0x00])
+          String.new(Bytes[0xFE, 0xFF, 0x00, 0x41], "UTF-16").should eq("A")
+          "A".encode("UCS-2").should eq(Bytes[0x41, 0x00])
+          expect_raises ArgumentError, "Invalid multibyte sequence" do
+            String.new(Bytes[0x80], "US-ASCII")
+          end
+        end
+
+        it "decodes every WHATWG CJK encoding" do
+          String.new(Bytes[0x82, 0xA0], "Shift_JIS").should eq("あ")
+          String.new(Bytes[0xA4, 0xA2], "EUC-JP").should eq("あ")
+          String.new(Bytes[0x1B, 0x24, 0x42, 0x24, 0x22, 0x1B, 0x28, 0x42], "ISO-2022-JP").should eq("あ")
+          String.new(Bytes[0xB0, 0xA1], "EUC-KR").should eq("가")
+          String.new(Bytes[0xD6, 0xD0], "GBK").should eq("中")
+          String.new(Bytes[0x81, 0x30, 0x81, 0x30], "GB18030").should eq("\u0080")
+          String.new(Bytes[0xA4, 0xA4], "Big5").should eq("中")
+          "あ".encode("ISO-2022-JP").should eq(Bytes[0x1B, 0x24, 0x42, 0x24, 0x22, 0x1B, 0x28, 0x42])
+        end
+      {% end %}
+
       it "raises if illegal byte sequence" do
         expect_raises ArgumentError, "Invalid multibyte sequence" do
           "\xff".encode("EUC-JP")
