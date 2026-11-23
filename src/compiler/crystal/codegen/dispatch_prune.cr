@@ -155,8 +155,15 @@ module Crystal
         @stats.reached_defs = @reached_defs.size
         @stats.created_types = @created.size
         @stats.seconds = (Time.instant - started_at).total_seconds
+        # Code generation only asks about types: drop what only the walk needs.
         @list_of_waiting_branches = [] of {Call, Def}
         @list_of_pending_defs = [] of Def
+        @reached_defs = Set(UInt64).new
+        @walked_consts = Set(UInt64).new
+        @walked_class_var_initializers = Set(UInt64).new
+        @conjured = Set(UInt64).new
+        @allocated_types = Set(UInt64).new
+        @reached_from = {} of UInt64 => Def?
         self
       end
 
