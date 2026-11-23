@@ -178,8 +178,8 @@ describe "Code gen: typed once for every instance of a generic class" do
     )).to_string.should eq("p posts LIMIT 3 a admins LIMIT 11 Query(Post)")
   end
 
-it "sets an instance variable whose type mentions the parameter to nil" do
-  run(MODELS + %(
+  it "sets an instance variable whose type mentions the parameter to nil" do
+    run(MODELS + %(
     @[TypeBound(M, Model)]
     class Cache(M)
       def initialize(@item : M?, @hits : Int32)
@@ -201,10 +201,10 @@ it "sets an instance variable whose type mentions the parameter to nil" do
     total = post.clear + user.clear
     "\#{total} \#{post.item.nil?} \#{user.item.nil?}"
     )).to_string.should eq("7 true true")
-end
+  end
 
-it "reads an instance variable whose type is the bounded parameter" do
-  run(MODELS + %(
+  it "reads an instance variable whose type is the bounded parameter" do
+    run(MODELS + %(
     @[TypeBound(M, Model)]
     class Owned(M)
       def initialize(@owner : M)
@@ -218,10 +218,10 @@ it "reads an instance variable whose type is the bounded parameter" do
 
     Owned(Post).new(Post.new).owner_label + " " + Owned(Admin).new(Admin.new).owner_label
     )).to_string.should eq("post@posts admin@admins")
-end
+  end
 
-it "calls methods on an instance variable that holds another bounded generic instance" do
-  code = MODELS + %(
+  it "calls methods on an instance variable that holds another bounded generic instance" do
+    code = MODELS + %(
     @[TypeBound(M, Model)]
     class Printer(M)
       def initialize(@query : Query(M))
@@ -233,13 +233,16 @@ it "calls methods on an instance variable that holds another bounded generic ins
       end
     end
 
-    Printer(Post).new(Query(Post).new(1)).print + Printer(Admin).new(Query(Admin).new(2)).print
+    class PostQuery < Query(Post)
+    end
+
+    Printer(Post).new(PostQuery.new(1)).print + Printer(Admin).new(Query(Admin).new(2)).print
     )
-  run(code).to_string.should eq("<SELECT posts LIMIT 1><SELECT admins LIMIT 2>")
-  program = semantic(code).program
-  generic = program.types["Printer"].as(Crystal::GenericClassType)
-  generic.instantiated_types.sum { |instance| instance.as(Crystal::DefInstanceContainer).def_instances.count { |_, typed_def| typed_def.name == "print" } }.should eq(1)
-end
+    run(code).to_string.should eq("<SELECT posts LIMIT 1><SELECT admins LIMIT 2>")
+    program = semantic(code).program
+    generic = program.types["Printer"].as(Crystal::GenericClassType)
+    generic.instantiated_types.sum { |instance| instance.as(Crystal::DefInstanceContainer).def_instances.count { |_, typed_def| typed_def.name == "print" } }.should eq(1)
+  end
 
   it "runs a class method typed once for every instance" do
     run(MODELS + %(

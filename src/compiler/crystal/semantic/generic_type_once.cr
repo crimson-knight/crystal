@@ -300,7 +300,7 @@ module Crystal
         end
         held = receiver_instance(var_type)
         held_erased = receiver_instance(erased_type)
-        unless held && held_erased && var_type.is_a?(VirtualType) == erased_type.is_a?(VirtualType) &&
+        unless held && held_erased && !erased_type.is_a?(VirtualType) &&
                erased_instance(program, held).same?(held_erased)
           return "read #{name} through a method typed for each instance: its type depends on the type argument (#{var_type} in #{instance})"
         end
