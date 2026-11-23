@@ -144,6 +144,9 @@ module Crystal
       print_untyped_defs(io)
       lazy = @program.lazy_def_bodies
       io.printf("lazy     method bodies set aside %d, made again %d, verify mismatches %d\n", lazy.deferred, lazy.materialized, lazy.verify_mismatches)
+      lazy.kept_by_reason.to_a.sort_by { |entry| -entry[1] }.each do |reason, count|
+        io.printf("lazy     kept: %-60s %10d defs\n", reason, count)
+      end
       print_identical_copies(io)
       stats = @program.block_instance_stats
       io.printf("sharing  block instances typed %d, shared %d, reused by their first call %d, diverged %d, late yields %d, block type differs %d, yields depend on block %d\n",

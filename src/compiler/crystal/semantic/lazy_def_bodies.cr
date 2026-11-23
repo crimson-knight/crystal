@@ -67,6 +67,9 @@ module Crystal
     property materialized = 0
     property verify_mismatches = 0
 
+    # Why the methods macros wrote were not set aside, with how many.
+    getter kept_by_reason = Hash(String, Int32).new(0)
+
     @list_of_candidates = [] of Candidate
 
     def initialize(@program : Program)
@@ -77,33 +80,43 @@ module Crystal
     # *virtual_file*, that can be set aside. *pragma_offsets* are the
     # offsets of the expansion's location pragmas (the parser consumes them).
     def note(generated_node : ASTNode, source : String, virtual_file : VirtualFile, pragma_offsets : Array(Int32)?) : Nil
-      return unless source.ascii_only?
-
       list_of_defs = [] of Def
       collect_defs(generated_node, list_of_defs)
       return if list_of_defs.empty?
+      unless source.ascii_only?
+        @kept_by_reason["expansion text is not ASCII"] += list_of_defs.size
+        return
+      end
 
       starts = line_start_offsets(source)
       list_of_defs.each do |a_def|
-        next if a_def.macro_def? || a_def.abstract?
-        next if a_def.body_as_held.is_a?(Nop)
-        location = a_def.location
-        end_location = a_def.end_location
-        next unless location && end_location
-        next unless location.filename.same?(virtual_file) && end_location.filename.same?(virtual_file)
-
-        first_line = location.line_number
-        last_line = end_location.line_number
-        next unless 0 < first_line <= last_line <= starts.size
-
-        byte_offset = starts[first_line - 1] + location.column_number - 1
-        end_offset = starts[last_line - 1] + end_location.column_number
-        next unless 0 <= byte_offset < end_offset <= source.bytesize
-        next unless source.byte_slice(byte_offset, 4) == "def " && source.byte_slice(end_offset - 3, 3) == "end"
-        next if pragma_offsets && pragma_offsets.any? { |pragma_offset| byte_offset <= pragma_offset < end_offset }
-
-        @list_of_candidates << Candidate.new(a_def, virtual_file, byte_offset, end_offset - byte_offset)
+        if reason = kept_reason(a_def, source, starts, virtual_file, pragma_offsets)
+          @kept_by_reason[reason] += 1
+        end
       end
+    end
+
+    # Notes *a_def* as a candidate, or says why it is kept.
+    private def kept_reason(a_def : Def, source : String, starts : Array(Int32), virtual_file : VirtualFile, pragma_offsets : Array(Int32)?) : String?
+      return "macro code in the body" if a_def.macro_def?
+      return "abstract or empty" if a_def.abstract? || a_def.body_as_held.is_a?(Nop)
+      location = a_def.location
+      end_location = a_def.end_location
+      return "no location" unless location && end_location
+      return "location points out of the expansion" unless location.filename.same?(virtual_file) && end_location.filename.same?(virtual_file)
+
+      first_line = location.line_number
+      last_line = end_location.line_number
+      return "lines out of range" unless 0 < first_line <= last_line <= starts.size
+
+      byte_offset = starts[first_line - 1] + location.column_number - 1
+      end_offset = starts[last_line - 1] + end_location.column_number
+      return "offsets out of range" unless 0 <= byte_offset < end_offset <= source.bytesize
+      return "text does not start with def and end with end" unless source.byte_slice(byte_offset, 4) == "def " && source.byte_slice(end_offset - 3, 3) == "end"
+      return "location pragma inside" if pragma_offsets && pragma_offsets.any? { |pragma_offset| byte_offset <= pragma_offset < end_offset }
+
+      @list_of_candidates << Candidate.new(a_def, virtual_file, byte_offset, end_offset - byte_offset)
+      nil
     end
 
     # Sets aside the body of every method noted so far.
