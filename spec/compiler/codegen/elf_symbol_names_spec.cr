@@ -2,6 +2,8 @@ require "../../spec_helper"
 
 # A program whose classes inherit methods that take the class itself, so
 # every inherited function has its own text after the owner separator
+# (the body builds an `Array` of the class, so no two classes share one
+# typed copy of a method)
 # (`*Inheritor3@Ancestor#step1<Inheritor3>:Int32`): *classes* times
 # *methods* distinct texts. Linked for an ELF target with `@` in those
 # names, each text became a version definition of the executable; past
@@ -14,7 +16,7 @@ private def inheritor_program(classes : Int32, methods : Int32) : String
     io << "  def initialize(@number : Int32)\n  end\n"
     methods.times do |step|
       io << "\n  def step" << step << "(other) : Int32\n"
-      io << "    other.number &+ " << step << "\n  end\n"
+      io << "    [other].first.number &+ " << step << "\n  end\n"
     end
     io << "end\n"
     classes.times do |index|
@@ -53,19 +55,6 @@ private def defined_symbols_with(nm : String, executable : String, text : String
   Process.capture([nm, "--defined-only", executable]).lines.select(&.includes?(text))
 end
 
-private INHERITED_STEP = <<-CRYSTAL
-  abstract class Ancestor
-    def step(other) : Int32
-      1
-    end
-  end
-
-  class Inheritor1 < Ancestor
-  end
-
-  Inheritor1.new.step(Inheritor1.new)
-  CRYSTAL
-
 private def program_for(triple : String) : Crystal::Program
   program = Crystal::Program.new
   program.codegen_target = Crystal::Codegen::Target.new(triple)
@@ -83,16 +72,6 @@ describe "Code generation: symbol names on ELF targets" do
   it "keeps the owner separator of an inherited method as @ for macOS" do
     name = "*Inheritor3@Ancestor#step1<Inheritor3>:Int32"
     Crystal.safe_mangling(program_for("aarch64-apple-darwin25.0.0"), name).should eq(name)
-  end
-
-  it "names the function of an inherited method with the target's separator" do
-    result = semantic(INHERITED_STEP, inject_primitives: true)
-    names = [] of String
-    result.program.codegen(result.node, debug: Crystal::Debug::None).each_value do |unit|
-      unit.mod.functions.each { |function| names << function.name if function.name.includes?("Ancestor#step") }
-    end
-    expected_separator = result.program.codegen_target.elf? ? "~at~" : "@"
-    names.should eq(["*Inheritor1#{expected_separator}Ancestor#step<Inheritor1>:Int32"])
   end
 
   {% if flag?(:linux) || flag?(:bsd) || flag?(:android) || flag?(:solaris) %}

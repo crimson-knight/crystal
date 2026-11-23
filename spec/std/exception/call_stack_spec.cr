@@ -104,7 +104,13 @@ describe "Backtrace" do
     it "names an inherited method with its owner in a crash backtrace without debug info", tags: %w[slow] do
       _, _, error = compile_and_run_source(<<-CRYSTAL, %w(--no-debug))
         abstract class CrashBase
+          # The faulting function itself is not in the trace that the
+          # signal handler walks; its caller is.
           def crash_here(value : Int32) : Int32
+            read_at(value) &+ 1
+          end
+
+          def read_at(value : Int32) : Int32
             Pointer(Int32).new(value.to_u64).value
           end
         end
