@@ -393,6 +393,12 @@ module Crystal::InferReuse
           record.method_list_replay = nil
         end
         unless MethodListExpansion.same_text?(new_output, output)
+          # With `CRYSTAL_INFER_REUSE_DIGEST_TEXT` set to a directory, both
+          # texts go there for comparing by hand.
+          if directory = ENV["CRYSTAL_INFER_REUSE_DIGEST_TEXT"]?
+            File.write(File.join(directory, "listing-#{::Process.pid}-before.txt"), output)
+            File.write(File.join(directory, "listing-#{::Process.pid}-after.txt"), new_output)
+          end
           raise Refusal.new("a macro that listed methods (#{place}) writes other code with the edit")
         end
         # The next edit compares against the lists this build would have read.
