@@ -120,6 +120,12 @@ module Crystal
       STDERR.printf("peak-trace t=%.1f footprint_mb=%.1f footprint_peak_mb=%.1f generated_functions=%d modules_in_memory=%d estimated_ir_mb=%.1f spills=%d ",
         GCTuning.started_at.elapsed.total_seconds, footprint / 1e6, footprint_peak / 1e6, @generated_fun_count,
         @resident_modules.size, @resident_ir_bytes / 1e6, @module_spill.try(&.spill_count) || 0)
+      list_of_pinned_modules = @resident_modules.reject(&.idle?)
+      largest_pinned_module = list_of_pinned_modules.max_by?(&.estimated_ir_bytes)
+      STDERR.printf("pinned_modules=%d pinned_estimated_mb=%.1f largest_pinned=%s:%.1f main_estimated_mb=%.1f signatures_estimated_mb=%.1f ",
+        list_of_pinned_modules.size, list_of_pinned_modules.sum(&.estimated_ir_bytes) / 1e6,
+        largest_pinned_module.try(&.name.gsub(/\s+/, "_")) || "-", (largest_pinned_module.try(&.estimated_ir_bytes) || 0) / 1e6,
+        @main_module_info.estimated_ir_bytes / 1e6, @fun_signatures.try(&.estimated_ir_bytes).try(&./(1e6)) || 0.0)
       PeakProbe.record(STDERR, label, system_report: false)
     end
 
