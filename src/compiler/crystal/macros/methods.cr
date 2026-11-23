@@ -1672,8 +1672,23 @@ module Crystal
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
       unless MACRO_METHODS_WITHOUT_BODY.includes?(method)
         # A build server re-types a changed method body alone only when no
-        # macro output can depend on it (see `InferReuse::Retyper`).
-        interpreter.@program.infer_reuse_record.try &.block("a macro read the body of method '#{@name}' (`#{method}`)")
+        # macro output can depend on it (see `InferReuse::Retyper`): it notes
+        # the lines of each method whose body a macro read.
+        interpreter.@program.infer_reuse_record.try do |record|
+          location = self.location
+          end_location = self.end_location
+          filename = location.try(&.filename)
+          if filename.is_a?(VirtualFile)
+            # A method a macro expansion wrote: its text came from a macro body
+            # (outside any method body, so an edit there types the program
+            # fresh) or from what macros read, which is recorded where read.
+          elsif location && end_location && filename.is_a?(String) && end_location.filename == filename
+            record.add_def_body_read(filename, @name, location.line_number, end_location.line_number)
+          else
+            place = name_loc.try { |macro_location| macro_location.macro_location || macro_location }
+            record.block("a macro read the body of method '#{@name}', which has no source lines (`#{method}` at #{place})")
+          end
+        end
       end
 
       case method

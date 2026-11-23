@@ -8,12 +8,17 @@ module Crystal::InferReuse
     # A `require` and the files it found.
     record RequireResult, filename : String, relative_to : String?, list_of_found_files : Array(String)
 
+    # The source lines of a method whose body a macro read (`stringify`, `id`,
+    # `body` and the like): an edit inside them could change macro output.
+    record DefBodyRead, filename : String, name : String, first_line : Int32, last_line : Int32
+
     getter text_by_filename = {} of String => String
     getter list_of_requires = [] of RequireResult
     getter env_value_by_name = {} of String => String?
     getter content_by_read_file = {} of String => String?
     getter existence_by_checked_file = {} of String => Bool
     getter output_by_command = {} of String => String?
+    getter list_of_def_body_reads = [] of DefBodyRead
 
     # Why no later build may reuse this program (a macro ran a program, or
     # read something this record cannot compare), or `nil`.
@@ -43,6 +48,11 @@ module Crystal::InferReuse
     # build runs it again and compares.
     def add_command_output(command : String, output : String?) : Nil
       @output_by_command[command] = output unless @output_by_command.has_key?(command)
+    end
+
+    def add_def_body_read(filename : String, name : String, first_line : Int32, last_line : Int32) : Nil
+      read = DefBodyRead.new(filename, name, first_line, last_line)
+      @list_of_def_body_reads << read unless @list_of_def_body_reads.includes?(read)
     end
 
     def block(reason : String) : Nil

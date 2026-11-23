@@ -199,6 +199,22 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
     end
   end
 
+  it "re-types an edit in a method no macro read, when macros read other methods" do
+    with_project("infer-reuse-macro-other") do |project|
+      reading_main = MAIN + "puts {{ Counter.methods.map(&.body.stringify).join(\"|\").size }}\n"
+      project.write("main.cr", reading_main)
+      _, first_output, _ = project.build
+      first_output.should_not be_nil
+
+      project.write("helper.cr", HELPER.sub("    1\n", "    5\n"))
+      result, printed, report = project.build
+      result.should be_success
+      report["reused"].as_bool.should be_true
+      report["verify_differences"].as_i.should eq(0)
+      printed.should eq(first_output.try &.sub("11\n", "15\n"))
+    end
+  end
+
   it "types the whole program again when an edited body changes the method's type" do
     with_project("infer-reuse-return-type") do |project|
       untyped_main = MAIN.sub("def total : Int32", "def total")

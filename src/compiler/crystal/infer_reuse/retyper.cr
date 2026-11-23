@@ -152,6 +152,17 @@ module Crystal::InferReuse
         next if new_text == old_text
         @list_of_changed_defs.concat BodyEdit.compare(program, filename, old_text, new_text)
       end
+
+      @list_of_changed_defs.each do |changed|
+        location = changed.old_def.location
+        end_location = changed.old_def.end_location
+        next unless location && end_location
+        record.list_of_def_body_reads.each do |read|
+          next unless read.filename == changed.filename
+          next if read.last_line < location.line_number || end_location.line_number < read.first_line
+          raise Refusal.new("a macro read the body of method '#{read.name}' (#{read.filename}:#{read.first_line}), which changed")
+        end
+      end
     end
 
     private def retype_changed_defs : Nil
