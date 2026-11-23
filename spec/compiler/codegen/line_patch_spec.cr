@@ -21,6 +21,10 @@ private MODEL_SOURCE = <<-CRYSTAL
 
     define_reader answer, 42
 
+    def narrow(value : Int32 | String) : Int32
+      value.as(Int32)
+    end
+
     def boom : Int32
       raise "boom in the model" if @base > 100
       @base
@@ -49,15 +53,17 @@ private LIST_OF_SOURCES = {
     require "./model"
     require "./bystander"
 
-    model = Model.new(ARGV.size &* 1000)
+    mode = ARGV[0]? || ""
+    model = Model.new(mode == "boom" ? 1000 : 0)
     puts model.total
     puts model.answer
+    puts model.narrow(mode == "cast" ? "text" : 3)
     puts model.boom
     puts Bystander.new.answer
     CRYSTAL
 }
 
-private EXPECTED_OUTPUT = "6\n42\n0\n7\n"
+private EXPECTED_OUTPUT = "6\n42\n3\n0\n7\n"
 
 private class LinePatchProgram
   getter directory : String
@@ -117,10 +123,11 @@ private class LinePatchProgram
     Process.capture(executable)
   end
 
-  # What the program prints on its standard error when `Model#boom` raises.
-  def backtrace : String
+  # What the program prints on its standard error in *mode*: `boom` makes
+  # `Model#boom` raise, `cast` makes the cast in `Model#narrow` fail.
+  def error_output(mode : String) : String
     error = IO::Memory.new
-    Process.run(executable, ["a"] * 101, output: Process::Redirect::Close, error: error)
+    Process.run(executable, [mode], output: Process::Redirect::Close, error: error)
     error.to_s
   end
 end
@@ -143,14 +150,18 @@ private def with_line_patch_program(name : String, & : LinePatchProgram ->) : Ni
   end
 end
 
-# The backtrace names `model.cr` at the line of the `raise` in `Model#boom`.
+# The backtrace names `model.cr` at the line of the `raise` in `Model#boom`,
+# and a failing cast names the line of the cast.
 private def expect_exact_backtrace(line_patch_program : LinePatchProgram) : Nil
   {% if flag?(:darwin) || flag?(:linux) %}
     line = line_patch_program.line_of("model.cr", %(raise "boom in the model"))
-    backtrace = line_patch_program.backtrace
+    backtrace = line_patch_program.error_output("boom")
     backtrace.should contain("boom in the model")
     backtrace.should contain("model.cr:#{line}:")
   {% end %}
+  cast_line = line_patch_program.line_of("model.cr", "value.as(Int32)")
+  cast_message = line_patch_program.error_output("cast")
+  cast_message.should contain("Cast from String to Int32 failed, at #{line_patch_program.directory}/model.cr:#{cast_line}:")
 end
 
 describe "Code gen: patching the lines of modules whose source only moved" do

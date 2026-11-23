@@ -27,8 +27,12 @@ module Crystal::LinePatch
     # Index of the section header (ELF) or of the section in its segment's
     # list (Mach-O), for the writer.
     getter index : Int32
+    # Whether the section holds the program's constant or variable data
+    # (not code, debug info, symbols or relocations): where the message of
+    # a failing cast keeps its `file:line:column`.
+    getter? holds_data : Bool
 
-    def initialize(@name, @kind, @file_offset, @size, @index)
+    def initialize(@name, @kind, @file_offset, @size, @index, @holds_data = false)
     end
   end
 
@@ -80,6 +84,11 @@ module Crystal::LinePatch
     # The bytes of every machine code section, by name.
     def code_sections : Hash(String, Bytes)
       @list_of_sections.select(&.kind.text?).to_h { |section| {section.name, contents(section)} }
+    end
+
+    # The bytes of every data section (see `Section#holds_data?`), by name.
+    def data_sections : Hash(String, Bytes)
+      @list_of_sections.select(&.holds_data?).to_h { |section| {section.name, contents(section)} }
     end
 
     protected def u16(offset : Int) : UInt16
@@ -146,7 +155,9 @@ module Crystal::LinePatch
             name = section_name(header_offset)
             segment_name = String.new(bytes[header_offset + 16, 16]).rstrip('\0')
             kind = section_kind(segment_name, name)
-            @list_of_sections << Section.new(name, kind, u32(header_offset + 48).to_i64, u64(header_offset + 40).to_i64, index.to_i32)
+            section_type = u32(header_offset + 64) & SECTION_TYPE_MASK
+            holds_data = kind.other? && segment_name != "__DWARF" && segment_name != "__LD" && !ZEROFILL_SECTION_TYPE.includes?(section_type)
+            @list_of_sections << Section.new(name, kind, u32(header_offset + 48).to_i64, u64(header_offset + 40).to_i64, index.to_i32, holds_data)
           end
         when LC_SYMTAB, LC_DYSYMTAB, LC_DATA_IN_CODE, LC_LINKER_OPTIMIZE, LC_BUILD_VERSION, LC_LINKER_OPTION
         else
@@ -330,7 +341,9 @@ module Crystal::LinePatch
                  name == ".text" || name.starts_with?(".text.") ? SectionKind::Text : SectionKind::Other
                end
         size = type == 8_u32 ? 0_i64 : u64(header_offset + 32).to_i64
-        @list_of_sections << Section.new(name, kind, u64(header_offset + 24).to_i64, size, index)
+        # PROGBITS sections that are allocated (SHF_ALLOC) and not code.
+        holds_data = kind.other? && type == 1_u32 && (u64(header_offset + 8) & 0x2_u64) != 0 && (u64(header_offset + 8) & 0x4_u64) == 0
+        @list_of_sections << Section.new(name, kind, u64(header_offset + 24).to_i64, size, index, holds_data)
       end
     end
 

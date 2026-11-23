@@ -42,7 +42,8 @@ module Crystal::LinePatch
     end
 
     # The result: the new file, and how many line numbers changed.
-    record Result, bytes : Bytes, changed_row_count : Int32, changed_attribute_count : Int32
+    record Result, bytes : Bytes, changed_row_count : Int32, changed_attribute_count : Int32,
+      changed_message_count : Int32 = 0
 
     def initialize(@maps : Maps)
     end
@@ -54,22 +55,76 @@ module Crystal::LinePatch
 
       rewriter = LineProgramRewriter.new(object, line_section, object.contents(line_section), @maps)
       new_line_contents = rewriter.rewrite
-      bytes = object.bytes
+      bytes = object.bytes.dup
+      changed_message_count = patch_messages(object, bytes)
       changed_attribute_count = 0
       if info_section && !rewriter.list_of_tables.empty?
-        info_contents = object.contents(info_section).dup
+        info_contents = bytes[info_section.file_offset, info_section.size]
         changed_attribute_count = patch_info(object, info_section, info_contents, rewriter.list_of_tables)
-        if changed_attribute_count > 0
-          bytes = bytes.dup
-          info_contents.copy_to(bytes + info_section.file_offset)
-        end
       end
       if rewriter.changed_row_count > 0
-        object = ObjectFile.parse(bytes) unless bytes.same?(object.bytes)
-        new_line_section = object.section?(SectionKind::DebugLine) || raise Refusal.new("no line table")
-        bytes = object.with_section_contents(new_line_section, new_line_contents, rewriter.offset_translation)
+        patched_object = ObjectFile.parse(bytes)
+        new_line_section = patched_object.section?(SectionKind::DebugLine) || raise Refusal.new("no line table")
+        bytes = patched_object.with_section_contents(new_line_section, new_line_contents, rewriter.offset_translation)
       end
-      Result.new(bytes, rewriter.changed_row_count, changed_attribute_count)
+      Result.new(bytes, rewriter.changed_row_count, changed_attribute_count, changed_message_count)
+    end
+
+    # Rewrites, in place, the `file:line:column` texts in the data sections
+    # (the message of a failing cast) whose file changed. Returns how many
+    # changed. A line whose new number has another count of digits would
+    # change the size of the string, and refuses the object.
+    private def patch_messages(object : ObjectFile, bytes : Bytes) : Int32
+      changed_count = 0
+      list_of_changed_paths = @maps.maps_by_filename.keys
+      return 0 if list_of_changed_paths.empty?
+      object.list_of_sections.each do |section|
+        next unless section.holds_data?
+        contents = bytes[section.file_offset, section.size]
+        list_of_changed_paths.each do |path|
+          pattern = "#{path}:".to_slice
+          position = 0
+          while found = index_of(contents, pattern, position)
+            position = found + pattern.size
+            line_start = position
+            line_end = digits_end(contents, line_start)
+            next if line_end == line_start || line_end >= contents.size || contents[line_end] != ':'.ord
+            column_end = digits_end(contents, line_end + 1)
+            next if column_end == line_end + 1 || column_end >= contents.size || contents[column_end] != 0
+            line = String.new(contents[line_start, line_end - line_start]).to_i
+            map = @maps.map_of?(path) || raise Refusal.new("a message in a file whose lines moved in unknown ways")
+            new_line = map.map?(line) || raise Refusal.new("a message on an edited line")
+            next if new_line == line
+            new_text = new_line.to_s
+            raise Refusal.new("a message whose line changes its number of digits") unless new_text.bytesize == line_end - line_start
+            new_text.to_slice.copy_to(contents + line_start)
+            changed_count += 1
+          end
+        end
+      end
+      changed_count
+    end
+
+    private def index_of(contents : Bytes, pattern : Bytes, start : Int32) : Int32?
+      first = pattern[0]
+      position = start
+      while position + pattern.size <= contents.size
+        candidate = contents[position, contents.size - position].index(first)
+        return nil unless candidate
+        position += candidate
+        return nil if position + pattern.size > contents.size
+        return position if contents[position, pattern.size] == pattern
+        position += 1
+      end
+      nil
+    end
+
+    private def digits_end(contents : Bytes, start : Int32) : Int32
+      position = start
+      while position < contents.size && '0'.ord <= contents[position] <= '9'.ord
+        position += 1
+      end
+      position
     end
 
     # Rewrites `DW_AT_decl_line` and `DW_AT_call_line` in place. Returns

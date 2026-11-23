@@ -47,7 +47,7 @@ module Crystal::LinePatch
 
       bytes = File.read(object_filename).to_slice
       result = DwarfPatcher.new(@maps).patch(ObjectFile.parse(bytes))
-      if result.changed_row_count == 0 && result.changed_attribute_count == 0
+      if result.changed_row_count == 0 && result.changed_attribute_count == 0 && result.changed_message_count == 0
         return PatchedObject.new(nil, recorded_unit.list_of_part_hashes, 0, 0)
       end
 
@@ -68,8 +68,9 @@ module Crystal::LinePatch
   # Verification (`CRYSTAL_LINE_PATCH_VERIFY=1`): every module is generated
   # and compiled as without line patching, and each module that would have
   # been patched is patched from its cached object as well. The two objects
-  # must have the same machine code and the same `llvm-dwarfdump
-  # --debug-line --debug-info` output.
+  # must have the same machine code, the same data (where cast messages keep
+  # their `file:line:column`) and the same `llvm-dwarfdump --debug-line
+  # --debug-info` output.
   module Verification
     # One patched object and the object compiled fresh for the same module.
     struct Check
@@ -136,6 +137,7 @@ module Crystal::LinePatch
       patched = ObjectFile.parse(File.read(check.patched_filename).to_slice)
       fresh = ObjectFile.parse(File.read(check.fresh_filename).to_slice)
       return "the machine code differs" unless patched.code_sections == fresh.code_sections
+      return "the data differs" unless patched.data_sections == fresh.data_sections
 
       patched_dump = dump(tool, check.patched_filename)
       fresh_dump = dump(tool, check.fresh_filename)

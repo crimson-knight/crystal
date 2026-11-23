@@ -1041,10 +1041,12 @@ module Crystal
         hasher.digest
       end
 
-      # A position whose text reaches the code itself, not only debug info:
-      # the message of a failed cast (`file:line:column`) and magic constant
-      # arguments (`__LINE__`, `__FILE__`, `__DIR__`). It is part of the code
-      # key, so a function that holds one is generated again when it moves.
+      # A position whose value reaches the code itself, not only debug info:
+      # magic constant arguments (`__LINE__`, `__FILE__`, `__DIR__`). It is
+      # part of the code key, so a function that holds one is generated again
+      # when it moves. (The `file:line:column` message of a failing cast is a
+      # position like the others: `LinePatch::DwarfPatcher` rewrites it in
+      # the data of the object.)
       private def mix_code_location(location : Location?) : Nil
         unless location
           mix(0_u64)
@@ -1383,8 +1385,6 @@ module Crystal
 
       def visit(node : Cast | NilableCast) : Bool
         enter(node)
-        # Only a cast that can fail puts its position in a message.
-        mix_code_location(node.location) if node.is_a?(Cast) && !node.upcast?
         mix_type(node.obj.type?)
         to_type = node.to.type?
         mix_type(to_type)
