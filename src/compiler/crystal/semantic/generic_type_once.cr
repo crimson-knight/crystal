@@ -371,8 +371,31 @@ module Crystal
     end
 
     # Instance-variable representations that are the same in two instances.
-    def self.same_layout?(instance_type : Type, erased_type : Type) : Bool
+    def self.same_layout?(instance_type : Type, erased_type : Type, depth = 0) : Bool
       return true if instance_type.same?(erased_type)
+      return false if depth > 4
+      # Two instances of one generic struct whose fields have the same layouts
+      # (`AssociationCallbacks(Post)`, a struct of nilable procs).
+      if instance_type.is_a?(GenericClassInstanceType) && erased_type.is_a?(GenericClassInstanceType) &&
+         instance_type.struct? && erased_type.struct? && instance_type.generic_type.same?(erased_type.generic_type)
+        fields = instance_type.all_instance_vars
+        erased_fields = erased_type.all_instance_vars
+        return false unless fields.keys == erased_fields.keys
+        return fields.all? do |name, field|
+          (field_type = field.type?) && (erased_field_type = erased_fields[name].type?) && same_layout?(field_type, erased_field_type, depth + 1)
+        end
+      end
+      # Unions of members with the same layouts, one for one: a type id and
+      # room for the largest member, the same in both.
+      if instance_type.is_a?(MixedUnionType) && erased_type.is_a?(MixedUnionType)
+        members = instance_type.union_types
+        erased_members = erased_type.union_types.dup
+        return false unless members.size == erased_members.size
+        return members.all? do |member|
+          index = erased_members.index { |erased_member| same_layout?(member, erased_member, depth + 1) }
+          index ? (erased_members.delete_at(index); true) : false
+        end
+      end
       # A proc is a function pointer and a closure pointer whatever its types.
       return true if instance_type.is_a?(ProcInstanceType) && erased_type.is_a?(ProcInstanceType)
       return true if instance_type.is_a?(NilableProcType) && erased_type.is_a?(NilableProcType)
