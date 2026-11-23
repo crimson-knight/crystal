@@ -211,19 +211,6 @@ module Crystal
         @gave_up
       end
 
-      # The created class types, by name, sorted: two builds that create the
-      # same types prune the same branches (see `IrSkip`).
-      def signature : String
-        return "all" if @gave_up
-
-        list_of_names = [] of String
-        each_class_type(@program) do |type|
-          list_of_names << type.to_s if prunable?(type) && live?(type)
-        end
-        list_of_names.sort!
-        IrSkip::Hasher.digest_of(list_of_names.join('\n')).to_s
-      end
-
       def print_stats : Nil
         stats = @stats
         STDERR.printf("prune dispatch (%s): %d defs reached, %d dispatch calls with %d targets, %d targets left out, %d calls on classes never created, %d of %d class types created, %d rounds, %.2f s%s\n",

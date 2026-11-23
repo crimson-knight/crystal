@@ -273,7 +273,7 @@ describe "Code gen: dispatch pruning" do
     run(code, flags: ["prune_dispatch_check"]).to_i.should eq(2)
   end
 
-  it "generates the program again in an incremental build when an edit creates a type that was left out" do
+  it "brings a left out branch back in an incremental build when an edit creates its type" do
     with_tempfile("dispatch_prune_incremental") do |directory|
       Dir.mkdir_p(directory)
       program = File.join(directory, "program.cr")
@@ -298,9 +298,10 @@ describe "Code gen: dispatch pruning" do
       stats.skipped_units.should be > 10
       Process.capture(executable).should eq("1\n")
 
-      # `NeverMade` is created now: the left out branch must come back.
+      # `NeverMade` is created now: the left out branch must come back, and
+      # the modules without a call that changed are still skipped.
       stats = build.call(source.sub("[Plain.new]", "[Plain.new, NeverMade.new]"), 3)
-      stats.skipped_units.should eq(0)
+      stats.skipped_units.should be > 10
       Process.capture(executable).should eq("3\n")
 
       # And goes again when nothing creates it any more.

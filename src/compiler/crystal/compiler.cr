@@ -836,7 +836,8 @@ module Crystal
       stable_numbering = @incremental && !@no_cache && @emit_targets.none? ? StableNumbering.load(output_dir) : nil
       program.stable_numbering = stable_numbering
       # The branches a dispatch leaves out depend on the whole program, so the
-      # analysis runs first and its signature goes into the salt below.
+      # analysis runs before code generation, and the keys of IR skipping
+      # record each call's decisions (see `IrSkip::KeyWalker`).
       program.dispatch_prune = nil
       unless DispatchPrune.mode_for(program).off?
         program.dispatch_prune = @progress_tracker.stage("Codegen (prune dispatch)") do
@@ -1883,7 +1884,6 @@ module Crystal
         io << "|prelude=" << prelude
         io << "|shapes=" << program.share_owner_shapes?
         io << "|block_instances=" << ENV["CRYSTAL_SHARE_BLOCK_INSTANCES"]?
-        io << "|prune_dispatch=" << program.dispatch_prune.try(&.signature)
         # Every string constant carries the type id of String.
         io << "|string_id=" << program.llvm_id.type_id(program.string)
       end
