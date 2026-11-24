@@ -108,12 +108,12 @@ abstract class Crystal::EventLoop::Polling < Crystal::EventLoop
   @timers_lock = SpinLock.new
   @timers = Timers(Event).new
 
-  # Also defined in multithreaded mode: the compiler build server forks while only
-  # one thread runs Crystal code (see `Crystal::InferReuse.fork_process`).
-  # no parallelism issues, but let's clean-up anyway
-  def after_fork : Nil
-    @timers_lock = SpinLock.new
-  end
+  {% if flag?(:without_mt) %}
+    # no parallelism issues, but let's clean-up anyway
+    def after_fork : Nil
+      @timers_lock = SpinLock.new
+    end
+  {% end %}
 
   # thread unsafe
   def run(blocking : Bool) : Bool
@@ -340,12 +340,10 @@ abstract class Crystal::EventLoop::Polling < Crystal::EventLoop
         wait_writable(socket, timeout) do
           return IO::TimeoutError.new("Connect timed out")
         end
-        # the result of the connect is the socket error; calling connect(2)
-        # again reports EISCONN for a refused connect on macOS 27
         errno = Crystal::System::Socket.system_error(socket.fd)
         return if errno.none?
       else
-        return ::Socket::ConnectError.from_os_error("connect", errno)
+        return ::Socket::ConnectError.from_errno("connect")
       end
     end
   end
