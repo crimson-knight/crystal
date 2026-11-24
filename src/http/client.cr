@@ -1,6 +1,4 @@
-{% if !flag?(:without_openssl) %}
-  require "openssl"
-{% end %}
+require "./client/tls"
 
 # An HTTP Client.
 #
@@ -97,7 +95,9 @@ class HTTP::Client
   # ```
   getter port : Int32
 
-  # If this client uses TLS, returns its `OpenSSL::SSL::Context::Client`, raises otherwise.
+  # If this client uses TLS, returns its `TLSClientContext` (Beryl's
+  # `Crystal::Beryl::TLS::Context::Client`, or `OpenSSL::SSL::Context::Client`
+  # in a `-Duse_openssl` build), raises otherwise.
   #
   # Changes made after the initial request will have no effect.
   #
@@ -105,15 +105,10 @@ class HTTP::Client
   # require "http/client"
   #
   # client = HTTP::Client.new "www.example.com", tls: true
-  # client.tls # => #<OpenSSL::SSL::Context::Client ...>
+  # client.tls # => #<Crystal::Beryl::TLS::Context::Client ...>
   # ```
-  {% if flag?(:without_openssl) %}
-    getter! tls : Nil
-    alias TLSContext = Bool | Nil
-  {% else %}
-    getter! tls : OpenSSL::SSL::Context::Client
-    alias TLSContext = OpenSSL::SSL::Context::Client | Bool | Nil
-  {% end %}
+  getter! tls : TLSClientContext
+  alias TLSContext = TLSClientContext | Bool | Nil
 
   # Whether automatic compression/decompression is enabled.
   property? compress : Bool = true
@@ -124,26 +119,19 @@ class HTTP::Client
   # Creates a new HTTP client with the given *host*, *port* and *tls*
   # configurations. If no port is given, the default one will
   # be used depending on the *tls* arguments: 80 for if *tls* is `false`,
-  # 443 if *tls* is truthy. If *tls* is `true` a new `OpenSSL::SSL::Context::Client` will
+  # 443 if *tls* is truthy. If *tls* is `true` a new `HTTP::Client.default_tls_context` will
   # be used, else the given one. In any case the active context can be accessed through `tls`.
   def initialize(@host : String, port = nil, tls : TLSContext = nil)
     check_host_only(@host)
 
-    {% if flag?(:without_openssl) %}
-      if tls
-        raise "HTTP::Client TLS is disabled because `-D without_openssl` was passed at compile time"
-      end
-      @tls = nil
-    {% else %}
-      @tls = case tls
-             when true
-               OpenSSL::SSL::Context::Client.new
-             when OpenSSL::SSL::Context::Client
-               tls
-             when false, nil
-               nil
-             end
-    {% end %}
+    @tls = case tls
+           when true
+             HTTP::Client.default_tls_context
+           when TLSClientContext
+             tls
+           when false, nil
+             nil
+           end
 
     @port = (port || (@tls ? 443 : 80)).to_i
   end
@@ -185,7 +173,7 @@ class HTTP::Client
   # uri = URI.parse("https://secure.example.com")
   # client = HTTP::Client.new(uri)
   #
-  # client.tls? # => #<OpenSSL::SSL::Context::Client>
+  # client.tls? # => #<Crystal::Beryl::TLS::Context::Client>
   # client.get("/")
   # ```
   # This constructor will *ignore* any path or query segments in the URI
@@ -214,7 +202,7 @@ class HTTP::Client
   #
   # uri = URI.parse("https://secure.example.com")
   # HTTP::Client.new(uri) do |client|
-  #   client.tls? # => #<OpenSSL::SSL::Context::Client>
+  #   client.tls? # => #<Crystal::Beryl::TLS::Context::Client>
   #   client.get("/")
   # end
   # ```
@@ -842,18 +830,16 @@ class HTTP::Client
     io.write_timeout = @write_timeout if @write_timeout
     io.sync = false
 
-    {% if !flag?(:without_openssl) %}
-      if tls = @tls
-        tcp_socket = io
-        begin
-          io = OpenSSL::SSL::Socket::Client.new(tcp_socket, context: tls, sync_close: true, hostname: hostname.rchop('.'))
-        rescue exc
-          # don't leak the TCP socket when the SSL connection failed
-          tcp_socket.close
-          raise exc
-        end
+    if tls = @tls
+      tcp_socket = io
+      begin
+        io = HTTP::Client.open_tls_socket(tcp_socket, tls, hostname.rchop('.'))
+      rescue exc
+        # don't leak the TCP socket when the TLS connection failed
+        tcp_socket.close
+        raise exc
       end
-    {% end %}
+    end
 
     @io = io
   end
@@ -882,26 +868,18 @@ class HTTP::Client
   protected def self.tls_flag(uri, context : TLSContext) : TLSContext
     scheme = uri.scheme
     raise ArgumentError.new("Missing scheme: #{uri}") if !scheme
-    {% if flag?(:without_openssl) %}
-      case scheme
-      when "http"  then false
-      when "https" then true
-      else              raise ArgumentError.new "Unsupported scheme: #{scheme}"
-      end
-    {% else %}
-      case {scheme, context}
-      when {"http", false}, {"http", nil}
-        false
-      when {"http", OpenSSL::SSL::Context::Client}
-        raise ArgumentError.new("TLS context given for HTTP URI")
-      when {"https", true}, {"https", nil}
-        true
-      when {"https", OpenSSL::SSL::Context::Client}
-        context
-      else
-        raise ArgumentError.new "Unsupported scheme: #{scheme}"
-      end
-    {% end %}
+    case {scheme, context}
+    when {"http", false}, {"http", nil}
+      false
+    when {"http", TLSClientContext}
+      raise ArgumentError.new("TLS context given for HTTP URI")
+    when {"https", true}, {"https", nil}
+      true
+    when {"https", TLSClientContext}
+      context
+    else
+      raise ArgumentError.new "Unsupported scheme: #{scheme}"
+    end
   end
 
   protected def self.validate_host(uri)

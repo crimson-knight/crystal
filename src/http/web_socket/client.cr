@@ -2,8 +2,9 @@ require "../client"
 require "./core"
 
 # Opening a WebSocket connection to a server, over TLS when the URI asks for
-# it. This needs `HTTP::Client` and so OpenSSL; `require "http/web_socket"`
-# brings it in, the server side (`HTTP::WebSocketHandler`) does not.
+# it. This needs `HTTP::Client` and its TLS (Beryl, or OpenSSL in a
+# `-Duse_openssl` build); `require "http/web_socket"` brings it in, the server
+# side (`HTTP::WebSocketHandler`) does not.
 class HTTP::WebSocket
   # Opens a new websocket using the information provided by the URI. This will also handle the handshake
   # and will raise an exception if the handshake did not complete successfully. This method will also raise
@@ -43,27 +44,19 @@ end
 
 class HTTP::WebSocket::Protocol
   def self.new(host : String, path : String, port : Int32? = nil, tls : HTTP::Client::TLSContext = nil, headers : HTTP::Headers = HTTP::Headers.new, protocols : Enumerable(String)? = nil) : self
-    {% if flag?(:without_openssl) %}
-      if tls
-        raise "WebSocket TLS is disabled because `-D without_openssl` was passed at compile time"
-      end
-    {% end %}
-
     port ||= tls ? 443 : 80
 
     socket = TCPSocket.new(host, port)
     accepted_protocol = nil
     begin
-      {% if !flag?(:without_openssl) %}
-        if tls
-          if tls.is_a?(Bool) # true, but we want to get rid of the union
-            context = OpenSSL::SSL::Context::Client.new
-          else
-            context = tls
-          end
-          socket = OpenSSL::SSL::Socket::Client.new(socket, context: context, sync_close: true, hostname: host)
+      if tls
+        if tls.is_a?(Bool) # true, but we want to get rid of the union
+          context = HTTP::Client.default_tls_context
+        else
+          context = tls
         end
-      {% end %}
+        socket = HTTP::Client.open_tls_socket(socket, context, host)
+      end
 
       random_key = Base64.strict_encode(StaticArray(UInt8, 16).new { rand(256).to_u8 })
 

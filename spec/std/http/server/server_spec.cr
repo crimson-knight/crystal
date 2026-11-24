@@ -2,6 +2,7 @@ require "../spec_helper"
 require "http/server"
 require "http/client"
 require "../../../support/ssl"
+require "../../../support/http_tls"
 require "../../../support/channel"
 
 # TODO: replace with `HTTP::Client.get` once it supports connecting to Unix socket (#2735)
@@ -299,7 +300,7 @@ describe HTTP::Server do
         context.response.close
       end
 
-      server_context, client_context = ssl_context_pair
+      server_context, client_context = http_tls_context_pair
 
       socket = OpenSSL::SSL::Server.new(TCPServer.new("127.0.0.1", 0), server_context)
       server.bind socket
@@ -377,7 +378,7 @@ describe HTTP::Server do
       context.response.close
     end
 
-    server_context, client_context = ssl_context_pair
+    server_context, client_context = http_tls_context_pair
     address = server.bind_tls "localhost", server_context
 
     run_server(server) do |server_done|
@@ -415,7 +416,7 @@ describe HTTP::Server do
       context.response.print "ok"
     end
 
-    server_context, client_context = ssl_context_pair
+    server_context, client_context = http_tls_context_pair
     address = server.bind_tls "localhost", server_context
 
     run_server(server) do
@@ -506,7 +507,7 @@ describe HTTP::Server do
         local_address = context.request.local_address
       end
 
-      server_context, client_context = ssl_context_pair
+      server_context, client_context = http_tls_context_pair
 
       socket = OpenSSL::SSL::Server.new(TCPServer.new("127.0.0.1", 0), server_context)
       server.bind socket
@@ -517,8 +518,8 @@ describe HTTP::Server do
           uri: URI.parse("https://#{ip_address1}"),
           tls: client_context) do |client|
           client.get("/")
-          remote_address.should eq(client.@io.as(OpenSSL::SSL::Socket).local_address)
-          local_address.should eq(client.@io.as(OpenSSL::SSL::Socket).remote_address)
+          remote_address.should eq(client.@io.as(HTTP::Client::TLSClientSocket).local_address)
+          local_address.should eq(client.@io.as(HTTP::Client::TLSClientSocket).remote_address)
         end
       end
     end
