@@ -1,5 +1,5 @@
 require "base64"
-require "../../web_socket"
+require "../../web_socket/core"
 
 # A handler which adds websocket functionality to an `HTTP::Server`.
 #

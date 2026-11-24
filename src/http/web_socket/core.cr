@@ -1,0 +1,248 @@
+require "../headers"
+
+# NOTE: To use `WebSocket`, you must explicitly import it with `require "http/web_socket"`
+#
+# This file holds the parts a server needs (`HTTP::WebSocketHandler` requires
+# only it), so a server that accepts WebSockets links no OpenSSL. Opening a
+# connection to a server (`.new(uri)`, `wss://`) comes from
+# `http/web_socket/client`, which `http/web_socket` requires.
+class HTTP::WebSocket
+  getter? closed = false
+
+  # :nodoc:
+  def initialize(io : IO, sync_close = true)
+    initialize(Protocol.new(io, sync_close: sync_close))
+  end
+
+  # :nodoc:
+  def initialize(@ws : Protocol)
+    @buffer = Bytes.new(4096)
+    @current_message = IO::Memory.new
+  end
+
+  # Called when a PING frame is received.
+  def on_ping(&@on_ping : String ->)
+  end
+
+  # Called when a PONG frame is received.
+  #
+  # An unsolicited PONG frame should not be responded to.
+  def on_pong(&@on_pong : String ->)
+  end
+
+  # Called when a text message is received.
+  def on_message(&@on_message : String ->) : Proc(String, Nil)
+  end
+
+  # Called when a binary message is received.
+  def on_binary(&@on_binary : Bytes ->) : Proc(Bytes, Nil)
+  end
+
+  # Called when the connection is closed by the other party.
+  def on_close(&@on_close : CloseCode, String ->) : Proc(HTTP::WebSocket::CloseCode, String, Nil)
+  end
+
+  protected def check_open
+    raise_closed if closed?
+  end
+
+  protected def raise_closed
+    raise IO::Error.new "Closed socket"
+  end
+
+  # Sends a message payload (message).
+  def send(message) : Nil
+    check_open
+    @ws.send(message)
+  end
+
+  # Sends a PING frame. Received pings will call `#on_ping`.
+  #
+  # The receiving party must respond with a PONG.
+  def ping(message = nil)
+    check_open
+    @ws.ping(message)
+  end
+
+  # Sends a PONG frame, which must be in response to a previously received PING frame from `#on_ping`.
+  def pong(message = nil) : Nil
+    check_open
+    @ws.pong(message)
+  end
+
+  # Stream data as one message with automatically fragmentation handling
+  # with respect to given `frame_size`.
+  # When the io is closed, current data in the buffer is sent in a FIN frame.
+  # The io is closed when the block returns.
+  #
+  # The method accepts a block with an `io` argument.
+  # The io object can call on `IO#write` method.
+  # The `write` method accepts `Bytes` (`Slice(UInt8)`) and sends the data in chunks of *frame_size* bytes.
+  # For further information, see the `HTTP::WebSocket::Protocol::StreamIO` class.
+  #
+  # ```
+  # # Open websocket connection
+  # ws = HTTP::WebSocket.new("websocket.example.com", "/chat")
+  #
+  # # Open stream
+  # ws.stream(false, frame_size: 4) do |io|
+  #   io.write "foo".encode("UTF-8") # Nothing is sent, buffer not full
+  #   io.write "bar".encode("UTF-8") # Will send a first frame with "foob"
+  # end                              # io is closed, a FIN frame with "bar" is sent
+  # ```
+  def stream(binary = true, frame_size = 1024, &)
+    check_open
+    @ws.stream(binary: binary, frame_size: frame_size) do |io|
+      yield io
+    end
+  end
+
+  # Sends a close frame, and closes the connection.
+  # The close frame may contain a body (message) that indicates the reason for closing.
+  def close(code : CloseCode | Int? = nil, message = nil) : Nil
+    return if closed?
+    @closed = true
+    @ws.close(code, message)
+  end
+
+  # Receives and returns a single WebSocket message as a `String` for text
+  # messages, `Bytes` for binary messages, or raises `IO::Error` if the
+  # `WebSocket` has been closed.
+  #
+  # ```
+  # # Open websocket connection
+  # ws = HTTP::WebSocket.new("websocket.example.com", "/chat")
+  #
+  # loop do
+  #   case msg = ws.receive
+  #   in String # text
+  #     ws.send "response"
+  #     puts msg
+  #   in Bytes # binary
+  #     ws.send "response".to_slice
+  #   end
+  # end
+  # ```
+  def receive : String | Bytes
+    receive? || raise_closed
+  end
+
+  # Receives and returns a single WebSocket message as a `String` for text
+  # messages, `Bytes` for binary messages, or `nil` if the `WebSocket` has been
+  # closed.
+  #
+  # ```
+  # # Open websocket connection
+  # ws = HTTP::WebSocket.new("websocket.example.com", "/chat")
+  #
+  # loop do
+  #   case msg = ws.receive?
+  #   in String # text
+  #     ws.send "response"
+  #     puts msg
+  #   in Bytes # binary
+  #     ws.send "response".to_slice
+  #   in Nil
+  #     break
+  #   end
+  # end
+  # ```
+  def receive? : String | Bytes | Nil
+    loop do
+      begin
+        info = @ws.receive(@buffer)
+      rescue
+        @on_close.try &.call(CloseCode::AbnormalClosure, "")
+        @closed = true
+        break
+      end
+
+      case info.opcode
+      in .ping?
+        @current_message.write @buffer[0, info.size]
+        if info.final
+          message = @current_message.to_s
+          do_ping(message)
+          @current_message.clear
+        end
+      in .pong?
+        @current_message.write @buffer[0, info.size]
+        if info.final
+          message = @current_message.to_s
+          @on_pong.try &.call(message)
+          @current_message.clear
+        end
+      in .text?
+        @current_message.write @buffer[0, info.size]
+        if info.final
+          message = @current_message.to_s
+          @on_message.try &.call(message)
+          @current_message.clear
+          return message
+        end
+      in .binary?
+        @current_message.write @buffer[0, info.size]
+        if info.final
+          slice = @current_message.to_slice.clone
+          @on_binary.try &.call(slice)
+          @current_message.clear
+          return slice
+        end
+      in .close?
+        @current_message.write @buffer[0, info.size]
+        if info.final
+          @current_message.rewind
+
+          if @current_message.size >= 2
+            code = @current_message.read_bytes(UInt16, IO::ByteFormat::NetworkEndian).to_i
+            code = CloseCode.new(code)
+          else
+            code = CloseCode::NoStatusReceived
+          end
+          message = @current_message.gets_to_end
+
+          do_close(code, message)
+
+          @current_message.clear
+          return nil
+        end
+      in .continuation?
+        # TODO: (asterite) I think this is good, but this case wasn't originally handled
+      end
+    end
+  end
+
+  # Continuously receives messages and calls previously set callbacks until the websocket is closed.
+  # Ping and pong messages are automatically handled.
+  #
+  # ```
+  # # Open websocket connection
+  # ws = HTTP::WebSocket.new("websocket.example.com", "/chat")
+  #
+  # # Set callback
+  # ws.on_message do |msg|
+  #   ws.send "response"
+  # end
+  #
+  # # Start infinite loop
+  # ws.run
+  # ```
+  def run : Nil
+    loop do
+      break unless receive?
+    end
+  end
+
+  private def do_close(code, message)
+    @on_close.try &.call(code, message)
+    close
+  end
+
+  private def do_ping(message)
+    @on_ping.try &.call(message)
+    pong(message) unless closed?
+  end
+end
+
+require "./close_code"
+require "./protocol"
