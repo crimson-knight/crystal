@@ -202,8 +202,12 @@ module Crystal
       program.codegen_target = Codegen::Target.new(target_triple || Config.host_target.to_s)
       program.color = color
       program.progress_tracker = progress_tracker
+      program.user_flags.concat(defines)
       program.flags.concat(defines)
       profile.try &.apply(program)
+      # Crystal::VERSION and its peers (Crystal 1.22 defines them once the
+      # target and the flags are known, not when the program is made).
+      program.define_crystal_constants
       program.recorded_macro_shell_output_by_command = {} of String => String if record_profile_path
 
       node = progress_tracker.stage("Parse") do
