@@ -1850,7 +1850,14 @@ module Crystal
       map_global.global_constant = true
 
       ptr_global = define_type_id_to_class_name_ptr(llvm_mod: @main_mod, llvm_typer: @main_llvm_typer)
-      ptr_global.initializer = gep(map_type, map_global, 0, 0)
+      # The map's own address (the GEP to element 0 folds to it with opaque
+      # pointers); a GEP built here would take its indices from the LLVM
+      # context of the module generated last, which is not the main one.
+      {% if LibLLVM::IS_LT_150 %}
+        ptr_global.initializer = gep(map_type, map_global, 0, 0)
+      {% else %}
+        ptr_global.initializer = map_global
+      {% end %}
     end
 
     private def define_type_id_to_class_name_ptr(*, llvm_mod = @llvm_mod, llvm_typer = @llvm_typer)

@@ -64,6 +64,10 @@ The fork was 302 commits behind 1.22.3 and 414 commits ahead of it.
 | Change | Why |
 |---|---|
 | `lib/markd`: table regexes rewritten for Mica | markd 0.6.0 added GFM tables with a possessive quantifier (`:{0,1}+`) and a lookbehind (`(?<!\\)\|`). The compiler (Mica regex by default) aborted at start-up while initializing that constant. The heading separator drops the `+` (Mica never backtracks, so possessive and greedy match the same strings); the cell separator became `Markd::Rule.table_cell_separator?` and `.split_table_cells` (a `|` not preceded by a backslash). Checked against PCRE2 on the original patterns: 20 inputs, 0 differences. |
+| `codegen/codegen.cr`: the class-name pointer is initialized with the map global itself | Upstream builds the initializer with `gep(map_type, map, 0, 0)`; its index constants come from the current LLVM context, and the fork gives each type module its own context, so at the end of codegen they were not the main module's ("Global variable initializer type does not match global variable type", 4 codegen specs). With opaque pointers that GEP is the map's address; LLVM before 15 keeps the GEP. |
+| `spec/compiler/codegen/def_spec.cr`, `spec/std/string_spec.cr`: upstream specs with lookaround | The two #17424 checks test the `:type_id` reads without a lookbehind; string_spec's "empty match + advanced offset" is left out on Mica, as the neighboring lookahead examples already are. |
+| `src/compiler/frontend_main.cr`, `spec/compiler/semantic/inference_state_release_spec.cr`: `define_crystal_constants` | Crystal 1.22 defines `Crystal::VERSION` and its peers when the compiler sets up a program, no longer in `Program#initialize`; the WASM frontend and one spec helper made their own Program. |
+| `spec/std/exception/call_stack_spec.cr`: upstream's two new backtrace examples build with `--dsymutil` | Development builds skip dsymutil on macOS in this fork (#35); the file's other examples already pass the flag. |
 
 ## Version and release names
 
