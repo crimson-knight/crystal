@@ -96,6 +96,9 @@ module Crystal
       when ReadInstanceVar
         receiver_type = node.obj.type?
         !(receiver_type && struct_value?(receiver_type)) || writable_place?(node.obj)
+      when Cast
+        # `x.as(T)` hands on the place of `x`, also out of a union.
+        writable_place?(node.obj)
       when Expressions
         expressions = node.expressions
         expressions.size == 1 && writable_place?(expressions.first)

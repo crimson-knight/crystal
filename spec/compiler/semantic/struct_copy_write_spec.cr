@@ -274,6 +274,13 @@ describe "Semantic: write to a struct copy" do
         )
     end
 
+    it "for a cast of a local" do
+      assert_no_struct_copy_warning POINT + %(
+        value = Point.new(0, 0).as(Point | Int32)
+        value.as(Point).x = 1
+        )
+    end
+
     it "for self inside a struct method" do
       assert_no_struct_copy_warning POINT + %(
         struct Point
