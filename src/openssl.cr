@@ -164,3 +164,9 @@ require "./openssl/md5"
 require "./openssl/x509/x509"
 require "./openssl/pkcs5"
 require "./openssl/cipher"
+
+# A program that already required `http/server` gets its TLS listener here; a
+# program that requires `http/server` later gets it from the end of that file.
+{% if @top_level.has_constant?("HTTP") && HTTP.has_constant?("Server") && HTTP::Server.has_method?(:bind_tcp) %}
+  require "./http/server/tls"
+{% end %}

@@ -1,5 +1,4 @@
 require "uri"
-require "http"
 require "mime"
 
 module MIME
