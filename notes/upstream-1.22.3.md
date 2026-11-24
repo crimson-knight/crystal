@@ -64,3 +64,22 @@ The fork was 302 commits behind 1.22.3 and 414 commits ahead of it.
 | Change | Why |
 |---|---|
 | `lib/markd`: table regexes rewritten for Mica | markd 0.6.0 added GFM tables with a possessive quantifier (`:{0,1}+`) and a lookbehind (`(?<!\\)\|`). The compiler (Mica regex by default) aborted at start-up while initializing that constant. The heading separator drops the `+` (Mica never backtracks, so possessive and greedy match the same strings); the cell separator became `Markd::Rule.table_cell_separator?` and `.split_table_cells` (a `|` not preceded by a backslash). Checked against PCRE2 on the original patterns: 20 inputs, 0 differences. |
+
+## Version and release names
+
+- `src/VERSION` and `shard.yml` say `1.22.3` (both came from the upstream tag; `crystal --version`
+  prints `Crystal 1.22.3 [<commit>]`).
+- Release tags from this merge on: `v<upstream version>-incremental-<n>`, with `<n>` starting at 1 for
+  each upstream version. The first release from this base is **`v1.22.3-incremental-1`**. The 1.21
+  line ends at `v1.21.0-incremental-10` (cut from 01d23a29f, alongside this merge). When the fork
+  takes upstream 1.22.4 or 1.23.0, numbering restarts: `v1.23.0-incremental-1`.
+- The Homebrew formula (`crimson-knight/homebrew-agent-crystal`, `agent-crystal`) takes its version
+  from the tag, so `brew` sees `1.22.3-incremental-1` as newer than `1.21.0-incremental-10`
+  (Homebrew compares `1.22.3` > `1.21.0` first). The tap's stdlib identity (file list and hashes of
+  `src/`) has to be recomputed: this merge adds, removes and changes many stdlib files.
+
+## Later changes on incremental-compilation
+
+- PR #44 (lazy OpenSSL BIO method table, `src/openssl/bio.cr`, new `spec/std/openssl/bio_spec.cr`)
+  merged as 9e4a6613f after this branch started; merged into this branch (clean, no conflicts) so
+  the PR carries it. `bio_spec.cr` runs with the std suite on both minis and on its own.
