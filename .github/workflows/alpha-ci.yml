@@ -1,0 +1,129 @@
+# CI for the crystal-alpha branch (incremental-compilation).
+#
+# Builds the fork's compiler on Linux (x86_64, aarch64) and macOS arm64, then
+# runs, with that compiler, the full standard library suite and the compiler
+# suites that fit in an hour on GitHub's free runners. Every job builds its own
+# compiler, so the workflow keeps no artifacts and no caches.
+#
+# Pins: actions by full commit SHA, the Linux build image by digest, and the
+# macOS toolchain through shell.nix (nixpkgs and the bootstrap compiler are
+# fetched by sha256).
+name: crystal-alpha CI
+
+on:
+  push:
+    branches:
+      - incremental-compilation
+  pull_request:
+    branches:
+      - incremental-compilation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SPEC_SPLIT_DOTS: 160
+  # crystallang/crystal:1.21.0-build, the bootstrap image bin/ci uses
+  LINUX_BUILD_IMAGE: crystallang/crystal@sha256:34ac3d5dd5098f85790b800c046f2a6d7fc292193a706d7a3f1acc5f004b94c3
+  COMPILER_SPEC_FLAGS: -Dstrict_multi_assign -Dpreview_overload_order -Dwithout_interpreter -Dwithout_libxml2 -Dwithout_openssl -Dwithout_zlib --exclude-warnings spec --exclude-warnings src
+  # Compiler suites that finish inside the hour; codegen and the interpreter
+  # run longer than that on these runners.
+  COMPILER_SPEC_PATHS: >-
+    spec/compiler/lexer
+    spec/compiler/parser
+    spec/compiler/normalize
+    spec/compiler/formatter
+    spec/compiler/macro
+    spec/compiler/crystal_path
+    spec/compiler/semantic
+    spec/compiler/infer_reuse
+    spec/compiler/compiler_spec.cr
+    spec/compiler/config_spec.cr
+    spec/compiler/util_spec.cr
+    spec/compiler/c_allocator_spec.cr
+    spec/compiler/memory_budget_spec.cr
+    spec/compiler/incremental_rebuild_spec.cr
+    spec/compiler/strict_public_crystal_spec.cr
+
+jobs:
+  linux:
+    name: linux ${{ matrix.arch }} ${{ matrix.suite }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        suite: [std, compiler]
+    env:
+      TRAVIS_OS_NAME: linux
+      ARCH: ${{ matrix.arch }}
+      ARCH_CMD: linux64
+    steps:
+      - name: Download Crystal source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare System
+        run: bin/ci prepare_system
+
+      - name: Pull the build image by digest
+        run: |
+          docker pull "$LINUX_BUILD_IMAGE"
+          docker tag "$LINUX_BUILD_IMAGE" crystallang/crystal:1.21.0-build
+
+      - name: Prepare Build
+        run: bin/ci prepare_build
+
+      - name: Build the compiler
+        run: bin/ci with_build_env 'make crystal threads=4 && bin/crystal version'
+
+      - name: Standard library specs
+        if: matrix.suite == 'std'
+        run: bin/ci with_build_env 'make std_spec threads=4'
+
+      - name: Compiler specs
+        if: matrix.suite == 'compiler'
+        run: bin/ci with_build_env "bin/crystal spec --threads 4 $COMPILER_SPEC_FLAGS $COMPILER_SPEC_PATHS"
+
+  macos:
+    name: macos arm64 ${{ matrix.suite }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [std, compiler]
+    env:
+      TZ: America/New_York
+      CRYSTAL_CACHE_DIR: /tmp/crystal
+    steps:
+      - name: Download Crystal source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command
+
+      - name: Prepare the pinned toolchain (shell.nix)
+        run: nix-shell --pure --run 'crystal --version && llvm-config --version'
+
+      - name: Build the compiler
+        run: nix-shell --pure --keep TZ --keep CRYSTAL_CACHE_DIR --run 'make crystal threads=3 && bin/crystal version'
+
+      - name: Standard library specs
+        if: matrix.suite == 'std'
+        run: nix-shell --pure --keep TZ --keep CRYSTAL_CACHE_DIR --keep SPEC_SPLIT_DOTS --run 'make std_spec threads=3'
+
+      - name: Compiler specs
+        if: matrix.suite == 'compiler'
+        run: nix-shell --pure --keep TZ --keep CRYSTAL_CACHE_DIR --keep SPEC_SPLIT_DOTS --keep COMPILER_SPEC_FLAGS --keep COMPILER_SPEC_PATHS --run 'bin/crystal spec --threads 3 $COMPILER_SPEC_FLAGS $COMPILER_SPEC_PATHS'
