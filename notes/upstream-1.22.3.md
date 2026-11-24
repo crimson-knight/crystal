@@ -87,3 +87,47 @@ The fork was 302 commits behind 1.22.3 and 414 commits ahead of it.
 - PR #44 (lazy OpenSSL BIO method table, `src/openssl/bio.cr`, new `spec/std/openssl/bio_spec.cr`)
   merged as 9e4a6613f after this branch started; merged into this branch (clean, no conflicts) so
   the PR carries it. `bio_spec.cr` runs with the std suite on both minis and on its own.
+
+## Checks on the merged head
+
+Compiler built with the pinned host (`tools/build_compiler.sh`, 50289ec1…) from b045c3757 (the last
+compiler change; 5dc83c8f1 after it changes one spec only). Spec counts are examples / failures /
+errors / pending.
+
+| Check | Where | Result |
+|---|---|---|
+| spec/compiler/codegen | laptop, b045c3757 | 1963 / 0 / 2 / 6 (the 2 errors are the known `special_vars_spec.cr:18`) |
+| spec/compiler/semantic | m4-mini-02, b045c3757 | 3477 / 0 / 1 / 9; the 1 error was a spec helper without the Crystal constants, fixed in 5dc83c8f1 (that file plus block_instance_sharing: 39 / 0 / 0) |
+| spec/compiler-cli + infer_reuse + incremental_rebuild + memory_budget + strict + c_allocator + compiler_spec | laptop, b045c3757 | 139 / 0 / 0 / 0 |
+| Feature specs (strict, type_once, generic_type_once, ir_skip, line_patch, stable_numbering, release_units, dispatch_prune, elf_symbol_names, infer_reuse, infer_persist, incremental_rebuild, memory_budget) | inside the suites above | all pass |
+| spec/std_spec.cr, OpenSSL and zlib on, TMPDIR=/tmp | m4-mini-01, b045c3757 | 18330 / 0 / 1 / 34 (the known `process_spec.cr:642`, which was `:677` before upstream dropped the fork specs) |
+| spec/std_spec.cr, same | m4-mini-02, b045c3757 | 18330 / 0 / 1 / 34 (same) |
+| spec/std/openssl/ (with #44's bio_spec) | laptop and m4-mini-01 | 117 / 0 / 0 / 2 (laptop); with call_stack, exception, socket, process: 493 / 0 / 1 (known) / 7 (m4-mini-01, 418628057) |
+| Stage-2 self-host (release) | laptop | built, `Crystal 1.22.3 [b045c3757]`, runs a program |
+| Stage-2 self-host, non-release `--threads 8 --incremental`, then a one-line edit in `codegen/fun.cr` | laptop, 418628057 | clean 36 s, edit 24 s, the rebuilt compiler runs a program |
+| Linux (Docker, linux-4gb image, 4 CPUs, 5 GB): compiler cross-compiled on the Mac and linked in the container; smoke program (fiber + channel + Mica regex + `Crystal::USER_FLAGS`); `elf_symbol_names_spec` + `spec/std/socket/` | one cluster-pool job, key mc-step7 | smoke prints `linux smoke 1.22.3 2 1,2,3 ["smoke"]`; specs 211 / 0 / 0 / 7 (IPv6 pending in the container) |
+| `CRYSTAL_INFER_REUSE_VERIFY=1`, Grant20, build server, -O0: clean, body edit (+3 lines), restore, new method, restore | laptop, tools/run_build.rb | every edit reused (0.25 to 0.43 s re-typing), 46,111 to 46,112 typed defs compared, **0 differences**, checks 3/3 on all 5 builds |
+
+Not a textual conflict but found by these checks: the markd regexes (start-up abort), the
+lookaround specs, the class-name map initializer (4 codegen errors), the two spec helpers and the
+WASM frontend without `Crystal::VERSION`, and the two backtrace specs without `--dsymutil`. One stage-2 attempt failed with
+"No such file or directory" while spec suites shared `~/.cache/crystal` with it (the cache cleanup
+keeps only the newest folders); with its own `CRYSTAL_CACHE_DIR` it builds.
+
+## Grant builds (tools/run_build.rb, this laptop, `--threads 8 -Duse_pcre2`, -O3 release)
+
+Peak footprint is the primary number. Wall times depend on load: the first series ran beside this
+merge's own spec suites, stage-2 build and Linux cross-compile; the "quiet" row ran with the laptop
+at a load average near 10 from other agents.
+
+| Build | Before (1.21 base) | Merged 1.22.3 (b045c3757) | Checks |
+|---|---|---|---|
+| Grant20 | 0.79 GB, 24.0 s (01d23a29f, this session) | 0.77 GB, 20.2 s (quiet); 0.87 GB, 39.7 s (loaded) | 3/3 |
+| Grant300 default | 4.71 GB, 304 s (incremental-10 release check, rel10-g300-default) | **4.63 GB, 282 s** (quiet); 4.69 GB, 464 s (loaded) | 3/3 |
+| Grant300 `--memory-budget 4G` | 4.31 GB, 309 s (rel10-g300-budget4g) | **4.21 GB**, 338 s (loaded) | 3/3 |
+| Strict copy grant300-sg `--memory-budget 4G` | 3.86 GB, 273 s (imm-g300-sg-b4g) | **3.74 GB**, 213 s (loaded) | 3/3 |
+
+Runs: `runs/20261124T023349Z-u1223f2-g300`, `20261124T023836Z-u1223f2-g20`, `20261124T015625Z-u1223f-g20`,
+`20261124T015706Z-u1223f-g300`, `20261124T020521Z-u1223f-g300-b4g`, `20261124T021120Z-u1223f-g300sg-b4g`,
+baseline `20261124T013647Z-base01d-g20` (all under memory-ceiling-20261120/).
+No regression in memory: every Grant300 peak is 0.08 to 0.12 GB lower than on the 1.21 base.
