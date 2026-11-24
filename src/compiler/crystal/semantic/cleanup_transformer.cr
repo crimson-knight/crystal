@@ -707,6 +707,8 @@ module Crystal
         @program.check_call_to_deprecated_method(node)
       end
 
+      @program.check_write_to_struct_copy(node)
+
       node
     end
 
