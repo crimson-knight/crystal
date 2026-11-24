@@ -34,14 +34,14 @@ describe "Backtrace" do
 
   it "prints file line:column for the call instruction (followed by no return)", tags: %w[slow] do
     source_file = datapath("backtrace_sample_noreturn")
-    _, _, error = compile_and_run_file(source_file)
+    _, _, error = compile_and_run_file(source_file, CALL_STACK_SPEC_BUILD_FLAGS)
     error.should match(/backtrace_sample_noreturn:2(:3)? in 'show'/)
     error.should match(/backtrace_sample_noreturn:7(:3)? in 'run'/)
   end
 
   it "prints file line:column for the call instruction (not last statement)", tags: %w[slow] do
     source_file = datapath("backtrace_sample_notlast")
-    _, _, error = compile_and_run_file(source_file)
+    _, _, error = compile_and_run_file(source_file, CALL_STACK_SPEC_BUILD_FLAGS)
     error.should match(/backtrace_sample_notlast:2(:3)? in 'maybe_raise'/)
     error.should match(/backtrace_sample_notlast:6(:3)? in 'not_last_statement'/)
   end
