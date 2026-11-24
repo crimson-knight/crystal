@@ -6,9 +6,6 @@ require "./server/response"
 require "./server/request_processor"
 require "./common"
 require "log"
-{% unless flag?(:without_openssl) %}
-  require "openssl"
-{% end %}
 
 # A concurrent HTTP server implementation.
 #
@@ -80,8 +77,14 @@ require "log"
 # Supported types:
 #
 # * TCP socket: `#bind_tcp`, `#bind_unused_port`
-# * TCP socket with TLS/SSL: `#bind_tls`
+# * TCP socket with TLS/SSL: `#bind_tls`, defined once the program requires
+#   `openssl` or `http/server/tls` (see below)
 # * Unix socket `#bind_unix`
+#
+# TLS is opt-in: `require "http/server"` alone links no OpenSSL. Requiring
+# `openssl` (directly or through `http/client`, `http/web_socket` or `http`) or
+# `http/server/tls`, before or after `http/server`, adds `#bind_tls` and the
+# `tls://` scheme of `#bind`.
 #
 # `#bind(uri : URI)` and `#bind(uri : String)` parse socket configuration for
 # one of these types from an `URI`. This can be useful for injecting plain text
@@ -302,70 +305,6 @@ class HTTP::Server
     bind_unix(address.path)
   end
 
-  {% unless flag?(:without_openssl) %}
-    # Creates an `OpenSSL::SSL::Server` and adds it as a socket.
-    #
-    # The SSL server wraps a `TCPServer` listening on `host:port`.
-    #
-    # ```
-    # require "http/server"
-    #
-    # server = HTTP::Server.new { }
-    # context = OpenSSL::SSL::Context::Server.new
-    # context.certificate_chain = "openssl.crt"
-    # context.private_key = "openssl.key"
-    # server.bind_tls "127.0.0.1", 8080, context
-    # ```
-    def bind_tls(host : String, port : Int32, context : OpenSSL::SSL::Context::Server, reuse_port : Bool = false) : Socket::IPAddress
-      tcp_server = TCPServer.new(host, port, reuse_port: reuse_port)
-      server = OpenSSL::SSL::Server.new(tcp_server, context)
-      server.start_immediately = false
-
-      begin
-        bind(server)
-      rescue exc
-        server.close
-        raise exc
-      end
-
-      tcp_server.local_address
-    end
-
-    # Creates an `OpenSSL::SSL::Server` and adds it as a socket.
-    #
-    # The SSL server wraps a `TCPServer` listening on an unused port on *host*.
-    #
-    # ```
-    # require "http/server"
-    #
-    # server = HTTP::Server.new { }
-    # context = OpenSSL::SSL::Context::Server.new
-    # context.certificate_chain = "openssl.crt"
-    # context.private_key = "openssl.key"
-    # address = server.bind_tls "127.0.0.1", context
-    # ```
-    def bind_tls(host : String, context : OpenSSL::SSL::Context::Server) : Socket::IPAddress
-      bind_tls(host, 0, context)
-    end
-
-    # Creates an `OpenSSL::SSL::Server` and adds it as a socket.
-    #
-    # The SSL server wraps a `TCPServer` listening on an unused port on *host*.
-    #
-    # ```
-    # require "http/server"
-    #
-    # server = HTTP::Server.new { }
-    # context = OpenSSL::SSL::Context::Server.new
-    # context.certificate_chain = "openssl.crt"
-    # context.private_key = "openssl.key"
-    # address = server.bind_tls Socket::IPAddress.new("127.0.0.1", 8000), context
-    # ```
-    def bind_tls(address : Socket::IPAddress, context : OpenSSL::SSL::Context::Server) : Socket::IPAddress
-      bind_tls(address.address, address.port, context)
-    end
-  {% end %}
-
   # Parses a socket configuration from *uri* and adds it to this server.
   # Returns the effective address it is bound to.
   #
@@ -390,12 +329,14 @@ class HTTP::Server
       bind_unix(Socket::UNIXAddress.parse(uri))
     when "tls", "ssl"
       address = Socket::IPAddress.parse(uri)
-      {% unless flag?(:without_openssl) %}
+      # Expanded when this method is instantiated, after every file is
+      # required, so the order of `require "openssl"` does not matter.
+      {% if HTTP::Server.has_method?(:bind_tls) %}
         context = OpenSSL::SSL::Context::Server.from_hash(uri.query_params)
 
         bind_tls(address, context)
       {% else %}
-        raise ArgumentError.new "Unsupported socket type: #{uri.scheme} (program was compiled without openssl support)"
+        raise ArgumentError.new %(Unsupported socket type: #{uri.scheme} (TLS needs `require "http/server/tls"` or `require "openssl"`))
       {% end %}
     else
       raise ArgumentError.new "Unsupported socket type: #{uri.scheme}"
@@ -507,7 +448,7 @@ class HTTP::Server
       io.sync = false
     end
 
-    {% unless flag?(:without_openssl) %}
+    {% if HTTP::Server.has_method?(:bind_tls) %}
       if io.is_a?(OpenSSL::SSL::Socket::Server)
         begin
           io.accept
@@ -523,7 +464,7 @@ class HTTP::Server
     {% begin %}
       begin
         io.close
-      rescue IO::Error{% unless flag?(:without_openssl) %} | OpenSSL::SSL::Error{% end %}
+      rescue IO::Error{% if HTTP::Server.has_method?(:bind_tls) %} | OpenSSL::SSL::Error{% end %}
       end
     {% end %}
   end
@@ -544,3 +485,9 @@ class HTTP::Server
     handlers.first
   end
 end
+
+# A program that already required `openssl` gets the TLS listener; a program
+# that requires `openssl` later gets it from the end of `openssl.cr`.
+{% if @top_level.has_constant?("OpenSSL") && OpenSSL.has_constant?("SSL") && OpenSSL::SSL.has_constant?("Server") %}
+  require "./server/tls"
+{% end %}
