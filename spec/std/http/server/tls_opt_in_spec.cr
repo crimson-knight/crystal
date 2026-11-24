@@ -17,9 +17,11 @@ private def run_program(name : String, source : String) : String
   end
 end
 
+# Prints: OpenSSL defined, the full HTTP::Client defined (not only its Response
+# class, which http/server uses), HTTP::Server#bind_tls defined.
 private PROBE = <<-CRYSTAL
   print({{ @top_level.has_constant?("OpenSSL") }}, " ")
-  print({{ @top_level.has_constant?("HTTP") && HTTP.has_constant?("Client") }}, " ")
+  print({{ @top_level.has_constant?("HTTP") && HTTP.has_constant?("Client") && HTTP::Client.has_constant?("TLSContext") }}, " ")
   print HTTP::Server.new { }.responds_to?(:bind_tls)
   CRYSTAL
 
