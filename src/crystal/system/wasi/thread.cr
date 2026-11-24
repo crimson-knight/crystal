@@ -47,8 +47,9 @@ module Crystal::System::Thread
   end
 
   private def stack_address : Void*
-    # TODO: Implement
-    Pointer(Void).null
+    # The lowest address of the main stack, which grows down from
+    # `__stack_high` (see `src/crystal/system/wasi/main.cr`).
+    pointerof(LibC.__stack_low).as(Void*)
   end
 
   def self.init_suspend_resume : Nil
