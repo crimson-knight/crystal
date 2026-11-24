@@ -988,6 +988,10 @@ module Crystal
     rare_property named_args : Array(NamedArgument)?
     rare_property doc : String?
 
+    # The `a.b op= c` this setter call came from, when the normalizer copied
+    # the receiver `a` to a temporary variable (see `Normalizer#transform_op_assign_call`).
+    rare_property op_assign_source : OpAssign?
+
     def initialize(@obj : ASTNode?, @name : String, @args : Array(ASTNode) = [] of ASTNode, @block = nil, block_arg = nil, named_args = nil, global : Bool = false)
       self.global = true if global
       self.block_arg = block_arg if block_arg
@@ -1040,6 +1044,7 @@ module Crystal
       clone.has_parentheses = has_parentheses?
       clone.name_size = name_size
       clone.expansion = expansion?
+      clone.op_assign_source = op_assign_source
       clone
     end
 
