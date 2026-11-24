@@ -148,9 +148,11 @@ module Crystal
       source_text = source.to_s
       String.build do |io|
         io << "`" << written << "` sets field '" << field << "' of a copy of `" << source_text
-        io << "` (a " << source_type << " struct), so the write is lost"
+        io << "`, so the write is lost: " << source_type << " is a struct, and "
         if op_assign
-          io << ": `" << op_assign.target << " " << op_assign.op << "=` copies `" << source_text << "` to a temporary first"
+          io << "`" << op_assign.target << " " << op_assign.op << "=` copies `" << source_text << "` to a temporary first"
+        else
+          io << "`" << source_text << "` returns a copy of it"
         end
         io << ".\n\nCopy it to a local, change the local and write it back:\n\n"
         io << "    copy = " << source_text << "\n"

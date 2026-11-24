@@ -53,7 +53,7 @@ describe "Semantic: write to a struct copy" do
         pointer = Pointer(Point).malloc(1_u64)
         pointer.value.x += 5
         ),
-        "`pointer.value.x += 5` sets field 'x' of a copy of `pointer.value` (a Point struct), so the write is lost",
+        "`pointer.value.x += 5` sets field 'x' of a copy of `pointer.value`, so the write is lost: Point is a struct, and `pointer.value.x +=` copies `pointer.value` to a temporary first",
         "`pointer.value.x +=` copies `pointer.value` to a temporary first",
         "copy = pointer.value",
         "pointer.value = copy",
@@ -91,7 +91,7 @@ describe "Semantic: write to a struct copy" do
         pointer = Pointer(Point).malloc(2_u64)
         pointer[1_i64].x = 7
         ),
-        "`pointer[1_i64].x = 7` sets field 'x' of a copy of `pointer[1_i64]` (a Point struct)",
+        "`pointer[1_i64].x = 7` sets field 'x' of a copy of `pointer[1_i64]`, so the write is lost",
         "(pointer + 1_i64).value.x = 7"
     end
 
@@ -106,7 +106,7 @@ describe "Semantic: write to a struct copy" do
         points = [Point.new]
         points[0].x = 9
         ),
-        "`points[0].x = 9` sets field 'x' of a copy of `points[0]` (a Point struct)",
+        "`points[0].x = 9` sets field 'x' of a copy of `points[0]`, so the write is lost",
         inject_primitives: false
     end
 
@@ -121,7 +121,7 @@ describe "Semantic: write to a struct copy" do
         points = {"a" => Point.new}
         points["a"].x += 1
         ),
-        "sets field 'x' of a copy of `points[\"a\"]` (a Point struct)",
+        "sets field 'x' of a copy of `points[\"a\"]`, so the write is lost",
         inject_primitives: false
     end
 
@@ -133,7 +133,7 @@ describe "Semantic: write to a struct copy" do
 
         origin.y = 3
         ),
-        "`origin.y = 3` sets field 'y' of a copy of `origin` (a Point struct)"
+        "`origin.y = 3` sets field 'y' of a copy of `origin`, so the write is lost"
     end
 
     it "about an op-assign through an instance variable getter" do
@@ -349,7 +349,7 @@ describe "Semantic: write to a struct copy" do
 
         origin.y = 3
         ),
-        "strict file: `origin.y = 3` sets field 'y' of a copy of `origin` (a Point struct), so the write is lost",
+        "strict file: `origin.y = 3` sets field 'y' of a copy of `origin`, so the write is lost: Point is a struct, and `origin` returns a copy of it",
         inject_primitives: true
     end
 
