@@ -1,5 +1,5 @@
 name: crystal
-version: 1.21.1
+version: 1.22.3
 
 authors:
   - Crystal Core Team <crystal@manas.tech>
@@ -7,13 +7,13 @@ authors:
 description: |
   The Crystal standard library and compiler.
 
-crystal: ">= 1.0"
+crystal: ">= 1.13.0"
 
 dependencies:
   markd:
     github: icyleaf/markd
-    # v0.5.0
-    commit: d61dd52d40e659b53cb78712a7b1190cfdb9bc66
+    # v0.6.0
+    commit: 9db69c0aba807d6186903a0b5fcadc1450bc2be4
   reply:
     github: I3oris/reply
     commit: 13f7eba083f138dd063c68b859c8e315f44fb523

@@ -65,4 +65,15 @@ module Crystal::System::Thread
   private def system_resume : Nil
     raise NotImplementedError.new("Crystal::System::Thread.system_resume: multi-threading is not available on the WASM target. Use fibers for concurrency.")
   end
+
+  protected def init_semaphore : Nil
+  end
+
+  def wait : Nil
+    raise NotImplementedError.new("Crystal::System::Thread#wait")
+  end
+
+  def wake : Nil
+    raise NotImplementedError.new("Crystal::System::Thread#wake")
+  end
 end

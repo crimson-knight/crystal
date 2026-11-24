@@ -213,6 +213,9 @@ lib LibGC
     fun get_suspend_signal = GC_get_suspend_signal : Int
     fun get_thr_restart_signal = GC_get_thr_restart_signal : Int
   {% end %}
+
+  alias FnType = Void* -> Void*
+  fun do_blocking = GC_do_blocking(FnType, Void*) : Void*
 end
 
 module GC
@@ -223,24 +226,33 @@ module GC
   # :nodoc:
   def self.malloc(size : LibC::SizeT) : Void*
     Crystal.trace :gc, "malloc", size: size do
-      LibGC.malloc(size)
+      ptr = LibGC.malloc(size)
+      oom(size) if ptr.null? && size != 0
+      ptr
     end
   end
 
   # :nodoc:
   def self.malloc_atomic(size : LibC::SizeT) : Void*
     Crystal.trace :gc, "malloc", size: size, atomic: 1 do
-      LibGC.malloc_atomic(size)
+      ptr = LibGC.malloc_atomic(size)
+      oom(size) if ptr.null? && size != 0
+      ptr
     end
   end
 
   # :nodoc:
   def self.realloc(ptr : Void*, size : LibC::SizeT) : Void*
     Crystal.trace :gc, "realloc", size: size do
-      LibGC.realloc(ptr, size)
+      new_ptr = LibGC.realloc(ptr, size)
+      # `GC_realloc(ptr, 0)` legitimately returns NULL (free semantics), only
+      # a NULL result for a non-zero size means out of memory
+      oom(size) if new_ptr.null? && size != 0
+      new_ptr
     end
   end
 
+  # :nodoc:
   def self.init : Nil
     {% unless flag?(:win32) || flag?(:wasm32) %}
       LibGC.set_handle_fork(1)
@@ -336,13 +348,13 @@ module GC
     end
   {% end %}
 
-  def self.collect
+  def self.collect : Nil
     Crystal.trace :gc, "collect" do
       LibGC.collect
     end
   end
 
-  def self.enable
+  def self.enable : Nil
     unless LibGC.is_disabled != 0
       raise "GC is not disabled"
     end
@@ -350,20 +362,29 @@ module GC
     LibGC.enable
   end
 
-  def self.disable
+  def self.disable : Nil
     LibGC.disable
   end
 
+  # :nodoc:
+  def self.max_heap_size=(size : UInt64) : UInt64
+    LibGC.set_max_heap_size(size)
+    size
+  end
+
+  # :nodoc:
   def self.free(pointer : Void*) : Nil
     Crystal.trace :gc, "free" do
       LibGC.free(pointer)
     end
   end
 
+  # :nodoc:
   def self.add_finalizer(object : Reference) : Nil
     add_finalizer_impl(object)
   end
 
+  # :nodoc:
   def self.add_finalizer(object)
     # Nothing
   end
@@ -375,16 +396,19 @@ module GC
     nil
   end
 
+  # :nodoc:
   def self.add_root(object : Reference)
     roots = @@roots ||= [] of Pointer(Void)
     roots << Pointer(Void).new(object.object_id)
   end
 
+  # :nodoc:
   def self.register_disappearing_link(pointer : Void**)
     base = LibGC.base(pointer.value)
     LibGC.general_register_disappearing_link(pointer, base)
   end
 
+  # :nodoc:
   def self.is_heap_ptr(pointer : Void*)
     LibGC.is_heap_ptr(pointer) != 0
   end
@@ -458,14 +482,15 @@ module GC
     {% end %}
   end
 
-  # :nodoc:
   {% if !flag?(:without_mt) %}
+    # :nodoc:
     def self.set_stackbottom(thread_handle : Void*, stack_bottom : Void*)
       sb = LibGC::StackBase.new
       sb.mem_base = stack_bottom
       LibGC.set_stackbottom(thread_handle, pointerof(sb))
     end
   {% else %}
+    # :nodoc:
     def self.set_stackbottom(stack_bottom : Void*)
       \{% if LibGC.has_method?(:set_stackbottom) %}
         # this is necessary because Boehm GC does _not_ use `GC_stackbottom` on
@@ -552,4 +577,15 @@ module GC
       Signal.new(LibGC.get_thr_restart_signal)
     end
   {% end %}
+
+  # :nodoc:
+  def self.syscall(&proc : ->) : Nil
+    # `GC_do_blocking` immediately calls the callback and the thread's stack
+    # will be scanned up to the entry of `GC_do_blocking` so we don't need to
+    # box the proc
+    LibGC.do_blocking(->(data : Void*) {
+      data.as(Proc(Nil)*).value.call
+      Pointer(Void).null
+    }, pointerof(proc))
+  end
 end

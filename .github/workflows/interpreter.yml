@@ -13,9 +13,9 @@ env:
 
 jobs:
   test-interpreter_spec:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     container:
-      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
+      image: crystallang/crystal:1.21.0-build@sha256:34ac3d5dd5098f85790b800c046f2a6d7fc292193a706d7a3f1acc5f004b94c3
     name: "Test Interpreter"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,9 +26,9 @@ jobs:
         run: make interpreter_spec junit_output=.junit/interpreter_spec.xml
 
   build-interpreter:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     container:
-      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
+      image: crystallang/crystal:1.21.0-build@sha256:34ac3d5dd5098f85790b800c046f2a6d7fc292193a706d7a3f1acc5f004b94c3
     name: Build interpreter
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -38,18 +38,22 @@ jobs:
       - name: Build compiler
         run: make interpreter=1 release=1
 
+      - name: Build process-utils
+        run: make .build/crystal-pu
+
       - name: Upload compiler artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crystal-interpreter
           path: |
             .build/crystal
+            .build/crystal-pu
 
   test-interpreter-std_spec:
     needs: build-interpreter
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     container:
-      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
+      image: crystallang/crystal:1.21.0-build@sha256:34ac3d5dd5098f85790b800c046f2a6d7fc292193a706d7a3f1acc5f004b94c3
     strategy:
       fail-fast: false
       matrix:
@@ -66,17 +70,17 @@ jobs:
           name: crystal-interpreter
           path: .build/
 
-      - name: Mark downloaded compiler as executable
-        run: chmod +x .build/crystal
+      - name: Mark downloaded files as executable
+        run: chmod +x .build/crystal .build/crystal-pu
 
       - name: Run std_spec with interpreter
         run: SPEC_SPLIT="${{ matrix.part }}%4" bin/crystal i spec/std_spec.cr -- --junit_output .junit/interpreter-std_spec.${{ matrix.part }}.xml
 
   test-interpreter-primitives_spec:
     needs: build-interpreter
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     container:
-      image: crystallang/crystal:1.20.3-build@sha256:f6e055cfd775bc55c3472d5c8e9463f711c21ceb42eeb781ad9812b2423b0ab9
+      image: crystallang/crystal:1.21.0-build@sha256:34ac3d5dd5098f85790b800c046f2a6d7fc292193a706d7a3f1acc5f004b94c3
     name: "Test primitives_spec with interpreter"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

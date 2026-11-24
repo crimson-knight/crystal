@@ -209,10 +209,10 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
 
       case wasi_event.kind
       when .timeout?
-        # Timeout event: check the fiber's timeout_select_action
+        # Timeout event: a select timeout resumes its fiber only when the
+        # select has not already completed through another action.
         if fiber = wasi_event.fiber
-          if select_action = fiber.timeout_select_action
-            fiber.timeout_select_action = nil
+          if select_action = wasi_event.timeout_select_action
             if select_action.time_expired?
               fiber.enqueue
             end
@@ -599,6 +599,7 @@ struct Crystal::EventLoop::Wasi::Event
   getter fiber : Fiber?
   getter io : Crystal::EventLoop::Wasi::Evented?
   getter fd : Int32
+  getter timeout_select_action : Channel::TimeoutAction?
 
   def initialize(@event_loop : Crystal::EventLoop::Wasi, @kind : Kind, *,
                  @fiber : Fiber? = nil, @io : Crystal::EventLoop::Wasi::Evented? = nil, @fd : Int32 = -1)
@@ -609,7 +610,8 @@ struct Crystal::EventLoop::Wasi::Event
   # `run` iteration. The *timeout* specifies how long to wait: for timeout
   # events this is the timer duration; for FD events this is the maximum
   # wait time before signaling a timeout.
-  def add(timeout : Time::Span) : Nil
+  def add(timeout : Time::Span, timeout_select_action : Channel::TimeoutAction? = nil) : Nil
+    @timeout_select_action = timeout_select_action
     timeout_ns = timeout.total_nanoseconds
     timeout_ns = 0.0 if timeout_ns < 0
     @active = true

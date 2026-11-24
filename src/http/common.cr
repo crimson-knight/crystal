@@ -1,6 +1,6 @@
 require "mime/media_type"
 {% if !flag?(:without_zlib) %}
-  require "compress/deflate"
+  require "compress/zlib"
   require "compress/gzip"
 {% end %}
 
@@ -61,23 +61,27 @@ module HTTP
           encoding = headers["Content-Encoding"]?
           {% if flag?(:without_zlib) %}
             case encoding
-            when "gzip", "deflate"
-              raise "Can't decompress because `-D without_zlib` was passed at compile time"
+            when Nil
+              # nothing
             else
               # not a format we support
+              return HTTP::Status::UNSUPPORTED_MEDIA_TYPE
             end
           {% else %}
             case encoding
-            when "gzip"
+            when Nil
+              # nothing
+            when "gzip", "x-gzip"
               body = Compress::Gzip::Reader.new(body, sync_close: true)
               headers.delete("Content-Encoding")
               headers.delete("Content-Length")
             when "deflate"
-              body = Compress::Deflate::Reader.new(body, sync_close: true)
+              body = Compress::Zlib::Reader.new(body, sync_close: true)
               headers.delete("Content-Encoding")
               headers.delete("Content-Length")
             else
               # not a format we support
+              return HTTP::Status::UNSUPPORTED_MEDIA_TYPE
             end
           {% end %}
         end
@@ -121,6 +125,7 @@ module HTTP
 
         name, value = parse_header(peek[0, end_index])
         io.skip(index + 1) # Must skip until after \n
+        return nil if name.empty?
         return HeaderLine.new name: name, value: value, bytesize: index + 1
       end
     end
@@ -136,6 +141,7 @@ module HTTP
     end
 
     name, value = parse_header(line)
+    return nil if name.empty?
     HeaderLine.new name: name, value: value, bytesize: line.bytesize
   end
 
@@ -201,7 +207,6 @@ module HTTP
     {name, value}
   end
 
-  # Important! These have to be in lexicographic order.
   private COMMON_HEADERS = %w(
     Accept-Encoding
     Accept-Language
@@ -249,21 +254,21 @@ module HTTP
     referer
     user-agent
   )
+    .to_h { |header| {header.to_slice, header} }
 
   # :nodoc:
   def self.header_name(slice : Bytes) : String
     # Check if the header name is a common one.
     # If so we avoid having to allocate a string for it.
-    if slice.size < 20
-      name = COMMON_HEADERS.bsearch { |string| slice <= string.to_slice }
-      return name if name && name.to_slice == slice
+    if slice.size < 20 && (name = COMMON_HEADERS[slice]?)
+      name
+    else
+      String.new(slice)
     end
-
-    String.new(slice)
   end
 
   # :nodoc:
-  def self.serialize_headers_and_body(io : IO, headers : HTTP::Headers, body : String?, body_io : IO?, version : String) : Nil
+  def self.serialize_headers_and_body(io : IO, headers : HTTP::Headers, body : String?, body_io : IO?, version : String, *, expecting_body = false) : Nil
     if body
       serialize_headers_and_string_body(io, headers, body)
     elsif body_io
@@ -275,6 +280,11 @@ module HTTP
         if copied != content_length
           raise ArgumentError.new("Content-Length header is #{content_length} but body had #{copied} bytes")
         end
+      elsif body_io.is_a?(IO::Memory)
+        headers.serialize(io)
+        slice = body_io.to_slice + body_io.pos
+        io << "Content-Length: " << slice.bytesize << "\r\n\r\n"
+        io.write slice
       elsif Client::Response.supports_chunked?(version)
         headers["Transfer-Encoding"] = "chunked"
         headers.serialize(io)
@@ -286,6 +296,11 @@ module HTTP
       end
     else
       headers.serialize(io)
+      if expecting_body && !headers.has_key?("Content-Length") && !headers.has_key?("Transfer-Encoding")
+        # A user agent should send Content-Length for a method that defines a
+        # meaning for content, even when it's empty (RFC 9110, section 8.6)
+        io << "Content-Length: 0\r\n"
+      end
       io << "\r\n"
     end
   end
@@ -326,6 +341,13 @@ module HTTP
       length = first_header.to_u64?(whitespace: false)
     end
     raise ArgumentError.new("Invalid Content-Length: #{first_header}") unless length
+    length
+  end
+
+  # :nodoc:
+  def self.validate_content_length(length : Int64) : Int64
+    raise ArgumentError.new("Invalid Content-Length: #{length}") if length < 0
+
     length
   end
 
@@ -528,6 +550,23 @@ module HTTP
       raise ArgumentError.new(message)
     end
 
+    string
+  end
+
+  # :nodoc:
+  def self.validate_version(version : String) : String
+    if HTTP::SUPPORTED_VERSIONS.includes?(version)
+      version
+    else
+      raise ArgumentError.new("Unsupported HTTP version: #{version}")
+    end
+  end
+
+  # :nodoc:
+  def self.validate_resource(string : String) : String
+    if string.empty? || string.to_slice.any? { |c| c < 0x21_u8 || c >= 0x7F_u8 }
+      raise ArgumentError.new("Invalid HTTP resource: #{string.inspect}")
+    end
     string
   end
 end

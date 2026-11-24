@@ -239,9 +239,16 @@ module Crystal::System::Signal
   def self.setup_segfault_handler
     return if @@setup_segfault_handler.swap(true, :relaxed)
 
+    # Exception::CallStack::DWARF needs the stack to be around 9KB in dev mode
+    # to lookup the function name and file:line numbers from preloaded tables
+    # and indexes,  and around 4KB in release mode.
+    #
+    # To make sure we always have enough room, we allocate at least 16KB.
+    stack_size = LibC::SIGSTKSZ.clamp(16384..)
+
     altstack = LibC::StackT.new
-    altstack.ss_sp = LibC.malloc(LibC::SIGSTKSZ)
-    altstack.ss_size = LibC::SIGSTKSZ
+    altstack.ss_sp = LibC.malloc(stack_size)
+    altstack.ss_size = stack_size
     altstack.ss_flags = 0
     LibC.sigaltstack(pointerof(altstack), nil)
 
@@ -334,6 +341,8 @@ module Crystal::System::SignalChildHandler
     end
   end
 
+  # Clears the parent's child-process table in a forked child (used by the
+  # compiler's build server, `Crystal::InferReuse.fork_process`).
   def self.after_fork
     @@pending.clear
     @@waiting.each_value(&.close)

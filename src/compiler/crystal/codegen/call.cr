@@ -358,7 +358,7 @@ class Crystal::CodeGenVisitor
   end
 
   def codegen_call_with_block_as_fun_literal(node, fun_literal, self_type, call_args)
-    accept fun_literal
+    request_value(fun_literal)
     call_args.push @last
 
     target_def = node.target_def
@@ -381,9 +381,9 @@ class Crystal::CodeGenVisitor
       obj_type_id = context.vars["%scope"].pointer
     else
       owner = node.scope
-      obj_type_id = llvm_self
+      obj_type_id = llvm_self if owner.passed_as_self?
     end
-    obj_type_id = type_id(obj_type_id, owner)
+    obj_type_id = type_id(obj_type_id, owner) if obj_type_id
 
     # Create self var if available
     if node_obj
@@ -434,12 +434,14 @@ class Crystal::CodeGenVisitor
             next
           end
 
-          if is_super
+          if obj_type_id && !is_super
+            result = match_type_id(owner, a_def.owner, obj_type_id)
+          else
+            # If owner is not passed then it cannot possibly affect dispatch
             # A super call always matches the obj type
             result = int1(1)
-          else
-            result = match_type_id(owner, a_def.owner, obj_type_id)
           end
+
           node.args.each_with_index do |node_arg, i|
             a_def_arg = a_def.args[i]
             if node_arg.supports_autocast?(!@program.has_flag?("no_number_autocast"))
@@ -461,7 +463,7 @@ class Crystal::CodeGenVisitor
           position_at_end current_def_label
 
           if left_out
-            codegen_unreachable_type(node, type_id_to_class_name(obj_type_id))
+            codegen_unreachable_type(node, dispatch_type_name(obj_type_id, owner))
             position_at_end next_def_label
             next
           end
@@ -486,7 +488,7 @@ class Crystal::CodeGenVisitor
         # "unreachable type" error, in release builds too: the check costs
         # one cold call, and a wrong analysis must never run on silently.
         if left_out_any
-          codegen_unreachable_type(node, type_id_to_class_name(obj_type_id))
+          codegen_unreachable_type(node, dispatch_type_name(obj_type_id, owner))
         end
         unreachable
       end
@@ -499,6 +501,13 @@ class Crystal::CodeGenVisitor
   # type named by the string *type_name* reached *node*, a call compiled
   # without code for that type (see `DispatchPrune`). Does nothing when the
   # prelude has no `__crystal_raise_unreachable_type`.
+  # The name of the type a dispatch branches on, for the "unreachable type"
+  # error: read from the type id at run time, or the owner's name when the
+  # owner is not passed at run time and has no type id (upstream #17424).
+  private def dispatch_type_name(obj_type_id : LLVM::Value?, owner : Type) : LLVM::Value
+    obj_type_id ? type_id_to_class_name(obj_type_id) : build_string_constant(owner.to_s)
+  end
+
   private def codegen_unreachable_type(node : Call, type_name : LLVM::Value) : Nil
     codegen_unreachable_type(type_name, node.name, node.location)
   end
@@ -524,6 +533,11 @@ class Crystal::CodeGenVisitor
 
   def codegen_call(node, target_def, self_type, call_args)
     body = target_def.body
+
+    # Inlined calls and primitives don't go through `codegen_call_or_invoke`,
+    # so their instructions need the call's debug location set here,
+    # otherwise they are attributed to whatever line was last emitted
+    set_current_debug_location node if @debug.line_numbers?
 
     # Try to inline the call
     if try_inline_call(target_def, body, self_type, call_args)
