@@ -87,6 +87,21 @@ The fork was 302 commits behind 1.22.3 and 414 commits ahead of it.
 - PR #44 (lazy OpenSSL BIO method table, `src/openssl/bio.cr`, new `spec/std/openssl/bio_spec.cr`)
   merged as 9e4a6613f after this branch started; merged into this branch (clean, no conflicts) so
   the PR carries it. `bio_spec.cr` runs with the std suite on both minis and on its own.
+- PR #45 (HTTP TLS as an opt-in) merged as ce52bb548; merged into this branch as 8ce8e9591.
+  #45 split `src/http/web_socket.cr` into `web_socket/core.cr` (server side, no HTTP::Client) and
+  `web_socket/client.cr`, moved `bind_tls` to `http/server/tls.cr`, and dropped the http
+  require from `mime/media_type.cr`. Upstream 1.22 had changed the same files, so the merge
+  conflicted:
+
+  | File | Resolution |
+  |---|---|
+  | `src/http/web_socket.cr` | #45's version (it only requires `./web_socket/core` and `./web_socket/client`). Upstream 1.22's receive-loop fixes moved with the code: `web_socket/core.cr` now has upstream's `@current_message_opcode` check (#17552: a continuation frame whose opcode differs from the message being assembled closes with ProtocolError) and the control-frame handling (#17553: a fragmented ping or pong closes with ProtocolError; a ping or pong in the middle of a fragmented message is answered from its own payload, without touching `@current_message`). Checked line by line against `git diff 1.21.0 1.22.3 -- src/http/web_socket.cr`. |
+  | `src/mime/media_type.cr` | Upstream's version (#17306 removed both `require "uri"` and `require "http"`; #45 removed only `http`). |
+  | `src/http/web_socket/protocol.cr` (auto-merged) | Carries upstream's masked-frame checks (#17562: `header_masked` against `@masked`, `read_payload` unmasks `unless @masked`) and #45's removal of the client constructor, which now lives in `web_socket/client.cr`, plus the fork's `crystal/digest/sha1` for the key challenge. |
+  | `src/http/server.cr`, `server/tls.cr`, `handlers/websocket_handler.cr` (auto-merged) | Upstream's `@processor.process(io)` (the fork's `skip_request_body` stays in `request_processor.cr`); `bind_tls` in `tls.cr` is unchanged by upstream 1.22. |
+
+  A plain `require "http/server"` program built at 8ce8e9591 links only `libgc` and `libSystem`
+  (`otool -L`): no libssl, libcrypto, libz or libpcre.
 
 ## Checks on the merged head
 
@@ -98,12 +113,16 @@ errors / pending.
 |---|---|---|
 | spec/compiler/codegen | laptop, b045c3757 | 1963 / 0 / 2 / 6 (the 2 errors are the known `special_vars_spec.cr:18`) |
 | spec/compiler/semantic | m4-mini-02, b045c3757 | 3477 / 0 / 1 / 9; the 1 error was a spec helper without the Crystal constants, fixed in 5dc83c8f1 (that file plus block_instance_sharing: 39 / 0 / 0) |
+| spec/compiler/semantic | m4-mini-01, 5dc83c8f1 | 3477 / 0 / 0 / 9 |
 | spec/compiler-cli + infer_reuse + incremental_rebuild + memory_budget + strict + c_allocator + compiler_spec | laptop, b045c3757 | 139 / 0 / 0 / 0 |
 | Feature specs (strict, type_once, generic_type_once, ir_skip, line_patch, stable_numbering, release_units, dispatch_prune, elf_symbol_names, infer_reuse, infer_persist, incremental_rebuild, memory_budget) | inside the suites above | all pass |
 | spec/std_spec.cr, OpenSSL and zlib on, TMPDIR=/tmp | m4-mini-01, b045c3757 | 18330 / 0 / 1 / 34 (the known `process_spec.cr:642`, which was `:677` before upstream dropped the fork specs) |
 | spec/std_spec.cr, same | m4-mini-02, b045c3757 | 18330 / 0 / 1 / 34 (same) |
 | spec/std/openssl/ (with #44's bio_spec) | laptop and m4-mini-01 | 117 / 0 / 0 / 2 (laptop); with call_stack, exception, socket, process: 493 / 0 / 1 (known) / 7 (m4-mini-01, 418628057) |
-| Stage-2 self-host (release) | laptop | built, `Crystal 1.22.3 [b045c3757]`, runs a program |
+| spec/std/http + spec/std/mime + bio_spec, OpenSSL on | laptop, 8ce8e9591 | 754 / 0 / 0 / 0 |
+| #45's `tls_opt_in_spec.cr` + `web_socket_spec.cr` | laptop, 8ce8e9591 | 52 / 0 / 0 / 0 (all 7 opt-in cases; upstream's masked-frame and mixed-opcode cases) |
+| spec/std_spec.cr, OpenSSL and zlib on, TMPDIR=/tmp | m4-mini-02, 8ce8e9591 | 18337 / 0 / 1 / 34 (the known `process_spec.cr:642`; 7 more examples from #45) |
+| Stage-2 self-host (release) | laptop | built, `Crystal 1.22.3 [b045c3757]`, runs a program; rebuilt at the head: stage 1 `Crystal 1.22.3 [8ce8e9591]` from the pinned host, stage 2 built with it, runs a program |
 | Stage-2 self-host, non-release `--threads 8 --incremental`, then a one-line edit in `codegen/fun.cr` | laptop, 418628057 | clean 36 s, edit 24 s, the rebuilt compiler runs a program |
 | Linux (Docker, linux-4gb image, 4 CPUs, 5 GB): compiler cross-compiled on the Mac and linked in the container; smoke program (fiber + channel + Mica regex + `Crystal::USER_FLAGS`); `elf_symbol_names_spec` + `spec/std/socket/` | one cluster-pool job, key mc-step7 | smoke prints `linux smoke 1.22.3 2 1,2,3 ["smoke"]`; specs 211 / 0 / 0 / 7 (IPv6 pending in the container) |
 | `CRYSTAL_INFER_REUSE_VERIFY=1`, Grant20, build server, -O0: clean, body edit (+3 lines), restore, new method, restore | laptop, tools/run_build.rb | every edit reused (0.25 to 0.43 s re-typing), 46,111 to 46,112 typed defs compared, **0 differences**, checks 3/3 on all 5 builds |
