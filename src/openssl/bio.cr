@@ -1,15 +1,52 @@
 require "./lib_crypto"
 require "./ktls"
+require "crystal/once"
 
 # :nodoc:
 class OpenSSL::BIO
-  CRYSTAL_BIO = begin
+  # The BIO method table that routes OpenSSL reads and writes to a Crystal `IO`.
+  #
+  # It is built on first use, not at program start, so a program that never
+  # opens a TLS socket calls no OpenSSL function at start-up. `Crystal.once`
+  # makes the first use safe when several threads or fibers race for it.
+  @@crystal_bio_initialized = false
+  @@crystal_bio = Pointer(LibCrypto::BioMethod).null
+  @@crystal_bio_failure : String? = nil
+
+  def self.crystal_bio : LibCrypto::BioMethod*
+    unless @@crystal_bio_initialized
+      Crystal.once(pointerof(@@crystal_bio_initialized)) { init_crystal_bio }
+    end
+
+    if failure = @@crystal_bio_failure
+      raise OpenSSL::Error.new(failure)
+    end
+
+    @@crystal_bio
+  end
+
+  # :nodoc:
+  #
+  # Whether `crystal_bio` has built the method table yet (for specs).
+  def self.crystal_bio_initialized? : Bool
+    @@crystal_bio_initialized
+  end
+
+  # Runs once, inside `Crystal.once`, so it records a failure instead of
+  # raising: an exception there would leave the once-operation registered.
+  private def self.init_crystal_bio : Nil
     bio_id = LibCrypto.BIO_get_new_index
-    raise OpenSSL::Error.new("BIO_get_new_index") if bio_id == -1
+    if bio_id == -1
+      @@crystal_bio_failure = "BIO_get_new_index"
+      return
+    end
 
     bio_type = bio_id | LibCrypto::BIO_TYPE_SOURCE_SINK | LibCrypto::BIO_TYPE_DESCRIPTOR
     biom = LibCrypto.BIO_meth_new(bio_type, "Crystal BIO")
-    raise OpenSSL::Error.new("BIO_meth_new") if biom.null?
+    if biom.null?
+      @@crystal_bio_failure = "BIO_meth_new"
+      return
+    end
 
     {% if LibCrypto.has_method?(:BIO_meth_set_read_ex) %}
       LibCrypto.BIO_meth_set_read_ex(biom, ->read_ex)
@@ -27,7 +64,7 @@ class OpenSSL::BIO
     LibCrypto.BIO_meth_set_create(biom, ->create)
     LibCrypto.BIO_meth_set_destroy(biom, ->destroy)
 
-    biom
+    @@crystal_bio = biom
   end
 
   def self.read_ex(b, buffer, len, readp)
@@ -157,7 +194,7 @@ class OpenSSL::BIO
   end
 
   def initialize(@io : IO)
-    @bio = LibCrypto.BIO_new(CRYSTAL_BIO)
+    @bio = LibCrypto.BIO_new(BIO.crystal_bio)
     raise OpenSSL::Error.new("BIO_new") if @bio.null?
 
     LibCrypto.BIO_set_data(@bio, Box.box(self))
