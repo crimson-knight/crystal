@@ -580,7 +580,9 @@ describe "Code gen: def" do
       foo(1 || "a")
       CRYSTAL
 
-    mod.to_s.should_not match(/(?<!Int32|String):type_id/)
+    # Every `:type_id` global read is Int32's or String's (written without a
+    # lookbehind, which the Mica regex engine leaves out).
+    mod.to_s.split(":type_id")[0...-1].reject { |before| before.ends_with?("Int32") || before.ends_with?("String") }.should be_empty
   end
 
   it "does not access owner type in dispatch if it is a file-private scope" do
@@ -598,6 +600,8 @@ describe "Code gen: def" do
       bar(1 || "a")
       CRYSTAL
 
-    mod.to_s.should_not match(/(?<!Int32|String):type_id/)
+    # Every `:type_id` global read is Int32's or String's (written without a
+    # lookbehind, which the Mica regex engine leaves out).
+    mod.to_s.split(":type_id")[0...-1].reject { |before| before.ends_with?("Int32") || before.ends_with?("String") }.should be_empty
   end
 end

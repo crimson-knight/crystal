@@ -2054,12 +2054,15 @@ describe "String" do
       "┬  7".gsub(/\B/, "-").should eq "-┬- - 7"
     end
 
-    it "empty match + advanced offset" do
-      "a  b".gsub(/(?= )/, "-").should eq "a- - b"
-      "┬  7".gsub(/(?= )/, "-").should eq "┬- - 7"
-      "a  ".gsub(/(?<= )/, "-").should eq "a - -"
-      "┬  ".gsub(/(?<= )/, "-").should eq "┬ - -"
-    end
+    {% unless Regex::Engine.resolve.name == "Regex::MicaEngine" %}
+      # lookahead and lookbehind are outside the Mica dialect
+      it "empty match + advanced offset" do
+        "a  b".gsub(/(?= )/, "-").should eq "a- - b"
+        "┬  7".gsub(/(?= )/, "-").should eq "┬- - 7"
+        "a  ".gsub(/(?<= )/, "-").should eq "a - -"
+        "┬  ".gsub(/(?<= )/, "-").should eq "┬ - -"
+      end
+    {% end %}
 
     it "empty string" do
       "ab".gsub("", "-").should eq "-a-b-"
