@@ -4,7 +4,8 @@ require "./spec_helper"
 # next to the `llvm-config` the compiler was built with, or `wasm-objdump`
 # (WABT) on the PATH.
 private def wasm_disassembler : String?
-  if llvm_config = ENV["LLVM_CONFIG"]?
+  llvm_config = ENV["LLVM_CONFIG"]?
+  if llvm_config && File::Info.executable?(llvm_config)
     bin_dir = Process.capture_result(llvm_config, "--bindir").output.strip
     objdump = File.join(bin_dir, "llvm-objdump")
     return objdump if File::Info.executable?(objdump)
