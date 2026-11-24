@@ -43,4 +43,23 @@ describe "`crystal build --target wasm32-wasi`" do
       end
     end
   end
+
+  it "keeps a lib fun in the import module its Link annotation names" do
+    with_tempfile("wasm32-import") do |output_path|
+      ir_path = "#{output_path}.ll"
+      begin
+        Process.capture_result(crystal, "build", "--prelude=empty", "--cross-compile",
+          "--target", "wasm32-wasi", "--emit", "llvm-ir",
+          "-o", output_path, fixture_path("wasm32-import.cr"))
+          .should(be_success)
+
+        ir = File.read(ir_path)
+        ir.should contain(%("wasm-import-module"="host"))
+        ir.should contain(%("wasm-import-name"="host_note"))
+      ensure
+        File.delete?(ir_path)
+        File.delete?("#{output_path}.wasm")
+      end
+    end
+  end
 end
