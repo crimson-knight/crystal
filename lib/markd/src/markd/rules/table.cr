@@ -38,7 +38,7 @@ module Markd::Rule
       lines = container.text.strip.split("\n")
 
       row_sizes = lines[...2].map do |line|
-        strip_pipe(line.strip).split(TABLE_CELL_SEPARATOR).size
+        Rule.split_table_cells(strip_pipe(line.strip)).size
       end.uniq!
 
       # Do we have a real table?
@@ -59,7 +59,7 @@ module Markd::Rule
       has_body = lines.size > 2
       container.data["has_body"] = has_body
 
-      alignments = strip_pipe(lines[1].strip).split(TABLE_CELL_SEPARATOR).map do |cell|
+      alignments = Rule.split_table_cells(strip_pipe(lines[1].strip)).map do |cell|
         cell = cell.strip
         if cell.starts_with?(":") && cell.ends_with?(":")
           "center"
@@ -80,7 +80,7 @@ module Markd::Rule
         row.data["has_body"] = has_body
         container.append_child(row)
         # This splits on | but not on \| (escaped |)
-        cells = strip_pipe(line.strip).split(TABLE_CELL_SEPARATOR)[...max_row_size]
+        cells = Rule.split_table_cells(strip_pipe(line.strip))[...max_row_size]
 
         # Each row should have exactly the same size as the header.
         while cells.size < max_row_size
@@ -115,7 +115,7 @@ module Markd::Rule
 
     private def match?(parser)
       !parser.indented && \
-         (parser.line[0]? == '|' || parser.line.match(TABLE_CELL_SEPARATOR)) &&
+         (parser.line[0]? == '|' || Rule.table_cell_separator?(parser.line)) &&
           parser.line.size > 2
     end
 
@@ -124,7 +124,7 @@ module Markd::Rule
     private def match_continuation?(parser : Parser)
       !parser.indented && (parser.line[0]? == '|' ||
         parser.line.match(TABLE_HEADING_SEPARATOR) ||
-        parser.line.match(TABLE_CELL_SEPARATOR)) ||
+        Rule.table_cell_separator?(parser.line)) ||
         # Lines that are not empty and are not the start of a
         # block-level structure are ALSO continuations (see gfm-spec.txt:3397)
         !(parser.line.strip.empty? || parser.line.matches?(/^(?:>|\#{1,6}|`{3}|\t{1}|\s{4}|(?:[*-+]\s)+|[0-9]+\.)+/))

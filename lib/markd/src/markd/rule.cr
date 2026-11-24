@@ -102,8 +102,37 @@ module Markd
 
     GFM_DISALLOWED_HTML_TAGS = %w[title textarea style xmp iframe noembed noframes script plaintext]
 
-    TABLE_HEADING_SEPARATOR = /^(\|?\s*:{0,1}-:{0,1}+\s*)+(\||\s*)$/
-    TABLE_CELL_SEPARATOR    = /(?<!\\)\|/
+    # Written without a possessive quantifier or a lookbehind so it runs on
+    # every Regex engine (Mica never backtracks). A cell separator, a `|` not
+    # preceded by a backslash, is found by `.table_cell_separator?` and
+    # `.split_table_cells`.
+    TABLE_HEADING_SEPARATOR = /^(\|?\s*:{0,1}-:{0,1}\s*)+(\||\s*)$/
+
+    # Whether *line* has a `|` that is not preceded by a backslash.
+    def self.table_cell_separator?(line : String) : Bool
+      previous = nil
+      line.each_char do |char|
+        return true if char == '|' && previous != '\\'
+        previous = char
+      end
+      false
+    end
+
+    # Splits *line* at every `|` that is not preceded by a backslash.
+    def self.split_table_cells(line : String) : Array(String)
+      cells = [] of String
+      cell_start = 0
+      previous = nil
+      line.each_char_with_index do |char, index|
+        if char == '|' && previous != '\\'
+          cells << line[cell_start...index]
+          cell_start = index + 1
+        end
+        previous = char
+      end
+      cells << line[cell_start..]
+      cells
+    end
 
     ADMONITION_START = /^> \[!((?:NOTE|TIP|IMPORTANT|CAUTION|WARNING)+)](\s*.*)?$/
 
