@@ -1,6 +1,10 @@
 require "random/secure"
 require "./multipart/*"
 require "mime/media_type"
+# The HTTP types the parser and builder take, without HTTP::Client's TLS.
+require "http/headers"
+require "http/request"
+require "http/client/response"
 
 # The `MIME::Multipart` module contains utilities for parsing MIME multipart
 # messages, which contain multiple body parts, each containing a header section

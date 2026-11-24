@@ -56,7 +56,7 @@ the method body, which the compiler expands after every file is required.
 | A program that names `OpenSSL::...` after `require "http/server"` only | works | `undefined constant OpenSSL`. Fix: `require "openssl"` |
 | `require "http/server"` and `HTTP::WebSocket.new(uri)` (client side) without `require "http/web_socket"` | works | `undefined method`. Fix: `require "http/web_socket"` |
 | `require "http/web_socket/protocol"` alone, then `Protocol.new(host, path, ...)` | works | require `http/web_socket` |
-| `require "mime/media_type"` (or `mime`) and `HTTP::...` without requiring `http` | works: `mime/media_type.cr` required all of `http` though it uses none of it | `undefined constant HTTP`. Fix: require the `http` part the program uses |
+| `require "mime/media_type"` and `HTTP::...` without requiring `http` | works: `mime/media_type.cr` required all of `http` though it uses none of it | `undefined constant HTTP`. Fix: require the `http` part the program uses. `mime/multipart` now requires the HTTP types it takes (`http/headers`, `http/request`, `http/client/response`) itself |
 | `-Dwithout_openssl` | no TLS | no TLS, unchanged |
 
 Shards that support stock Crystal and want a server without OpenSSL can
