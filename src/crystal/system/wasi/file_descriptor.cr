@@ -3,8 +3,12 @@ require "../unix/file_descriptor"
 # :nodoc:
 module Crystal::System::FileDescriptor
   def self.from_stdio(fd)
-    # TODO: WASI doesn't offer a way to detect if a 'fd' is a TTY.
-    IO::FileDescriptor.new(fd).tap(&.flush_on_newline=(true))
+    if Crystal.stdio_closed?(fd)
+      IO::FileDescriptor.new(closed: true)
+    else
+      # TODO: WASI doesn't offer a way to detect if a 'fd' is a TTY.
+      IO::FileDescriptor.new(fd).tap(&.flush_on_newline=(true))
+    end
   end
 
   def self.fcntl(fd, cmd, arg = 0)
@@ -30,20 +34,12 @@ module Crystal::System::FileDescriptor
     raise NotImplementedError.new "Crystal::System::FileDescriptor#system_reopen: reopening file descriptors is not available in the WASM sandbox."
   end
 
-  private def system_flock_shared(blocking)
-    raise NotImplementedError.new "Crystal::System::File#system_flock_shared: file locking is not available in the WASM sandbox. WASI does not support POSIX file locks."
+  private def system_lock(blocking, exclusive)
+    raise NotImplementedError.new "Crystal::System::File#system_lock: file locking is not available in the WASM sandbox. WASI does not support POSIX file locks."
   end
 
-  private def system_flock_exclusive(blocking)
-    raise NotImplementedError.new "Crystal::System::File#system_flock_exclusive: file locking is not available in the WASM sandbox. WASI does not support POSIX file locks."
-  end
-
-  private def system_flock_unlock
-    raise NotImplementedError.new "Crystal::System::File#system_flock_unlock: file locking is not available in the WASM sandbox. WASI does not support POSIX file locks."
-  end
-
-  private def flock(op : LibC::FlockOp, blocking : Bool = true)
-    raise NotImplementedError.new "Crystal::System::File#flock: file locking is not available in the WASM sandbox. WASI does not support POSIX file locks."
+  private def system_unlock
+    raise NotImplementedError.new "Crystal::System::File#system_unlock: file locking is not available in the WASM sandbox. WASI does not support POSIX file locks."
   end
 
   private def system_echo(enable : Bool)

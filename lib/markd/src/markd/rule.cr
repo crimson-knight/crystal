@@ -4,6 +4,7 @@ module Markd
     ESCAPED_CHAR_STRING = %Q(\\\\) + ESCAPABLE_STRING
 
     NUMERIC_HTML_ENTITY = /^&#(?:[Xx][0-9a-fA-F]{1,6}|[0-9]{1,7});/
+    HTML_ENTITY         = /^&[a-zA-Z0-9]+;/
 
     TAG_NAME_STRING             = %Q([A-Za-z][A-Za-z0-9-]*)
     ATTRIBUTE_NAME_STRING       = %Q([a-zA-Z_:][a-zA-Z0-9:._-]*)
@@ -14,7 +15,7 @@ module Markd
     ATTRIBUTE_VALUE_SPEC_STRING = "(?:" + "\\s*=" + "\\s*" + ATTRIBUTE_VALUE_STRING + ")"
     ATTRIBUTE                   = "(?:" + "\\s+" + ATTRIBUTE_NAME_STRING + ATTRIBUTE_VALUE_SPEC_STRING + "?)"
 
-    MAYBE_SPECIAL  = {'#', '`', '~', '*', '+', '_', '=', '<', '>', '-'}
+    MAYBE_SPECIAL  = {'#', '`', '~', '*', '+', '_', '=', '<', '>', '-', '|'}
     THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})[ \t]*$/
 
     ESCAPABLE = /^#{ESCAPABLE_STRING}/
@@ -62,8 +63,32 @@ module Markd
 
     LINK_DESTINATION_BRACES = Regex.new("^(?:[<](?:[^<>\\t\\n\\\\\\x00]|" + ESCAPED_CHAR_STRING + ")*[>])")
 
-    EMAIL_AUTO_LINK = /^<([a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)>/
-    AUTO_LINK       = /^<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*>/i
+    # A valid domain name is:
+    #
+    # segments of alphanumeric characters, underscores (_) and hyphens (-)
+    # separated by periods (.). There must be at least one period, and no
+    # underscores may be present in the last two segments of the domain.
+    #
+    # Alphanumeric characters in this context include emojis.
+    LAST_DOMAIN_SEGMENT   = /(?:[a-zA-Z0-9\-\p{Emoji_Presentation}\-]+)/
+    OTHER_DOMAIN_SEGMENTS = /(?:[a-zA-Z0-9\p{Emoji_Presentation}\-_]+)/
+    # The spec wants to capture greedily, even invalid domain names and then
+    # reject the invalid ones later.
+    # For example: www.xxx._yyy.zzz is never linked because of the
+    # _ in the last segment.
+    DOMAIN_NAME       = /(?:#{OTHER_DOMAIN_SEGMENTS}\.)*#{OTHER_DOMAIN_SEGMENTS}/
+    VALID_DOMAIN_NAME = /^(?:#{OTHER_DOMAIN_SEGMENTS}\.)*(?:#{LAST_DOMAIN_SEGMENT}\.)+#{LAST_DOMAIN_SEGMENT}$/
+    VALID_URL_PATH    = /(?:\/[^\s<]*)?/
+
+    AUTOLINK_PROTOCOLS = /^(?:http|https|ftp):\/\//
+
+    EMAIL_AUTO_LINK          = /^<([a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)>/
+    EXTENDED_EMAIL_AUTO_LINK = /^([a-zA-Z0-9][a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)[-_]*/
+    AUTO_LINK                = /^<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*>/i
+    WWW_AUTO_LINK            = /^www\.#{DOMAIN_NAME}#{VALID_URL_PATH}/
+    XMPP_AUTO_LINK           = /^xmpp:[A-Za-z0-9]+@#{DOMAIN_NAME}#{VALID_URL_PATH}/
+    MAILTO_AUTO_LINK         = /^mailto:[A-Za-z0-9]+@#{DOMAIN_NAME}/
+    PROTOCOL_AUTO_LINK       = /#{AUTOLINK_PROTOCOLS}#{DOMAIN_NAME}#{VALID_URL_PATH}[^\s?!.,:*_~]/
 
     WHITESPACE_CHAR = /^[ \t\n\x0b\x0c\x0d]/
     WHITESPACE      = /[ \t\n\x0b\x0c\x0d]+/
@@ -74,6 +99,42 @@ module Markd
     UNSAFE_DATA_PROTOCOL = /^data:image\/(?:png|gif|jpeg|webp)/i
 
     CODE_INDENT = 4
+
+    GFM_DISALLOWED_HTML_TAGS = %w[title textarea style xmp iframe noembed noframes script plaintext]
+
+    # Written without a possessive quantifier or a lookbehind so it runs on
+    # every Regex engine (Mica never backtracks). A cell separator, a `|` not
+    # preceded by a backslash, is found by `.table_cell_separator?` and
+    # `.split_table_cells`.
+    TABLE_HEADING_SEPARATOR = /^(\|?\s*:{0,1}-:{0,1}\s*)+(\||\s*)$/
+
+    # Whether *line* has a `|` that is not preceded by a backslash.
+    def self.table_cell_separator?(line : String) : Bool
+      previous = nil
+      line.each_char do |char|
+        return true if char == '|' && previous != '\\'
+        previous = char
+      end
+      false
+    end
+
+    # Splits *line* at every `|` that is not preceded by a backslash.
+    def self.split_table_cells(line : String) : Array(String)
+      cells = [] of String
+      cell_start = 0
+      previous = nil
+      line.each_char_with_index do |char, index|
+        if char == '|' && previous != '\\'
+          cells << line[cell_start...index]
+          cell_start = index + 1
+        end
+        previous = char
+      end
+      cells << line[cell_start..]
+      cells
+    end
+
+    ADMONITION_START = /^> \[!((?:NOTE|TIP|IMPORTANT|CAUTION|WARNING)+)](\s*.*)?$/
 
     # Match Value
     #

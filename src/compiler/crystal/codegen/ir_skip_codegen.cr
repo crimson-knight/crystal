@@ -300,7 +300,7 @@ class Crystal::CodeGenVisitor
       in .check_proc_is_not_closure?
         check_proc_is_not_closure_fun_in_main
       in .class_name_map?
-        @uses_type_id_to_class_name_map = true
+        @needs_typeinfo = true
       in .c_malloc?
         fetch_typed_fun(@main_mod, "malloc") do
           LLVM::Type.function([main_llvm_context_size_t], @main_llvm_context.void_pointer)

@@ -7,6 +7,34 @@ private def requestize(string)
   string.gsub('\n', "\r\n")
 end
 
+private class IOWithAddresses < IO
+  property local_address : Socket::Address?
+  property remote_address : Socket::Address?
+
+  def initialize(@io : IO)
+  end
+
+  def read(bytes : Bytes) : Int32
+    @io.read(bytes)
+  end
+
+  def write(bytes : Bytes) : Nil
+    @io.write(bytes)
+  end
+
+  def close : Nil
+    @io.close
+  end
+
+  def closed? : Bool
+    @io.closed?
+  end
+
+  def flush : Nil
+    @io.flush
+  end
+end
+
 describe HTTP::Server::RequestProcessor do
   it "works" do
     processor = HTTP::Server::RequestProcessor.new do |context|
@@ -478,6 +506,58 @@ describe HTTP::Server::RequestProcessor do
     logs.entry.context.should be_empty
     logs.check :info, "after"
     logs.entry.context[:foo].should eq "bar"
+  end
+
+  it "sets local_address and remote_address" do
+    processor = HTTP::Server::RequestProcessor.new do |context|
+      context.response.print context.local_address
+      context.response.print "\r\n"
+      context.response.print context.remote_address
+    end
+
+    output = IO::Memory.new
+    io = IOWithAddresses.new(
+      IO::Stapled.new(
+        IO::Memory.new("GET / HTTP/1.1\r\n\r\n"),
+        output,
+      )
+    )
+    io.local_address = Socket::IPAddress.new("0.0.0.0", 12345)
+    io.remote_address = Socket::IPAddress.new("1.2.3.4", 5678)
+    processor.process(io)
+    output.rewind
+    output.gets_to_end.should eq(requestize(<<-HTTP
+      HTTP/1.1 200 OK
+      Connection: keep-alive
+      Content-Length: 27
+
+      0.0.0.0:12345
+      1.2.3.4:5678
+      HTTP
+    ))
+  end
+
+  it "uses upgrade handler" do
+    upgrade_handler = Proc(IO, Nil).new do |io|
+      message = io.gets.try(&.upcase) || "(nil)"
+      io.puts message
+    end
+
+    processor = HTTP::Server::RequestProcessor.new do |context|
+      context.response.upgrade_handler = upgrade_handler
+    end
+
+    input = IO::Memory.new("GET / HTTP/1.1\r\n\r\nfoobar")
+    output = IO::Memory.new
+    processor.process(input, output)
+    output.to_s.should eq <<-HTTP
+      HTTP/1.1 200 OK\r
+      Connection: keep-alive\r
+      Content-Length: 0\r
+      \r
+      FOOBAR
+
+      HTTP
   end
 
   describe "upgrade" do

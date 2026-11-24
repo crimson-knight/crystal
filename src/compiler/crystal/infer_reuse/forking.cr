@@ -15,8 +15,9 @@ module Crystal::InferReuse
   # The build server runs with one scheduler thread (`CRYSTAL_WORKERS=1`, see
   # `Server`), so the forked child, which keeps only the calling thread, has
   # every scheduler it needs. The child gets a new event loop, its own signal
-  # pipe and an empty child-process table, as `Process.fork` gives a program
-  # built without multithreading. The collector marks on one thread in the
+  # pipe and an empty child-process table, as `Process.fork` gave a program
+  # built without multithreading (Crystal 1.22 dropped `Process.fork`; these
+  # hooks stay for this fork alone). The collector marks on one thread in the
   # child (Boehm GC turns parallel marking off in a forked child) until it
   # calls `.mark_in_parallel`.
   def self.fork_process : LibC::PidT?

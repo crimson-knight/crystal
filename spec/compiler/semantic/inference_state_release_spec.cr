@@ -45,6 +45,7 @@ private def semantic_without_release(code : String) : SemanticResult
   program = Program.new
   program.color = false
   program.release_inference_state = false
+  program.define_crystal_constants
   node = parse(code).as(Expressions)
   node.expressions.unshift(Crystal::Require.new("primitives"))
   node = program.semantic(program.normalize(node))
@@ -539,6 +540,7 @@ describe "MainVisitor#release_local_var_lists" do
     program = Program.new
     program.release_local_var_lists = false
     program.color = false
+    program.define_crystal_constants
     node = parse(code).as(Expressions)
     node.expressions.unshift(Crystal::Require.new("primitives"))
     node = program.semantic(program.normalize(node))

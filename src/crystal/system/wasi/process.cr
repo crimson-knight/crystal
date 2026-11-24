@@ -80,14 +80,6 @@ struct Crystal::System::Process
     raise NotImplementedError.new("Process.times: process timing is not available in the WASM sandbox. WASI does not support process management.")
   end
 
-  def self.fork
-    raise NotImplementedError.new("Process.fork: process spawning is not available in the WASM sandbox. WASI does not support process management.")
-  end
-
-  def self.fork(&)
-    raise NotImplementedError.new("Process.fork: process spawning is not available in the WASM sandbox. WASI does not support process management.")
-  end
-
   def self.prepare_args(command : String, args : Enumerable(String)?, shell : Bool) : NoReturn
     raise NotImplementedError.new("Process.new: process spawning is not available in the WASM sandbox. WASI does not support process management.")
   end

@@ -257,7 +257,7 @@ module Crystal
         end
 
         range.each_with_index do |element, index|
-          @vars[element_var.name] = NumberLiteral.new(element)
+          @vars[element_var.name] = element
           if index_var
             @vars[index_var.name] = NumberLiteral.new(index)
           end

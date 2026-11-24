@@ -39,6 +39,15 @@ class Crystal::CodeGenVisitor
   end
 
   private def resolve_target_def_fun(target_def, self_type, declares_in_current_module : Bool) : LLVMTypedFunction?
+    # A lib fun or LLVM intrinsic has no body, so a declaration in the module
+    # code is being generated into is all a call needs; nothing is generated
+    # for it, so a replayed trace (see `IrSkip`) asks for nothing. Declaring
+    # it in its lib's module (the main module) and copying the declaration
+    # over fails for a parameter with a `range` attribute (upstream #17637).
+    if target_def.is_a?(External)
+      return declares_in_current_module ? declare_external_in_current_module(target_def, self_type) : nil
+    end
+
     if (sharing = @owner_shape_sharing) && (representative = sharing.representative?(target_def))
       unless self_type.same?(target_def.owner)
         raise "BUG: #{target_def.name} shares the function of another def but is called with self type #{self_type} instead of its owner #{target_def.owner}"
@@ -119,6 +128,21 @@ class Crystal::CodeGenVisitor
     declared_fun = declares_in_current_module ? check_mod_fun(self_type_module_info, mangled_name, func) : nil
     unpin_module(self_type_module_info)
     declared_fun
+  end
+
+  # Declares the lib fun or LLVM intrinsic *target_def* in the module code is
+  # being generated into, from its signature.
+  private def declare_external_in_current_module(target_def : External, self_type) : LLVMTypedFunction
+    mangled_name = target_def.mangled_name(@program, self_type)
+    if existing_fun = typed_fun?(@module_info, mangled_name)
+      return existing_fun
+    end
+
+    with_cloned_context do
+      context.type = self_type
+      codegen_fun_signature(mangled_name, target_def, self_type, false, false)
+      LLVMTypedFunction.new(context.fun_type, context.fun)
+    end
   end
 
   # A function whose generation was put off (see `defers_generation_of?`).
@@ -421,7 +445,7 @@ class Crystal::CodeGenVisitor
           accept target_def.body
         end
 
-        codegen_return(target_def)
+        codegen_return target_def.body.type?, target_def
 
         br_from_alloca_to_entry
       end
@@ -534,34 +558,6 @@ class Crystal::CodeGenVisitor
       release_typed_body(typed_def)
       sharing.stats.released_bodies += 1
     end
-  end
-
-  def codegen_return(target_def : Def)
-    # Check if this def must use the C calling convention and the return
-    # value must be either casted or passed by sret
-    if target_def.c_calling_convention? && target_def.abi_info?
-      return_type = target_def.body.type
-      if return_type.proc?
-        @last = check_proc_is_not_closure(@last, return_type)
-      end
-
-      abi_info = abi_info(target_def)
-      abi_ret_type = abi_info.return_type
-      if cast = abi_ret_type.cast
-        casted_last = pointer_cast @last, cast.pointer
-        last = load cast, casted_last
-        ret last
-        return
-      end
-
-      if (attr = abi_ret_type.attr) && attr == LLVM::Attribute::StructRet
-        store load(llvm_type(return_type), @last), context.fun.params[0]
-        ret
-        return
-      end
-    end
-
-    codegen_return target_def.body.type?
   end
 
   def codegen_fun_signature(mangled_name, target_def, self_type, is_fun_literal, is_closure)
