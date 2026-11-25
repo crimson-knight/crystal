@@ -115,18 +115,24 @@ class Fiber
   # Set up the fiber's stack for Asyncify-based context switching.
   #
   # Memory layout per fiber:
-  #   +--------+---------------------------+------------------------+
-  #   | Header | Asyncify buffer =>        |               <= Stack |
-  #   +--------+---------------------------+------------------------+
-  #   ^        ^                                                    ^
-  #   stack_low  (+ 16 bytes)                                  stack_ptr
+  #   +--------+--------------------+--------------------------------+
+  #   | Header | Asyncify buffer => |              <= Shadow stack   |
+  #   +--------+--------------------+--------------------------------+
+  #   ^        ^                    ^                                ^
+  #   stack_low  (+ 16 bytes)       asyncify end               stack_ptr
   #
   # The header (16 bytes) stores fiber_main and asyncify buffer pointers.
-  # The asyncify buffer grows upward from after the header.
-  # The shadow stack grows downward from stack_ptr.
+  # The asyncify buffer grows upward from after the header into the lower
+  # quarter of the region. The fiber's shadow stack (the `__stack_pointer`
+  # stack in linear memory, where LLVM keeps address-taken locals and
+  # `--spill-pointers` keeps pointers) grows downward from stack_ptr through
+  # the rest. A fiber runs on its own shadow stack, so another fiber never
+  # writes over the frames of a suspended one, and the collector scans those
+  # frames from `stack_top` to the stack's bottom.
   def makecontext(stack_ptr, fiber_main) : Nil
     @context.stack_low = @stack.pointer
     @context.stack_top = stack_ptr.as(Void*)
+    asyncify_end = @stack.pointer + (stack_ptr.as(Void*).address - @stack.pointer.address) // 4
 
     # Set up the header at the bottom of the memory region
     header = @context.ctx_data_ptr
@@ -140,7 +146,7 @@ class Fiber
     asyncify_data = @context.asyncify_data_ptr
     asyncify_data.value = LibAsyncify::Data.new(
       current_location: Pointer(Void).null,
-      end_location: stack_ptr.as(Void*)
+      end_location: asyncify_end.align_down(16)
     )
 
     @context.resumable = 1
@@ -180,6 +186,11 @@ class Fiber
       current_location: current_context.value.stack_low + 16,
       end_location: current_asyncify.value.end_location
     )
+
+    # The unwind leaves the shadow stack as it is, so the fiber's frames stay
+    # between this point and its stack's bottom while it is suspended:
+    # `_start` resumes it from here, and the collector scans from here.
+    current_context.value.stack_top = LibShadowStack.stacksave
 
     # Unwind the current fiber via the C helper.
     # During rewind, the C helper calls stop_rewind and this call

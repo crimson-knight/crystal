@@ -41,6 +41,16 @@ lib LibAsyncify
   end
 end
 
+# LLVM's stack intrinsics, which the wasm32 backend lowers to `global.get` and
+# `global.set` of `__stack_pointer`, the top of the running fiber's shadow
+# stack in linear memory. Call them directly where the value is needed: in an
+# unoptimized build a method wrapped around them has a stack frame of its own,
+# and its epilogue would set `__stack_pointer` back.
+lib LibShadowStack
+  fun stacksave = "llvm.stacksave.p0" : Void*
+  fun stackrestore = "llvm.stackrestore.p0"(pointer : Void*)
+end
+
 # Wrapper functions provided by asyncify_helper.wasm (merged post-asyncify).
 # These call the real asyncify runtime functions (asyncify_start_unwind, etc.)
 # which are created by wasm-opt's asyncify pass.
@@ -63,18 +73,6 @@ module Crystal::Asyncify
 
   def self.state : State
     @@state
-  end
-
-  # Read the WASM __stack_pointer global via inline assembly
-  def self.stack_pointer : Void*
-    ptr = Pointer(Void).null
-    asm("global.get __stack_pointer" : "=r"(ptr))
-    ptr
-  end
-
-  # Write the WASM __stack_pointer global via inline assembly
-  def self.stack_pointer=(value : Void*)
-    asm("local.get $0\0Aglobal.set __stack_pointer" :: "r"(value))
   end
 
   @@next_fiber : Fiber? = nil

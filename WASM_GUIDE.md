@@ -121,40 +121,42 @@ work. The stack is placed first in linear memory (`--stack-first`) with 8MB to
 prevent silent heap corruption.
 
 **How GC scanning works on WASM**: Boehm GC performs conservative stack scanning
-over the linear memory stack. On native platforms, GC must also scan CPU registers
-for live pointers. On WASM, there are no directly accessible CPU registers --
-instead, values live in WASM locals (a virtual register file). However, LLVM
-naturally spills most values to the linear memory stack during compilation, so the
-conservative stack scan catches the majority of live pointers without special
-handling.
+over the linear memory stack (the shadow stack, which `__stack_pointer` points
+into). On native platforms, GC must also scan CPU registers for live pointers.
+On WASM, there are no directly accessible CPU registers: values live in WASM
+locals (a virtual register file) that no code can scan. In an optimized build
+LLVM keeps most pointers in locals, so an object whose only reference is a
+local would be invisible to the collector and freed while still in use.
 
-**When `--spill-pointers` runs**: in a build without fibers
-(`-Dfrontend_no_fibers`) that has a collector, the post-link step runs it, so
-every root is visible. The reasons below still keep it off for fiber builds;
-with `-Dgc_none` there is nothing to scan, so it is skipped.
+**`--spill-pointers` runs in every build with a collector**: the post-link step
+runs Binaryen's `--spill-pointers`, which stores every pointer-sized local that
+is live across a call on the shadow stack before the call, so the scan sees it.
+It runs with or without fibers, and is skipped only with `-Dgc_none`, where
+there is nothing to scan. In a build with fibers it runs first, in the same
+`wasm-opt` run as `--asyncify` and before it: to asyncify the frame it reserves
+is ordinary code, like the frame LLVM reserves, so an unwind leaves the frame in
+place for the suspended fiber and a rewind restores the local that points at
+it. (Run after asyncify, it would also instrument asyncify's own unwind and
+rewind paths, the combination emscripten/emscripten#18251 warns about.) The two
+passes share one run because `wasm-opt` drops the name section when it writes a
+module, and asyncify finds `_start`, the boundary it must leave alone, by name.
 
-**Why `--spill-pointers` is disabled with fibers**: Binaryen provides a `--spill-pointers`
-pass that forces all pointer-typed WASM locals onto the linear memory stack,
-ensuring GC can find every root. Crystal has this pass disabled because:
+**Each fiber has its own shadow stack**: a spawned fiber's stack region holds a
+16-byte header, its asyncify buffer in the lower quarter, and its shadow stack,
+which grows down from the top through the rest. `swapcontext` records
+`__stack_pointer` as the fiber's `stack_top` before it unwinds, and `_start`
+sets `__stack_pointer` to the next fiber's `stack_top` before it starts or
+rewinds that fiber. Another fiber therefore never writes over the frames of a
+suspended one, and the collector scans the running fiber's shadow stack (the
+scheduler sets the collector's stack bottom to it) and each suspended fiber's
+from `stack_top` to the stack's bottom.
 
-1. It has known bugs (incorrect stack frame sizing, breaks at `-O1`)
-2. It is incompatible with Asyncify -- running both passes together produces
-   incorrect output (confirmed by the Binaryen maintainer in
-   emscripten/emscripten#18251)
-3. Crystal uses Asyncify for fiber switching, so the two cannot coexist
-
-**Recommended long-term fix**: Emscripten's approach uses `emscripten_scan_registers`,
-which triggers an Asyncify unwind to capture all live WASM locals into linear
-memory, then scans them. This is compatible with Asyncify because it uses the
-same mechanism rather than fighting it. Implementing an equivalent in Crystal's
-GC integration would guarantee all roots are visible to the collector.
-
-**When you might see GC issues**: In practice, GC works reliably because LLVM
-spills aggressively. A theoretical risk exists when a pointer is held only in a
-WASM local (never spilled to the linear memory stack) during a GC collection.
-This is rare -- it would require heavy allocation pressure where the sole
-reference to a live object exists only in a WASM local at the exact moment GC
-runs.
+**Cost**: on Deck Designer's wasm core (`--release --no-debug`, fibers on), the
+module grows from 1,448,587 to 2,130,236 bytes (542,999 to 677,035 gzipped),
+and its 300-call replay takes about 760 ms, against about 345 ms for the same
+core built with `-Dfrontend_no_fibers` (1,239,074 bytes, 298,022 gzipped). A
+program that never switches fibers should still build with
+`-Dfrontend_no_fibers`, which skips asyncify.
 
 ### Fibers and Channels
 
@@ -333,8 +335,9 @@ LLVM IR → WASM Object (.o)
     ▼  wasm-ld (links wasi-libc, libgc, libpcre2, etc.)
 Linked WASM Module (.wasm) — uses legacy exception handling format
     │
-    ▼  wasm-opt --asyncify (Binaryen)
-Asyncify-instrumented WASM — fiber switching enabled
+    ▼  wasm-opt --spill-pointers --asyncify (Binaryen; one run, spill first;
+    │  --spill-pointers only with a collector)
+Asyncify-instrumented WASM — fiber switching enabled, pointers visible to the GC
     │
     ▼  wasm-merge (Binaryen)
 Merged WASM — asyncify_helper.wasm combined with main module
@@ -342,15 +345,14 @@ Merged WASM — asyncify_helper.wasm combined with main module
     ▼  wasm-opt --translate-to-exnref (Binaryen)
 WASM using the modern try_table/exnref exception format
     │
-    ▼  wasm-opt --spill-pointers (only without fibers, and only with a collector)
-    │
     ▼  wasm-opt -O1/-O2/-O3/-Os/-Oz (the compiler's optimization level; none at -O0)
 Final WASM
 ```
 
 Without fibers (`-Dfrontend_no_fibers`) the asyncify and wasm-merge steps are
-skipped. The last pass uses the same level as the compiler (`--release` is
-`-O3`), so a release module gets a final `wasm-opt -O3`.
+skipped, and the first run is `--spill-pointers` alone. The last pass uses
+the same level as the compiler (`--release` is `-O3`), so a release module
+gets a final `wasm-opt -O3`.
 
 **Why legacy EH then translate?** Binaryen's Asyncify pass doesn't yet support
 the new `try_table`/`exnref` instructions. The workaround is: compile with

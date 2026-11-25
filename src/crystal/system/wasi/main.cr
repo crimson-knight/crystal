@@ -72,6 +72,11 @@ end
       # triggers an asyncify unwind, and _start handles actual execution.
       next_fiber.@context.resumable = 0
 
+      # Run the fiber on its own shadow stack: from the top of its stack when
+      # it is fresh, or from where swapcontext left it. A rewind does not
+      # reserve stack frames again; the rewound functions find theirs there.
+      LibShadowStack.stackrestore(next_fiber.@context.stack_top)
+
       if Crystal::Asyncify.fiber_fresh?(next_fiber)
         # Fresh fiber: start it for the first time
         Crystal::Asyncify.prepare_fresh(next_fiber)

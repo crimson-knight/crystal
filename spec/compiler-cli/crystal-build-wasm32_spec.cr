@@ -158,6 +158,35 @@ describe "`crystal build --target wasm32-wasi`" do
       run.output.lines.first.should contain("INFO - logging works")
     end
   end
+  # In an optimized build, LLVM keeps most pointers in WebAssembly locals,
+  # which Boehm's conservative scan cannot see. `wasm-opt --spill-pointers`
+  # stores them on the shadow stack, and each fiber needs a shadow stack of
+  # its own so another fiber does not write over the spilled pointers of a
+  # suspended one. Without both, the collector frees chains the fixture still
+  # walks, and the walk finds other objects in their place.
+  it "keeps objects referenced only from locals alive across collections, with fibers" do
+    if reason = missing_wasm32_run_tools
+      pending!("needs a wasm32 toolchain and host: #{reason}")
+    end
+    pending!("wasm-opt is not on PATH") unless Process.find_executable("wasm-opt")
+
+    with_tempfile("wasm32-gc-locals.wasm") do |program_path|
+      build = Process.capture_result(crystal, "build", "--target", "wasm32-wasi",
+        "-Dwithout_mt", "-Dwithout_iconv", "-Dwithout_openssl", "-Dwithout_zlib", "--release",
+        "-o", program_path, fixture_path("wasm32-gc-locals.cr"),
+        env: {"CRYSTAL_LIBRARY_PATH" => WASM32_LIBRARY_PATH})
+      build.should(be_success)
+
+      run = Process.capture_result("deno", "run", "--allow-read",
+        fixture_path("wasi-host-no-args.mjs"), program_path)
+      run.output.lines.should eq([
+        "main fiber: 60 of 60 chains intact",
+        "spawned fibers: 240 of 240 chains intact",
+      ])
+      run.should(be_success)
+    end
+  end
+
   it "builds a lean release module with no home paths and under its size ceiling" do
     if reason = missing_wasm32_link_tools
       pending!("needs a wasm32 toolchain: #{reason}")
