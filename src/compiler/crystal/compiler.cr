@@ -928,11 +928,14 @@ module Crystal
       if ir_skip_session
         summarize_ir_skip(ir_skip_session, llvm_modules)
         print_ir_skip_stats(ir_skip_session)
-        # The main module is generated in every build, and the moment it
-        # gets a declaration (a lib fun, a callee) depends on which functions
-        # were skipped. In name order, its bitcode does not.
+        # The main module is generated in every build, and the moment it gets
+        # a function, a class variable or a declaration (a lib fun, a callee,
+        # another module's type id) depends on which functions IR skip
+        # generated again. In name order, its bitcode does not. (Out of order,
+        # the main module of amber300 was compiled again, 13 s at -O3, on the
+        # first routes edit after a model edit, and on some body edits.)
         if (main_module_info = llvm_modules[""]?) && main_module_info.resident?
-          main_module_info.mod.sort_function_declarations_by_name
+          main_module_info.mod.sort_by_name
         end
       end
 
@@ -1744,8 +1747,14 @@ module Crystal
     getter main_part_outcomes = {} of String => String
     @main_part_outcomes_lock = Sync::Mutex.new
 
+    # What happened to the main module object in the last build, if its
+    # bitcode changed.
+    getter main_module_outcome : String?
+
     def print_main_module_outcome(unit_name : String, outcome : String, seconds : Float64) : Nil
-      unless unit_name == "_main"
+      if unit_name == "_main"
+        @main_module_outcome = outcome
+      else
         @main_part_outcomes_lock.synchronize { @main_part_outcomes[unit_name] = outcome }
       end
       return unless @progress_tracker.stats?

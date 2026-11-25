@@ -182,6 +182,41 @@ void LLVMExtSortFunctionDeclarationsByName(LLVMModuleRef M) {
     functions.splice(functions.end(), functions, function->getIterator());
 }
 
+// Orders the module's functions and global variables by name, definitions
+// first and then declarations, so that its bitcode does not depend on the
+// order they were made in. (Unnamed ones keep their order.)
+void LLVMExtSortModuleByName(LLVMModuleRef M) {
+  Module &module = *unwrap(M);
+  auto comes_first = [](GlobalValue *a, GlobalValue *b) {
+    if (a->isDeclaration() != b->isDeclaration())
+      return !a->isDeclaration();
+    return a->getName() < b->getName();
+  };
+
+  std::vector<Function *> functions;
+  for (Function &function : module)
+    functions.push_back(&function);
+  llvm::stable_sort(functions, comes_first);
+  auto &function_list = module.getFunctionList();
+  for (Function *function : functions)
+    function_list.splice(function_list.end(), function_list, function->getIterator());
+
+  std::vector<GlobalVariable *> globals;
+  for (GlobalVariable &global : module.globals())
+    globals.push_back(&global);
+  llvm::stable_sort(globals, comes_first);
+#if LLVM_VERSION_MAJOR >= 17
+  for (GlobalVariable *global : globals) {
+    module.removeGlobalVariable(global);
+    module.insertGlobalVariable(global);
+  }
+#else
+  auto &global_list = module.getGlobalList();
+  for (GlobalVariable *global : globals)
+    global_list.splice(global_list.end(), global_list, global->getIterator());
+#endif
+}
+
 // Whether `LLVMExtSplitModuleToBitcode` can split this module: it needs
 // LLVM 17 or later, and a module without module-level assembly, which
 // SplitModule cannot keep consistent across parts.

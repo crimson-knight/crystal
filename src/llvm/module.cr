@@ -91,6 +91,13 @@ class LLVM::Module
     LibLLVMExt.sort_function_declarations_by_name(self)
   end
 
+  # Orders the functions and the global variables by name, definitions
+  # first and then declarations, so the bitcode does not depend on the
+  # order they were made in.
+  def sort_by_name : Nil
+    LibLLVMExt.sort_by_name(self)
+  end
+
   def can_be_split? : Bool
     LibLLVMExt.module_can_be_split(self) != 0
   end

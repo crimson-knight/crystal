@@ -36,6 +36,7 @@ lib LibLLVMExt
   fun set_wasm_exception_handling = LLVMExtSetWasmExceptionHandling(t : LibLLVM::TargetMachineRef)
 
   fun sort_function_declarations_by_name = LLVMExtSortFunctionDeclarationsByName(m : LibLLVM::ModuleRef)
+  fun sort_by_name = LLVMExtSortModuleByName(m : LibLLVM::ModuleRef)
 
   fun module_can_be_split = LLVMExtModuleCanBeSplit(m : LibLLVM::ModuleRef) : LibLLVM::Bool
   fun split_module_to_bitcode = LLVMExtSplitModuleToBitcode(m : LibLLVM::ModuleRef, parts : UInt,
