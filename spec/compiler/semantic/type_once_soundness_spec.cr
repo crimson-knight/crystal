@@ -423,8 +423,15 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         class Post < Model
         end
 
-        model : Model = Post.new
-        model.touch(Post.new)
+        class Holder
+          @model : Model = Post.new
+
+          def model : Model
+            @model
+          end
+        end
+
+        Holder.new.model.touch(Post.new)
         ), "Model+"
     end
 
@@ -453,9 +460,17 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         class PostScopes < Builder(Post)
         end
 
-        builder : Builder(Post) = PostScopes.new
+        class Holder
+          @builder : Builder(Post) = PostScopes.new
+
+          def builder : Builder(Post)
+            @builder
+          end
+        end
+
+        builder = Holder.new.builder
         {builder.where(Post.new), builder.first?}
-        ), "Tuple(Builder(Post)+, (Builder(Post)+ | Nil))"
+        ), "Tuple(Builder(Post)+, Builder(Post)+)"
     end
 
     # Grant's class-level finders: a model with subclasses is `Model.class+`
@@ -469,17 +484,28 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
           end
 
           @[TypeOnce]
-          def self.build_all(template : Model) : Array(self)
-            [new]
+          def self.build_box(template : Model) : Box(self)
+            Box(self).new
           end
         end
 
         class Post < Model
         end
 
-        model_class : Model.class = Post
-        {model_class.build(Post.new), model_class.build_all(Post.new)}
-        ), "Tuple(Model+, Array(Model+))"
+        class Box(T)
+        end
+
+        class Holder
+          @model_class : Model.class = Post
+
+          def model_class : Model.class
+            @model_class
+          end
+        end
+
+        model_class = Holder.new.model_class
+        {model_class.build(Post.new), model_class.build_box(Post.new)}
+        ), "Tuple(Model+, Box(Model+))"
     end
   end
 end
