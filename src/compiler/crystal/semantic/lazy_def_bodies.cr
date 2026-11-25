@@ -47,13 +47,19 @@ module Crystal
       setting = @lazy_def_bodies_setting
       setting = Program.lazy_def_bodies_default_setting if setting.nil?
       return false if setting == false || (setting.nil? && Program.lazy_def_bodies_mode == "0")
-      return false if wants_doc? || infer_reuse_record
+      return false if wants_doc? || infer_reuse_record || Program.lazy_def_bodies_blocked_by_type_reuse?
       if compiler = self.compiler
         !compiler.incremental?
       else
         setting == true || Program.lazy_def_bodies_mode == "verify"
       end
     end
+
+    # The build server, its verification and persisted type inference
+    # compare typed programs across processes; a body parsed again gets new
+    # numbers for the variables the compiler makes up (`__temp_12`), which
+    # those comparisons see.
+    class_getter? lazy_def_bodies_blocked_by_type_reuse : Bool = {"CRYSTAL_INFER_REUSE", "CRYSTAL_INFER_REUSE_DIGEST", "CRYSTAL_INFER_PERSIST"}.any? { |name| ENV[name]?.presence }
 
     property lazy_def_bodies_dropped = 0
     property lazy_def_bodies_parsed_again = 0
