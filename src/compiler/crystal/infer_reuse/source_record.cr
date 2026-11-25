@@ -25,6 +25,11 @@ module Crystal::InferReuse
     record ProgramRun, filename : String, list_of_arguments : Array(String), output : String?
     getter list_of_program_runs = [] of ProgramRun
 
+    # When the build that typed the program read its sources, or a later
+    # build that reused it compared them: a file modified after this moment
+    # may hold something the program has not seen (see `Retyper`).
+    property sources_checked_at : Time = Time.utc
+
     # Why no later build may reuse this program (a macro read something this
     # record cannot compare), or `nil`.
     getter blocked_reason : String?
