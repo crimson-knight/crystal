@@ -47,14 +47,14 @@ private def registry_source : String
     CRYSTAL
 end
 
-private def program_source(list_of_paths : Array(String)) : String
+private def program_source(list_of_paths : Array(String), inserted : Bool) : String
   <<-CRYSTAL
     require "./registry"
 
     count = 0
     registry = Registry.new
     registry.draw("main") do
-    #{routes_source(list_of_paths)}
+    #{inserted ? %(    add("/inserted", ->(value : Int32) { value &* 0 })\n) : ""}#{routes_source(list_of_paths)}
       maybe = ARGV[0]? == "nil" ? nil : "kept"
       add(maybe || "none", ->(value : Int32) { value })
     end
@@ -73,8 +73,9 @@ private def program_source(list_of_paths : Array(String)) : String
 end
 
 # The output a program of *list_of_paths* prints, computed in Crystal.
-private def expected_output(list_of_paths : Array(String), *, boom : Bool = false) : String
+private def expected_output(list_of_paths : Array(String), *, boom : Bool = false, inserted : Bool = false) : String
   list_of_entries = [] of String
+  list_of_entries << "/inserted=0" if inserted
   count = 0
   add_routes = ->(list_of_drawn : Array(String)) do
     list_of_drawn.each_with_index do |path, index|
@@ -99,6 +100,7 @@ end
 private class MainPartsProgram
   getter directory : String
   getter list_of_paths : Array(String)
+  getter? inserted = false
   @edit_count = 0
 
   def initialize(@directory : String)
@@ -106,6 +108,11 @@ private class MainPartsProgram
     @list_of_paths = list_of_initial_paths
     File.write(File.join(@directory, "registry.cr"), registry_source)
     write_program
+  end
+
+  def inserted=(@inserted : Bool) : Bool
+    write_program
+    @inserted
   end
 
   def program : String
@@ -122,7 +129,7 @@ private class MainPartsProgram
   end
 
   private def write_program : Nil
-    File.write(program, program_source(@list_of_paths))
+    File.write(program, program_source(@list_of_paths, @inserted))
     @edit_count += 1
     File.touch(program, Time.utc + (@edit_count * 5).seconds)
   end
@@ -199,7 +206,7 @@ describe "Code gen: top-level code in parts" do
 
       list_of_compiled = compiler.main_part_outcomes.select { |_, outcome| outcome.starts_with?("compiled") }
       # The edited route is in one part of each of the three blocks.
-      list_of_compiled.size.should be <= 3
+      list_of_compiled.size.should be <= 3, compiler.main_part_outcomes.inspect
       main_parts_program.part_objects.size.should be > 4
       main_parts_program.output.should eq(expected_output(list_of_paths))
     end
@@ -208,16 +215,16 @@ describe "Code gen: top-level code in parts" do
   it "patches the parts below a statement added at the top" do
     with_main_parts_program("main_parts_insert") do |main_parts_program|
       main_parts_program.build
-      list_of_paths = ["/inserted"] + main_parts_program.list_of_paths
-      main_parts_program.list_of_paths = list_of_paths
+      list_of_paths = main_parts_program.list_of_paths
+      main_parts_program.inserted = true
       compiler = main_parts_program.build
 
       list_of_compiled = compiler.main_part_outcomes.select { |_, outcome| outcome.starts_with?("compiled") }
       list_of_patched = compiler.main_part_outcomes.select { |_, outcome| outcome.includes?("patched") }
-      list_of_compiled.size.should be <= 3
-      list_of_patched.size.should be > 0
-      main_parts_program.output.should eq(expected_output(list_of_paths))
-      main_parts_program.output(["boom"]).should eq(expected_output(list_of_paths, boom: true))
+      list_of_compiled.size.should be <= 3, compiler.main_part_outcomes.inspect
+      list_of_patched.size.should be > 0, compiler.main_part_outcomes.inspect
+      main_parts_program.output.should eq(expected_output(list_of_paths, inserted: true))
+      main_parts_program.output(["boom"]).should eq(expected_output(list_of_paths, boom: true, inserted: true))
     end
   end
 end
