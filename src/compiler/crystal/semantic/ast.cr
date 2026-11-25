@@ -673,7 +673,17 @@ module Crystal
   # Every typed def instance and every call with a block holds several of
   # these, and most hold a handful of variables. This is a compact stand-in
   # for `Hash(String, MetaVar)`: up to `SMALL_LIMIT` entries live in one flat
-  # buffer that is searched linearly, and a hash takes over beyond that.
+  # buffer that is searched linearly, and a `Layers` object takes over beyond
+  # that.
+  #
+  # Type inference copies the variables of a scope at every `if`, block and
+  # proc literal (`dup`), and most copies change a few variables or none. A
+  # large map therefore shares one read-only `Base` among its copies and
+  # keeps its own changes in a small overlay, which a copy shares too until
+  # one of them writes (see `Layers`). A copy costs the size of the overlay,
+  # not of the scope: the top-level code of an Amber app with 300 resources
+  # holds 5,000 variables in one block, and copying them all at every route
+  # allocated about 19 GB.
   class MetaVars
     include Enumerable({String, MetaVar})
 
@@ -681,7 +691,204 @@ module Crystal
 
     @size : Int32 = 0
     @entries : Pointer({String, MetaVar}) = Pointer({String, MetaVar}).null
-    @large : Hash(String, MetaVar)?
+    @large : Layers?
+
+    # The read-only entries of a large map, in insertion order, with the
+    # position of each name. Copies of a map share it.
+    class Base
+      getter list_of_entries : Array({String, MetaVar})
+      @index_by_name : Hash(String, Int32)
+
+      def initialize(@list_of_entries : Array({String, MetaVar}))
+        @index_by_name = Hash(String, Int32).new(initial_capacity: @list_of_entries.size)
+        @list_of_entries.each_with_index do |(name, _), index|
+          @index_by_name[name] = index
+        end
+      end
+
+      def size : Int32
+        @list_of_entries.size
+      end
+
+      def index_of(name : String) : Int32?
+        @index_by_name[name]?
+      end
+
+      def []?(name : String) : MetaVar?
+        index = @index_by_name[name]?
+        index ? @list_of_entries[index][1] : nil
+      end
+
+      def has_key?(name : String) : Bool
+        @index_by_name.has_key?(name)
+      end
+    end
+
+    # A large map: a shared `Base` plus this map's own changes to it.
+    #
+    # * `@changed_by_name` holds new values for names of the base (nil: the
+    #   name was deleted).
+    # * `@added_by_name` holds the names that are not live in the base, in
+    #   the order they were added (a deleted base name that is added again
+    #   goes there, at the end, as in a `Hash`).
+    #
+    # A copy shares both overlay hashes until either side writes, and a map
+    # whose overlay outgrows `#flatten_threshold` folds it into a new base of
+    # its own.
+    class Layers
+      getter base : Base
+      @changed_by_name : Hash(String, MetaVar?)?
+      @added_by_name : Hash(String, MetaVar)?
+      @deleted_count : Int32
+      @shares_overlay = false
+      # While an iteration runs, the base stays put (no `flatten`).
+      @iteration_depth = 0
+
+      def initialize(@base : Base, @changed_by_name = nil, @added_by_name = nil, @deleted_count = 0)
+      end
+
+      def self.new(list_of_entries : Array({String, MetaVar})) : self
+        new(Base.new(list_of_entries))
+      end
+
+      def copy : Layers
+        copy = Layers.new(@base, @changed_by_name, @added_by_name, @deleted_count)
+        if @changed_by_name || @added_by_name
+          @shares_overlay = true
+          copy.shares_overlay = true
+        end
+        copy
+      end
+
+      protected setter shares_overlay : Bool
+
+      def size : Int32
+        @base.size - @deleted_count + (@added_by_name.try(&.size) || 0)
+      end
+
+      def []?(name : String) : MetaVar?
+        if (added_by_name = @added_by_name) && (var = added_by_name[name]?)
+          return var
+        end
+        if changed_by_name = @changed_by_name
+          return changed_by_name.fetch(name) { @base[name]? }
+        end
+        @base[name]?
+      end
+
+      def []=(name : String, var : MetaVar) : MetaVar
+        own_overlay
+        added_by_name = @added_by_name
+        if added_by_name && added_by_name.has_key?(name)
+          added_by_name[name] = var
+        elsif @base.has_key?(name) && !deleted?(name)
+          (@changed_by_name ||= Hash(String, MetaVar?).new)[name] = var
+        else
+          (@added_by_name ||= Hash(String, MetaVar).new)[name] = var
+        end
+        flatten if overlay_size > flatten_threshold && @iteration_depth == 0
+        var
+      end
+
+      def delete(name : String) : MetaVar?
+        added_by_name = @added_by_name
+        if added_by_name && added_by_name.has_key?(name)
+          own_overlay
+          return @added_by_name.try &.delete(name)
+        end
+        return unless @base.has_key?(name) && !deleted?(name)
+
+        var = self[name]?
+        own_overlay
+        (@changed_by_name ||= Hash(String, MetaVar?).new)[name] = nil
+        @deleted_count += 1
+        var
+      end
+
+      def each(& : {String, MetaVar} ->) : Nil
+        @iteration_depth += 1
+        begin
+          @base.list_of_entries.each do |entry|
+            name = entry[0]
+            if (changed_by_name = @changed_by_name) && changed_by_name.has_key?(name)
+              var = changed_by_name[name]
+              yield({name, var}) if var
+            else
+              yield entry
+            end
+          end
+          @added_by_name.try &.each { |entry| yield entry }
+        ensure
+          @iteration_depth -= 1
+        end
+      end
+
+      # Yields the entries of this map, in order, except those that are the
+      # same object under the same name in *other*. *other* must share this
+      # map's base: only the names either overlay holds can differ, so the
+      # rest of the base is not looked at.
+      def each_unless_unchanged_in(other : Layers, & : {String, MetaVar} ->) : Nil
+        @iteration_depth += 1
+        begin
+          names = Set(String).new
+          @changed_by_name.try &.each_key { |name| names << name }
+          other.@changed_by_name.try &.each_key { |name| names << name }
+          base = @base
+          names.to_a.sort_by! { |name| base.index_of(name) || -1 }.each do |name|
+            var = self[name]?
+            yield({name, var}) if var && !other[name]?.same?(var)
+          end
+          @added_by_name.try &.each do |entry|
+            yield entry unless other[entry[0]]?.same?(entry[1])
+          end
+        ensure
+          @iteration_depth -= 1
+        end
+      end
+
+      def last_key : String
+        if (added_by_name = @added_by_name) && !added_by_name.empty?
+          return added_by_name.last_key
+        end
+        @base.list_of_entries.reverse_each do |(name, _)|
+          return name unless deleted?(name)
+        end
+        raise Enumerable::EmptyError.new
+      end
+
+      private def deleted?(name : String) : Bool
+        changed_by_name = @changed_by_name
+        !!changed_by_name && changed_by_name.has_key?(name) && changed_by_name[name].nil?
+      end
+
+      private def own_overlay : Nil
+        return unless @shares_overlay
+        @changed_by_name = @changed_by_name.try &.dup
+        @added_by_name = @added_by_name.try &.dup
+        @shares_overlay = false
+      end
+
+      private def overlay_size : Int32
+        (@changed_by_name.try(&.size) || 0) + (@added_by_name.try(&.size) || 0)
+      end
+
+      # An overlay of about twice the square root of the base: a copy then
+      # costs that much, and a write that folds the overlay into a new base
+      # comes once per as many writes.
+      private def flatten_threshold : Int32
+        Math.max(32, 2 * Math.sqrt(@base.size).to_i)
+      end
+
+      private def flatten : Nil
+        list_of_entries = Array({String, MetaVar}).new(size)
+        each { |entry| list_of_entries << entry }
+        @base = Base.new(list_of_entries)
+        @changed_by_name = nil
+        @added_by_name = nil
+        @deleted_count = 0
+        @shares_overlay = false
+      end
+    end
 
     def size : Int32
       large = @large
@@ -716,14 +923,12 @@ module Crystal
       if index = small_index(name)
         @entries[index] = {name, var}
       elsif @size == SMALL_LIMIT
-        large = Hash(String, MetaVar).new(initial_capacity: SMALL_LIMIT * 2)
-        @size.times do |i|
-          key, value = @entries[i]
-          large[key] = value
-        end
-        large[name] = var
+        list_of_entries = Array({String, MetaVar}).new(SMALL_LIMIT + 1)
+        @size.times { |index| list_of_entries << @entries[index] }
+        list_of_entries << {name, var}
         release_entries
-        @large = large
+        @size = 0
+        @large = Layers.new(list_of_entries)
       else
         grow if @size == small_capacity(@size)
         @entries[@size] = {name, var}
@@ -760,6 +965,22 @@ module Crystal
       end
     end
 
+    # Yields the entries of this map, like `each`, except, when both are
+    # copies of one large map, those that are the same object under the same
+    # name in *other*; only the variables either copy changed are looked at.
+    # Otherwise it yields every entry, so the caller must treat a yielded
+    # entry and a left-out one alike when both maps hold the same variable
+    # under its name.
+    def each_unless_unchanged_in(other : MetaVars, & : {String, MetaVar} ->) : Nil
+      large = @large
+      other_large = other.@large
+      if large && other_large && large.base.same?(other_large.base)
+        large.each_unless_unchanged_in(other_large) { |entry| yield entry }
+      else
+        each { |entry| yield entry }
+      end
+    end
+
     def each_key(& : String ->) : Nil
       each { |(name, _)| yield name }
     end
@@ -787,6 +1008,7 @@ module Crystal
       map { |(_, var)| var }
     end
 
+    # A copy that shares a large map's entries until either side changes them.
     def dup : MetaVars
       copy = MetaVars.new
       copy.initialize_copy(self)
@@ -801,7 +1023,7 @@ module Crystal
 
     protected def initialize_copy(other : MetaVars) : Nil
       if large = other.@large
-        @large = large.dup
+        @large = large.copy
       elsif other.@size > 0
         @size = other.@size
         @entries = Pointer({String, MetaVar}).malloc(small_capacity(@size))

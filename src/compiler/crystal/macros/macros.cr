@@ -73,7 +73,7 @@ class Crystal::Program
   end
 
   def parse_macro_source(generated_source, macro_expansion_pragmas, the_macro, node, vars, current_def = nil, inside_type = false, inside_exp = false, visibility : Visibility = :public, &)
-    parser = @program.new_parser(generated_source, var_scopes: [vars.dup])
+    parser = new_macro_parser(generated_source, vars)
     virtual_file = VirtualFile.new(the_macro, generated_source, node.location, @program.macro_source_store)
     @program.virtual_files << virtual_file
     infer_reuse_record.try &.method_list_frames.attach(generated_source, virtual_file)
@@ -89,7 +89,20 @@ class Crystal::Program
     normalize(generated_node, inside_exp: inside_exp, current_def: current_def)
   end
 
-  record MacroRunResult, stdout : String, stderr : String, status : Process::Status
+# *vars* are the names of the local variables in scope, or the variables
+# themselves: the parser then asks them by name, so a scope of thousands of
+# variables is not copied for every macro expanded in it.
+private def new_macro_parser(generated_source : String, vars : Set(String)) : Parser
+  @program.new_parser(generated_source, var_scopes: [vars.dup])
+end
+
+private def new_macro_parser(generated_source : String, vars : MetaVars) : Parser
+  parser = @program.new_parser(generated_source, var_scopes: [Set(String).new])
+  parser.outer_local_var_lookup = ->(name : String) { vars.has_key?(name) }
+  parser
+end
+
+record MacroRunResult, stdout : String, stderr : String, status : Process::Status
 
   {% if flag?(:without_llvm) %}
     # `{{ "{{ run(...) }}".id }}` requires compiling and executing a full
