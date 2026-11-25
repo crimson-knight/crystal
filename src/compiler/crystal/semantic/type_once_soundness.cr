@@ -213,15 +213,22 @@ module Crystal
     end
 
     # `: self` (or a type that holds `self`) as the declared return type of a
-    # typed-once method whose `self` stands for several receivers: each
-    # caller would get its own receiver's type back, and gets the shared one
-    # (`Model+`) instead.
-    private def check_type_once_self_return(a_def : Def, shared_self : Type) : Nil
+    # typed-once method whose shared `self` (*shared_self*, `Model+`) is wider
+    # than this call's own receiver (*own_self*, `Post`): typed for each
+    # receiver, the caller would get its own receiver's type back, and typed
+    # once it gets the shared one instead.
+    #
+    # Where typing once leaves `self` as the caller's receiver (a method of a
+    # generic class called on `Builder(Post)+`, a class method called on
+    # `Model.class+`), the return type resolves the same both ways and the
+    # method is accepted.
+    private def check_type_once_self_return(a_def : Def, defining_type : Type, shared_self : Type, own_self : Type) : Nil
       return_type = a_def.return_type || return
       return unless program.type_once_shared_self?(shared_self)
       finder = SelfRestrictionFinder.new
       return_type.accept(finder)
       return unless finder.found?
+      return unless type_once_self_return_widens?(return_type, defining_type, shared_self, own_self)
 
       declaring = shared_self
       declaring = declaring.instance_type if declaring.is_a?(VirtualMetaclassType)
@@ -229,10 +236,28 @@ module Crystal
       message = String.build do |io|
         io << program.type_once_label(a_def) << " can't declare its return type as '" << return_type << "'"
         io << ": the method is typed once for " << declaring << " and every subclass, so 'self' in the return type is "
-        io << shared_self << " for every caller, where each caller typed for its own receiver gets that receiver's type back."
+        io << shared_self << " for every caller, where each caller typed for its own receiver gets that receiver's type back"
+        io << " (this call's receiver is " << own_self << ")."
         io << " Declare the return type without 'self', or " << program.type_once_opt_out(a_def) << " to type the method for each receiver."
       end
       program.raise_type_once_error(a_def, message)
+    end
+
+    # Whether *return_type* resolves to a different type with `self` as
+    # *shared_self* than with `self` as *own_self*. A return type that does
+    # not resolve either way counts as widened.
+    private def type_once_self_return_widens?(return_type : ASTNode, defining_type : Type, shared_self : Type, own_self : Type) : Bool
+      return false if shared_self.same?(own_self)
+      shared = type_once_resolved_return(return_type, defining_type, shared_self)
+      own = type_once_resolved_return(return_type, defining_type, own_self)
+      return true unless shared && own
+      !shared.same?(own)
+    end
+
+    private def type_once_resolved_return(return_type : ASTNode, defining_type : Type, self_type : Type) : Type?
+      defining_type.lookup_type?(return_type, self_type: self_type.instance_type, allow_typeof: false).try(&.remove_alias)
+    rescue Crystal::CodeError
+      nil
     end
 
     private class SelfRestrictionFinder < Visitor
