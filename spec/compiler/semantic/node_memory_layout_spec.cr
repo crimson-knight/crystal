@@ -138,6 +138,65 @@ describe "MetaVars" do
     end
     seen.should eq(%w(a b))
   end
+
+  it "keeps the order, values and copies of a Hash through any writes" do
+    random = Random.new(20261125)
+    list_of_names = Array.new(400) { |index| "v#{index}" }
+    # Each pair is a map and the Hash it must equal.
+    list_of_pairs = [{MetaVars.new, Hash(String, MetaVar).new}]
+    3000.times do
+      pair_index = random.rand(list_of_pairs.size)
+      vars, hash = list_of_pairs[pair_index]
+      case random.rand(10)
+      when 0
+        copy = {vars.dup, hash.dup}
+        list_of_pairs << copy
+        list_of_pairs.shift if list_of_pairs.size > 6
+      when 1, 2
+        name = list_of_names.sample(random)
+        vars.delete(name).should be(hash.delete(name))
+      else
+        name = list_of_names.sample(random)
+        var = MetaVar.new(name)
+        vars[name] = var
+        hash[name] = var
+      end
+      list_of_pairs.each do |(other_vars, other_hash)|
+        other_vars.size.should eq(other_hash.size)
+        other_vars.to_a.should eq(other_hash.to_a)
+        other_vars.last_key.should eq(other_hash.last_key) unless other_hash.empty?
+      end
+    end
+  end
+
+  it "skips only the variables two copies of a large map both left as they were" do
+    vars = MetaVars.new
+    list_of_metas = Array.new(100) { |index| MetaVar.new("v#{index}") }
+    list_of_metas.each { |meta| vars[meta.name] = meta }
+    then_vars = vars.dup
+    else_vars = vars.dup
+    then_vars["v70"] = MetaVar.new("v70")
+    then_vars["v5"] = MetaVar.new("v5")
+    then_vars["fresh"] = MetaVar.new("fresh")
+    else_vars["v40"] = MetaVar.new("v40")
+    else_vars.delete("v60")
+
+    list_of_names = [] of String
+    then_vars.each_unless_unchanged_in(else_vars) { |(name, _)| list_of_names << name }
+    list_of_names.should eq(%w(v5 v40 v60 v70 fresh))
+
+    # Every variable left out is the same object under its name in both maps.
+    then_vars.each do |(name, var)|
+      next if list_of_names.includes?(name)
+      else_vars[name]?.should be(var)
+    end
+
+    # Maps that share nothing yield everything.
+    small = MetaVars{"a" => MetaVar.new("a")}
+    list_of_names.clear
+    then_vars.each_unless_unchanged_in(small) { |(name, _)| list_of_names << name }
+    list_of_names.size.should eq(then_vars.size)
+  end
 end
 
 describe "ASTNode memory layout" do

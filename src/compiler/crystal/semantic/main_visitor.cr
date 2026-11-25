@@ -2386,7 +2386,7 @@ module Crystal
           # For variables assigned in the then branch but not in the condition,
           # add truthy filters so they're properly narrowed when the && result
           # is used as a condition (#15739)
-          then_vars.each do |name, _|
+          then_vars.each_unless_unchanged_in(cond_vars) do |name, _|
             next if cond_vars.has_key?(name)
             and_filters = TypeFilters.and(and_filters, TypeFilters.truthy_var(name))
           end
@@ -2412,14 +2412,18 @@ module Crystal
     #     before the 'if' and it doesn't appear in one of the branches.
     #   - Don't use the type of a branch that is unreachable (ends with return,
     #     break or with a call that is NoReturn)
+    #
+    # Both branches start from copies of *cond_vars*, so a variable neither
+    # branch changed is the same in both and is skipped without a look
+    # (`MetaVars#each_unless_unchanged_in`).
     def merge_if_vars(node, cond_vars, then_vars, else_vars, before_then_vars, before_else_vars, then_unreachable, else_unreachable)
-      then_vars.each do |name, then_var|
+      then_vars.each_unless_unchanged_in(else_vars) do |name, then_var|
         else_var = else_vars[name]?
 
         merge_if_var(name, node, cond_vars, then_var, else_var, before_then_vars, before_else_vars, then_unreachable, else_unreachable)
       end
 
-      else_vars.each do |name, else_var|
+      else_vars.each_unless_unchanged_in(then_vars) do |name, else_var|
         next if then_vars.has_key?(name)
 
         merge_if_var(name, node, cond_vars, nil, else_var, before_then_vars, before_else_vars, then_unreachable, else_unreachable)

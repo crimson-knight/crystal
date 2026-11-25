@@ -64,6 +64,14 @@ module Crystal
     getter? wants_doc : Bool
     @block_arg_name : String?
 
+    # Says whether a name is a local variable of the code around the source,
+    # below the outermost scope of *var_scopes*: a macro expansion asks the
+    # variables of the scope it expands in this way instead of copying all
+    # their names. Only scopes that see that outermost scope see them (none
+    # inside a def).
+    property outer_local_var_lookup : Proc(String, Bool)?
+    @isolated_var_scope_depth = 0
+
     def self.parse(str, string_pool : StringPool? = nil, var_scopes = [Set(String).new]) : ASTNode
       new(str, string_pool, var_scopes).parse
     end
@@ -6670,8 +6678,10 @@ module Crystal
 
       begin
         @var_scopes.push(Set(String).new)
+        @isolated_var_scope_depth += 1
         yield
       ensure
+        @isolated_var_scope_depth -= 1
         @var_scopes.pop
       end
     end
@@ -6717,7 +6727,10 @@ module Crystal
     end
 
     def var_in_scope?(name)
-      @var_scopes.last.includes? name
+      return true if @var_scopes.last.includes?(name)
+      return false unless @isolated_var_scope_depth == 0
+
+      !!@outer_local_var_lookup.try &.call(name)
     end
 
     def open(symbol, location = @token.location, &)
