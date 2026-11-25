@@ -1837,7 +1837,8 @@ module Crystal
     private def summarize_ir_skip(session : IrSkip::Session, llvm_modules) : Nil
       stats = session.stats
       llvm_modules.each do |type_name, info|
-        next if type_name.empty?
+        # The main module and the type tables are generated in every build.
+        next if type_name.empty? || type_name == CodeGenVisitor::TypeTables::MODULE_NAME
 
         if info.skipped_ir_generation?
           stats.skipped_units += 1
