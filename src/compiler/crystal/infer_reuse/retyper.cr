@@ -36,6 +36,9 @@ module Crystal::InferReuse
     @new_typed_def_count = 0
     @program_run_count = 0
     @program_run_seconds = 0.0
+    @program_run_reason : String? = nil
+    # When this build began to compare the sources (see `SourceRecord#sources_checked_at`).
+    @check_started_at = Time.utc
 
     def initialize(@kept : KeptProgram, @request : BuildRequest)
     end
@@ -54,6 +57,7 @@ module Crystal::InferReuse
         check_build_matches
         check_sources
         retype_changed_defs
+        @kept.record.sources_checked_at = @check_started_at
         Decision.new(true, decision_reason)
       rescue ex : Refusal
         Decision.new(false, ex.message || "refused")
@@ -77,6 +81,7 @@ module Crystal::InferReuse
       report.new_typed_defs = @new_typed_def_count
       report.program_runs = @program_run_count
       report.program_run_seconds = @program_run_seconds
+      report.program_run_reason = @program_run_reason
       report.build_child_footprint_bytes = Footprint.of(::Process.pid)
       if loaded = @loaded_from_snapshot
         report.snapshot_load_seconds, report.snapshot_bytes = loaded
@@ -95,6 +100,9 @@ module Crystal::InferReuse
         io << ", " << @added_def_count << " methods added" if @added_def_count > 0
         io << ", " << @removed_def_count << " methods removed" if @removed_def_count > 0
         moved = @list_of_file_edits.count { |edit| !edit.line_shift.identity? }
+        if (program_run_count = @kept.record.list_of_program_runs.size) > 0 && @program_run_reason.nil?
+          io << ", " << program_run_count << " macro program runs kept (no file they read changed)"
+        end
         io << ", lines moved in " << moved << " files" if moved > 0
       end
     end
@@ -138,6 +146,7 @@ module Crystal::InferReuse
 
     # Everything the kept build read must read the same, except method bodies.
     private def check_sources : Nil
+      @check_started_at = Time.utc
       record = @kept.record
 
       record.list_of_requires.each do |result|
@@ -167,7 +176,8 @@ module Crystal::InferReuse
         end
         raise Refusal.new("a macro ran `#{command}`, whose output changed") unless current == output
       end
-      unless record.list_of_program_runs.empty?
+      if !record.list_of_program_runs.empty? && (reason = reason_to_run_programs_again(record))
+        @program_run_reason = reason
         started = Time.instant
         run_programs_again(record.list_of_program_runs)
         @program_run_count = record.list_of_program_runs.size
@@ -210,6 +220,75 @@ module Crystal::InferReuse
           end
         end
       end
+    end
+
+    # Why the programs the kept build's macros ran (`run`) must run again,
+    # or `nil` when none of them can print anything new.
+    #
+    # Running all of them again on every build (7,206 runs of the ECR
+    # processor, 26 s, in an Amber app of 300 resources) only finds a change
+    # when something such a program reads changed: its own source, which
+    # lies in its folder, or the files its arguments name, and what lies
+    # next to them (a template's layout). So they run again only when a file
+    # under the working directory was modified since the sources were last
+    # compared and that file lies in the folder of a macro program, is named
+    # by a program's argument or lies in a folder an argument names, or lies
+    # next to a file an argument names and is no Crystal source the
+    # comparison covers. A program that reads other files, the clock or the
+    # network is not run again for an edit elsewhere;
+    # `CRYSTAL_INFER_REUSE_RUN_PROGRAMS=1` runs every program again, as
+    # before.
+    private def reason_to_run_programs_again(record : SourceRecord) : String?
+      return "CRYSTAL_INFER_REUSE_RUN_PROGRAMS=1" if ENV["CRYSTAL_INFER_REUSE_RUN_PROGRAMS"]? == "1"
+
+      working_directory = @request.working_directory
+      changed_files = ChangedFiles.under(working_directory, record.sources_checked_at, list_of_output_paths)
+      return "more than #{ChangedFiles::MAXIMUM_ENTRY_COUNT} entries under #{working_directory}" if changed_files.overflowed?
+      return nil if changed_files.list_of_paths.empty?
+
+      program_folders = Set(String).new
+      argument_paths = Set(String).new
+      argument_folders = Set(String).new
+      sibling_folders = Set(String).new
+      record.list_of_program_runs.each do |run|
+        program_folders << File.dirname(File.expand_path(run.filename, working_directory))
+        run.list_of_arguments.each do |argument|
+          path = File.expand_path(argument, working_directory)
+          if File.directory?(path)
+            argument_folders << path
+          elsif argument_paths.add?(path)
+            sibling_folders << File.dirname(path)
+          end
+        end
+      end
+
+      changed_files.list_of_paths.each do |path|
+        return "#{path} changed, and a macro program takes it as an argument" if argument_paths.includes?(path)
+        folder = File.dirname(path)
+        if sibling_folders.includes?(folder) && !record.text_by_filename.has_key?(path)
+          return "#{path} changed, next to a file a macro program takes as an argument"
+        end
+        while folder.size > 1
+          return "#{path} changed, in the folder of a macro program (#{folder})" if program_folders.includes?(folder)
+          return "#{path} changed, in a folder a macro program takes as an argument (#{folder})" if argument_folders.includes?(folder)
+          parent = File.dirname(folder)
+          break if parent == folder
+          folder = parent
+        end
+      end
+      nil
+    end
+
+    # The files this build writes, which are modified after every build:
+    # the executable and its debug companion.
+    private def list_of_output_paths : Array(String)
+      argv = @request.argv
+      index = argv.index { |argument| argument == "-o" || argument == "--output" }
+      output = index ? argv[index + 1]? : argv.find(&.starts_with?("--output=")).try(&.lchop("--output="))
+      return [] of String unless output
+
+      path = File.expand_path(output, @request.working_directory)
+      [path, "#{path}.dwarf", "#{path}.dwarf.tmp"]
     end
 
     # How many programs a macro ran at once while the build is checked, at
