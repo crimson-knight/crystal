@@ -182,27 +182,38 @@ void LLVMExtSortFunctionDeclarationsByName(LLVMModuleRef M) {
     functions.splice(functions.end(), functions, function->getIterator());
 }
 
-// Moves the global variable declarations (externals, such as another
-// module's type ids) to the end of the module's globals, ordered by name,
-// like `LLVMExtSortFunctionDeclarationsByName`.
-void LLVMExtSortGlobalDeclarationsByName(LLVMModuleRef M) {
+// Orders the module's functions and global variables by name, definitions
+// first and then declarations, so that its bitcode does not depend on the
+// order they were made in. (Unnamed ones keep their order.)
+void LLVMExtSortModuleByName(LLVMModuleRef M) {
   Module &module = *unwrap(M);
-  std::vector<GlobalVariable *> declarations;
-  for (GlobalVariable &global : module.globals())
-    if (global.isDeclaration())
-      declarations.push_back(&global);
-  llvm::sort(declarations, [](GlobalVariable *a, GlobalVariable *b) {
+  auto comes_first = [](GlobalValue *a, GlobalValue *b) {
+    if (a->isDeclaration() != b->isDeclaration())
+      return !a->isDeclaration();
     return a->getName() < b->getName();
-  });
+  };
+
+  std::vector<Function *> functions;
+  for (Function &function : module)
+    functions.push_back(&function);
+  llvm::stable_sort(functions, comes_first);
+  auto &function_list = module.getFunctionList();
+  for (Function *function : functions)
+    function_list.splice(function_list.end(), function_list, function->getIterator());
+
+  std::vector<GlobalVariable *> globals;
+  for (GlobalVariable &global : module.globals())
+    globals.push_back(&global);
+  llvm::stable_sort(globals, comes_first);
 #if LLVM_VERSION_MAJOR >= 17
-  for (GlobalVariable *global : declarations) {
+  for (GlobalVariable *global : globals) {
     module.removeGlobalVariable(global);
     module.insertGlobalVariable(global);
   }
 #else
-  auto &globals = module.getGlobalList();
-  for (GlobalVariable *global : declarations)
-    globals.splice(globals.end(), globals, global->getIterator());
+  auto &global_list = module.getGlobalList();
+  for (GlobalVariable *global : globals)
+    global_list.splice(global_list.end(), global_list, global->getIterator());
 #endif
 }
 
