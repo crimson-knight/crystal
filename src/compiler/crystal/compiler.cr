@@ -1521,7 +1521,15 @@ module Crystal
     end
 
     private def codegen_worker_memory_budget_bytes_for(thread_count : Int32) : Int64
-      @codegen_worker_memory_budget_bytes || CodegenWorkerPool.default_memory_budget_bytes(thread_count)
+      if explicit_bytes = @codegen_worker_memory_budget_bytes
+        return explicit_bytes
+      end
+      default_bytes = CodegenWorkerPool.default_memory_budget_bytes(thread_count)
+      if memory_budget = @memory_budget
+        Math.min(default_bytes, memory_budget.object_stage_bytes)
+      else
+        default_bytes
+      end
     end
 
     # Ends this process's part of the build: writes the `ObjectStage::Handoff`

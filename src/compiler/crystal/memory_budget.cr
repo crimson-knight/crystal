@@ -20,7 +20,7 @@ module Crystal
   # * The C allocator is asked to hand its free pages back after every
   #   `MALLOC_RELIEF_BYTES` of IR spilled.
   # * The object file workers share the budget less what the compiler
-  #   process itself holds in that stage.
+  #   process itself holds in that stage, never more than their default.
   #
   # A budget is a ceiling: it never raises a setting given explicitly on
   # the command line.
@@ -95,8 +95,13 @@ module Crystal
       if compiler.resident_ir_megabytes <= 0 || compiler.resident_ir_megabytes > resident_ir_megabytes
         compiler.resident_ir_megabytes = resident_ir_megabytes
       end
+      # Without an explicit worker budget the compiler takes the smaller of
+      # its default and `object_stage_bytes` (see
+      # `Compiler#codegen_worker_memory_budget_bytes_for`): a budget larger
+      # than the default must not let more workers' memory in flight than a
+      # build without a budget.
       worker_bytes = compiler.codegen_worker_memory_budget_bytes
-      if worker_bytes.nil? || worker_bytes > object_stage_bytes
+      if worker_bytes && worker_bytes > object_stage_bytes
         compiler.codegen_worker_memory_budget_bytes = object_stage_bytes
       end
       GCTuning.tighten_above(tight_heap_bytes, TIGHT_FREE_SPACE_DIVISOR)

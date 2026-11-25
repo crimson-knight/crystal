@@ -23,6 +23,13 @@ describe Crystal::MemoryBudget do
     budget.apply(compiler)
     compiler.memory_budget.should eq(budget)
     compiler.resident_ir_megabytes.should eq(64)
+    # No explicit worker budget: the default applies, capped by the budget
+    # when the build runs (`Compiler#codegen_worker_memory_budget_bytes_for`).
+    compiler.codegen_worker_memory_budget_bytes.should be_nil
+
+    compiler = Crystal::Compiler.new
+    compiler.codegen_worker_memory_budget_bytes = 3_i64 * 1024 ** 3
+    budget.apply(compiler)
     compiler.codegen_worker_memory_budget_bytes.should eq(budget.object_stage_bytes)
 
     compiler = Crystal::Compiler.new
