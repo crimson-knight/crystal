@@ -511,9 +511,11 @@ class Crystal::Call
     typed_defs = Array(Def).new(matches.size)
 
     single_match = matches.size == 1
+    note_type_once_union_forward(matches) unless single_match
 
     matches.each do |match|
       check_visibility match
+      check_type_bound_instance(match)
 
       # A `@[TypeOnce]` def is typed for the types it declares.
       called_match = match
@@ -609,7 +611,15 @@ class Crystal::Call
               match.def.block_nest += 1
             end
 
-            typed_def.body.accept visitor
+            if typed_once
+              begin
+                typed_def.body.accept visitor
+              rescue ex : CodeError
+                raise_type_once_failure(typed_def, match, called_match, ex)
+              end
+            else
+              typed_def.body.accept visitor
+            end
 
             if yields_to_block
               match.def.block_nest -= 1

@@ -57,10 +57,31 @@ module Crystal
     def instances_of(a_def : Def) : Array(Instance)
       @instances[a_def]? || [] of Instance
     end
+
+    # The first macro each def called without a receiver, by untyped def.
+    @macro_calls = Hash(Def, Call).new.compare_by_identity
+
+    def record_macro_call(untyped_def : Def, call : Call) : Nil
+      return unless records?(untyped_def)
+      @macro_calls[untyped_def] ||= call
+    end
+
+    def macro_call_of(a_def : Def) : Call?
+      @macro_calls[a_def]?
+    end
   end
 
   class Program
     # Set by `crystal tool strict` before type inference; `nil` otherwise.
     property strict_tool_recorder : StrictToolRecorder?
+
+    # Source text to use in place of the file on disk, by expanded filename:
+    # `crystal tool strict` type-checks its edits without writing them.
+    property source_overrides : Hash(String, String)?
+
+    # The source of the required file *filename*: its override, or the file.
+    def read_source(filename : String) : String
+      source_overrides.try(&.[filename]?) || File.read(filename)
+    end
   end
 end

@@ -51,7 +51,8 @@ module Crystal
       return true if strict_directories.any? { |directory| filename.starts_with?(directory) }
       marker = @strict_marker_by_file[filename]?
       if marker.nil?
-        marker = @strict_marker_by_file[filename] = Program.strict_marker?(filename)
+        override = source_overrides.try(&.[filename]?)
+        marker = @strict_marker_by_file[filename] = override ? Program.strict_marker_text?(override) : Program.strict_marker?(filename)
       end
       marker
     end
@@ -65,6 +66,12 @@ module Crystal
       end
     rescue IO::Error
       false
+    end
+
+    # Does *text* start with the line `# crystal: strict`?
+    def self.strict_marker_text?(text : String) : Bool
+      first_line = text.each_line.first?
+      !first_line.nil? && first_line.rstrip == STRICT_MARKER
     end
 
     # Notes a `require` of one of the strict-mode files.

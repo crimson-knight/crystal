@@ -20,6 +20,11 @@ require "./call"
 #   concrete receiver through `@type`;
 # * not `abstract`, not `initialize`.
 #
+# Where the shared copy would behave differently from the copies typed per
+# caller (a macro called on a receiver that stands for several types), or
+# its body does not compile for the declared types, the compiler stops with
+# an error at the annotation (see `type_once_soundness.cr`).
+#
 # What is typed once:
 #
 # * a parameter whose restriction names a class (`Record`), the class itself
