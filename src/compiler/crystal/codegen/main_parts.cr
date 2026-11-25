@@ -33,7 +33,8 @@ class Crystal::CodeGenVisitor
   # Only in builds with one module per type, for targets whose top-level
   # code needs nothing of the main function's (no Windows, no WebAssembly).
   # `CRYSTAL_MAIN_PARTS=0` turns parts off; `CRYSTAL_MAIN_PART_NODES` sets
-  # the size of a part in AST nodes, for measuring.
+  # the size of a part in AST nodes, for measuring;
+  # `CRYSTAL_MAIN_PARTS_STATS=1` prints each plan to standard error.
   module MainParts
     # The module (and function) names of parts start with this.
     NAME_PREFIX = "~main~"
@@ -260,7 +261,7 @@ class Crystal::CodeGenVisitor
           end
         end
         plan.close(current, part_node_count)
-        if ENV["CRYSTAL_MAIN_PARTS_DEBUG"]?
+        if ENV["CRYSTAL_MAIN_PARTS_STATS"]? == "1"
           list_of_texts = plan.list_of_groups.map { |group| "#{group.outlined? ? "P" : "i"}#{group.list_of_indexes.size}/#{group.node_count}" }
           list_of_blockers = list_of_scans.compact_map(&.blocker).uniq
           STDERR.puts "main parts plan: #{statements.size} statements, #{total} nodes: #{list_of_texts.join(" ")} #{list_of_blockers}"
