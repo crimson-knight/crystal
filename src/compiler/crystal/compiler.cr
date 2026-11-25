@@ -369,6 +369,18 @@ module Crystal
     # its typed program.
     property infer_reuse_argv : Array(String)? = nil
 
+    # Whether code generation runs in a process that shares its heap pages
+    # with a build server keeping the typed program (`InferReuse::Holder`).
+    # Releasing semantic data or typed bodies there frees nothing the system
+    # can take back: the server still holds those pages, and every page the
+    # release, the collector's sweep or a later allocation writes becomes a
+    # private copy in this process. So such a process keeps the program as it
+    # is. `CRYSTAL_INFER_REUSE_RELEASE_IN_CHILD=1` releases as before, to
+    # measure the difference.
+    def shares_typed_program_with_build_server? : Bool
+      !@infer_reuse_handoff.nil? && ENV["CRYSTAL_INFER_REUSE_RELEASE_IN_CHILD"]? != "1"
+    end
+
     # Where to write the digest of the typed program (see
     # `InferReuse::TypedProgramDigest`), for a verification of a reused build.
     property infer_reuse_digest_filename : String? = nil
@@ -873,7 +885,7 @@ module Crystal
       llvm_modules = @progress_tracker.stage("Codegen (crystal)") do
         GCTuning.with_ir_generation_divisor do
           program.codegen node, debug: debug, frame_pointers: frame_pointers,
-            single_module: is_single_module, release_typed_bodies: true,
+            single_module: is_single_module, release_typed_bodies: !shares_typed_program_with_build_server?,
             module_spill: module_spill, module_segment_instructions: @module_segment_instructions.to_i64
         end
       end
@@ -1436,6 +1448,7 @@ module Crystal
     # list of required files and parses them again; it reads no def body.
     private def release_semantic_only_data(program, node : ASTNode)
       @progress_tracker.stage("Semantic (release)") do
+        next if shares_typed_program_with_build_server?
         program.release_semantic_only_data(node)
         # The code generation child of the build server (`InferReuse`)
         # shares its heap pages with the server, which keeps the typed
