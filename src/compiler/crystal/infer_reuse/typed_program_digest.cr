@@ -53,9 +53,20 @@ module Crystal::InferReuse
     end
 
     def self.def_name(typed_def : Def) : String
+      # Fresh argument names (`__temp_*`, as in a string interpolation's
+      # `String.interpolation` instance) come from a counter of the whole
+      # program, so they are numbered in argument order, as bodies number them.
+      number_by_fresh_name = {} of String => Int32
       String.build do |io|
         io << typed_def.owner << '#' << typed_def.name << '('
-        typed_def.args.join(io, ", ") { |arg, inner_io| inner_io << arg.name << " : " << arg.type? }
+        typed_def.args.join(io, ", ") do |arg, inner_io|
+          if arg.name.matches_full?(MethodListExpansion::FRESH_NAME)
+            inner_io << "__fresh_" << (number_by_fresh_name[arg.name] ||= number_by_fresh_name.size)
+          else
+            inner_io << arg.name
+          end
+          inner_io << " : " << arg.type?
+        end
         io << ')'
         if block_arg = typed_def.block_arg
           io << " &" << block_arg.type?
