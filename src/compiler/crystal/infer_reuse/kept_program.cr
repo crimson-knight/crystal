@@ -35,6 +35,11 @@ module Crystal::InferReuse
       argv = compiler.infer_reuse_argv || [] of String
       kept = KeptProgram.new(compiler, program, node, record, argv, Dir.current, ENV.to_h)
 
+      # This process keeps the program for as long as it serves. Give the
+      # free space type inference left behind back to the system before the
+      # code generation child shares the heap, so neither process keeps it.
+      InferReuse.return_free_memory_to_os if compiler.shares_typed_program_with_build_server?
+
       loop do
         if pid = InferReuse.fork_process
           exit_code = InferReuse.wait_for(pid)
