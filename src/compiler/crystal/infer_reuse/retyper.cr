@@ -34,6 +34,8 @@ module Crystal::InferReuse
     @removed_def_count = 0
     @retyped_instance_count = 0
     @new_typed_def_count = 0
+    @program_run_count = 0
+    @program_run_seconds = 0.0
 
     def initialize(@kept : KeptProgram, @request : BuildRequest)
     end
@@ -73,6 +75,8 @@ module Crystal::InferReuse
       report.removed_methods = @removed_def_count
       report.retyped_instances = @retyped_instance_count
       report.new_typed_defs = @new_typed_def_count
+      report.program_runs = @program_run_count
+      report.program_run_seconds = @program_run_seconds
       report.build_child_footprint_bytes = Footprint.of(::Process.pid)
       if loaded = @loaded_from_snapshot
         report.snapshot_load_seconds, report.snapshot_bytes = loaded
@@ -164,18 +168,10 @@ module Crystal::InferReuse
         raise Refusal.new("a macro ran `#{command}`, whose output changed") unless current == output
       end
       unless record.list_of_program_runs.empty?
-        # Compile each program again when its source changed (the compile
-        # cache on disk knows), rather than run the build's own copy.
-        program.compiled_macros_cache.clear
-        record.list_of_program_runs.each do |run|
-          current = begin
-            result = program.macro_run(run.filename, run.list_of_arguments)
-            result.status.success? ? result.stdout : nil
-          rescue ex
-            raise Refusal.new("a macro program #{run.filename} no longer compiles or runs: #{ex.message}")
-          end
-          raise Refusal.new("a macro ran #{run.filename}, whose output changed") unless current == run.output
-        end
+        started = Time.instant
+        run_programs_again(record.list_of_program_runs)
+        @program_run_count = record.list_of_program_runs.size
+        @program_run_seconds = (Time.instant - started).total_seconds
       end
       record.existence_by_checked_file.each do |filename, exists|
         raise Refusal.new("a macro checked #{filename}, which changed") unless File.exists?(filename) == exists
@@ -214,6 +210,65 @@ module Crystal::InferReuse
           end
         end
       end
+    end
+
+    # How many programs a macro ran at once while the build is checked, at
+    # most: each run is a process that mostly waits for its own output.
+    PROGRAM_RUNS_AT_ONCE = 8
+
+    # Runs every program a macro ran (`run`) again with its arguments and
+    # refuses when one no longer compiles or runs, or prints something else.
+    # Each program is compiled again when its source changed (the compile
+    # cache on disk knows), rather than run from the build's own copy. An
+    # Amber app runs the ECR processor once per template (2,104 templates in
+    # a 300-resource app), so the runs go `PROGRAM_RUNS_AT_ONCE` at a time,
+    # after one run of each program has compiled it.
+    private def run_programs_again(list_of_runs : Array(SourceRecord::ProgramRun)) : Nil
+      program.compiled_macros_cache.clear
+      compiled_filenames = Set(String).new
+      list_of_other_runs = [] of SourceRecord::ProgramRun
+      list_of_runs.each do |run|
+        if compiled_filenames.add?(run.filename)
+          check_program_run(run)
+        else
+          list_of_other_runs << run
+        end
+      end
+      return if list_of_other_runs.empty?
+
+      queue = Channel(SourceRecord::ProgramRun).new(list_of_other_runs.size)
+      list_of_other_runs.each { |run| queue.send(run) }
+      queue.close
+      runner_count = Math.min(PROGRAM_RUNS_AT_ONCE, list_of_other_runs.size)
+      done = Channel(Refusal?).new(runner_count)
+      runner_count.times do
+        spawn do
+          refusal = nil
+          while run = queue.receive?
+            next if refusal
+            begin
+              check_program_run(run)
+            rescue ex : Refusal
+              refusal = ex
+            end
+          end
+          done.send(refusal)
+        end
+      end
+      list_of_refusals = Array.new(runner_count) { done.receive }
+      if refusal = list_of_refusals.compact.first?
+        raise refusal
+      end
+    end
+
+    private def check_program_run(run : SourceRecord::ProgramRun) : Nil
+      current = begin
+        result = program.macro_run(run.filename, run.list_of_arguments)
+        result.status.success? ? result.stdout : nil
+      rescue ex
+        raise Refusal.new("a macro program #{run.filename} no longer compiles or runs: #{ex.message}")
+      end
+      raise Refusal.new("a macro ran #{run.filename}, whose output changed") unless current == run.output
     end
 
     private def retype_changed_defs : Nil
