@@ -265,7 +265,8 @@ describe "crystal tool strict" do
 
     converted.should contain("  def greet(name)\n")
     converted.should contain("  def prefix : String\n")
-    report.should contain("Greets#greet: the build fails when it is typed once: undefined local variable or method 'prefix' for Speaker")
+    report.should contain("Greets#greet: the build fails when it is typed once: method 'Greets#greet', typed once in a strict file, can't be typed once")
+    report.should contain("undefined local variable or method 'prefix' for Speaker")
   end
 
   it "changes nothing when it runs twice" do
@@ -375,5 +376,130 @@ describe "crystal tool strict" do
       File.read(library).should eq("# crystal: strict\ndef greet(model)\n  model\nend\n")
       output.to_s.should contain("greet: parameter 'model' is Model, a type defined outside these files and the libraries they use")
     end
+  end
+  it "writes nothing with --check, even while it verifies" do
+    source = <<-SOURCE
+      def twice(value)
+        value
+      end
+
+      twice(1)
+      SOURCE
+    with_tempfile("strict_tool_read_only.cr") do |path|
+      File.write(path, source)
+      modified = File.info(path).modification_time
+      # A file the tool can't write: a run that writes while it verifies fails.
+      File.chmod(path, 0o444)
+      output = IO::Memory.new
+      status = Crystal::StrictTool::Command.new(["--prelude", "empty", "--check", path], output, IO::Memory.new).run
+      File.chmod(path, 0o644)
+
+      status.should eq(1)
+      File.read(path).should eq(source)
+      File.info(path).modification_time.should eq(modified)
+      output.to_s.should contain("would change")
+      output.to_s.should contain("typed     twice")
+    end
+  end
+
+  it "writes the alias a union stands for, keeping what it holds in other programs" do
+    _, converted, _ = run_strict_tool(<<-CRYSTAL, ["--unions"])
+      class Decimal
+      end
+
+      {% if flag?(:with_decimal) %}
+        alias Value = Int32 | Char | Decimal
+      {% else %}
+        alias Value = Int32 | Char
+      {% end %}
+
+      def keep(value)
+        value
+      end
+
+      keep(1.as(Value))
+      CRYSTAL
+
+    converted.should contain("def keep(value : Value) : Value\n")
+  end
+
+  it "types a parameter assigned to an instance variable with the variable's type" do
+    _, converted, _ = run_strict_tool(<<-CRYSTAL, ["--unions"])
+      class Wrapper(T)
+        def initialize(@value : T)
+        end
+      end
+
+      alias Value = Int32 | Char
+
+      class Relation
+        @wrapped : Wrapper(Value)
+        @limit : Int32 | Char | Nil
+
+        def initialize(@wrapped, @limit)
+        end
+      end
+
+      Relation.new(Wrapper(Value).new(1), 1)
+      Relation.new(Wrapper(Value).new('a'), 2)
+      CRYSTAL
+
+    converted.should contain("def initialize(@wrapped : Wrapper(Value), @limit : ")
+    converted.should match(/@limit : [^)]*Char[^)]*\)\n/)
+    converted.should match(/@limit : [^)]*Nil/)
+  end
+
+  it "leaves a method that calls a macro on its receiver typed per receiver, and says why" do
+    _, converted, report = run_strict_tool(<<-CRYSTAL)
+      class Model
+        macro kind_name
+          1
+        end
+
+        def kind
+          kind_name
+        end
+      end
+
+      class Post < Model
+      end
+
+      Post.new.kind
+      CRYSTAL
+
+    converted.should contain("  def kind\n")
+    report.should contain("left      Model#kind: it calls the macro 'kind_name' on its receiver")
+    report.should contain("typed once, the macro would expand once, for Model, instead of for each receiver")
+  end
+
+  it "reports a typed method that can't be typed once and leaves its file ordinary" do
+    _, converted, report = run_strict_tool(<<-CRYSTAL)
+      abstract class Model
+        macro inherited
+          def save : Int32
+            1
+          end
+        end
+
+        def save : Int32
+          {% raise "save needs a concrete model" if @type == Model %}
+          0
+        end
+      end
+
+      class Post < Model
+      end
+
+      def store(record : Model) : Int32
+        record.save
+      end
+
+      store(Post.new)
+      CRYSTAL
+
+    converted.should_not contain("# crystal: strict")
+    report.should contain("left an ordinary file")
+    report.should contain("can't be typed once")
+    report.should contain("save needs a concrete model")
   end
 end

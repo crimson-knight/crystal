@@ -41,6 +41,11 @@ module Crystal::StrictTool
         return plan
       end
 
+      if reason = macro_call_reason(a_def, owner, instances)
+        plan.reason = reason
+        return plan
+      end
+
       scope = scope_of(owner)
       reasons = [] of String
       fill_arg_types(plan, a_def, written, instances, scope, reasons)
@@ -146,6 +151,16 @@ module Crystal::StrictTool
 
         label = "parameter '#{arg.name}'"
         all_types = types + default_types
+
+        # A parameter assigned to an instance variable (`@name` in the
+        # signature) takes the variable's type: every value the variable
+        # holds, not only what this program's callers pass.
+        if instance_var_type = assigned_instance_var_type(written, arg, plan.owner)
+          if text = type_text(instance_var_type, scope)
+            plan.arg_texts[index] = text
+            next
+          end
+        end
         if text = inherited_text(a_def, plan.owner, scope, all_types) { |inherited| inherited.args[index]?.try(&.restriction) }
           plan.arg_texts[index] = text
           next
@@ -304,6 +319,58 @@ module Crystal::StrictTool
       names.join(", ")
     end
 
+    # Why *a_def* can't be typed once although its callers agree on its types:
+    # it calls a macro on its receiver, and a typed-once copy would expand the
+    # macro once, for the declaring type, where each receiver now expands it
+    # for itself (the compiler refuses such a copy).
+    private def macro_call_reason(a_def : Def, owner : ModuleType, instances : Array(StrictToolRecorder::Instance)) : String?
+      return nil if a_def.receiver || owner.metaclass?
+      return nil unless (owner.is_a?(NonGenericClassType) && !owner.struct?) || owner.is_a?(NonGenericModuleType)
+      instances.each do |instance|
+        finder = MacroCallFinder.new
+        instance.typed_def.body.accept finder
+        if call = finder.call
+          location = call.location
+          place = location ? " at #{Planner.place_of(location)}" : ""
+          return "it calls the macro '#{call.name}' on its receiver#{place}; typed once, the macro would expand once, for #{owner}, instead of for each receiver, so it stays typed per receiver"
+        end
+      end
+      nil
+    end
+
+    # Finds the first call in a typed body that expanded a macro looked up on
+    # the receiver (a call without a receiver).
+    class MacroCallFinder < Visitor
+      getter call : Call?
+
+      def visit(node : Call) : Bool
+        if @call.nil? && node.obj.nil? && node.expanded_macro && !node.super? && !node.previous_def?
+          @call = node
+        end
+        @call.nil?
+      end
+
+      def visit(node : ASTNode) : Bool
+        @call.nil?
+      end
+    end
+
+    # The type of the instance variable that *written* assigns parameter *arg*
+    # to at the start of its body (`def initialize(@name)`), in *owner*.
+    private def assigned_instance_var_type(written : Def, arg : Arg, owner : ModuleType) : Type?
+      return nil unless owner.is_a?(InstanceVarContainer)
+      body = written.body
+      expressions = body.is_a?(Expressions) ? body.expressions : [body]
+      expressions.each do |expression|
+        break unless expression.is_a?(Assign)
+        target = expression.target
+        value = expression.value
+        next unless target.is_a?(InstanceVar) && value.is_a?(Var) && value.name == arg.name
+        return owner.lookup_instance_var?(target.name).try(&.type?)
+      end
+      nil
+    end
+
     # The type of the default value assigned to *name* at the start of a
     # typed copy that was called without it.
     private def default_type_in_body(typed_def : Def, name : String) : Type?
@@ -350,9 +417,86 @@ module Crystal::StrictTool
         return notation ? "Proc(#{proc_type_args(type, scope)})" : nil
       end
       return nil unless visible?(type)
-      node = TypeToRestriction.new(scope).convert(type)
+      node = restriction_node(type, scope)
       return nil unless node
       RestrictionText.new(scope).render(node)
+    end
+
+    # The restriction for *type*, naming an alias wherever a union is exactly
+    # the union an alias stands for. Written out, an alias keeps what its
+    # definition adds under conditions this program does not meet (Grant's
+    # `Grant::Columns::Type` holds `BigDecimal` only when `big` is required).
+    private def restriction_node(type : Type, scope : Type) : ASTNode?
+      if alias_type = alias_for(type)
+        return TypeToRestriction.new(scope).convert(alias_type)
+      end
+      case type
+      when UnionType
+        return TypeToRestriction.new(scope).convert(type) if type.union_types.any?(TypeSplat)
+        members = [] of ASTNode
+        type.union_types.each { |member| members << (restriction_node(member, scope) || return nil) }
+        Union.new(members)
+      when VirtualType
+        restriction_node(type.base_type, scope)
+      when VirtualMetaclassType, MetaclassType
+        restriction_node(type.instance_type, scope).try { |instance| Metaclass.new(instance) }
+      when TupleInstanceType
+        members = [] of ASTNode
+        type.tuple_types.each { |member| members << (restriction_node(member, scope) || Underscore.new) }
+        Generic.new(Path.global("Tuple"), members)
+      when NamedTupleInstanceType
+        entries = type.entries.map { |entry| NamedArgument.new(entry.name, restriction_node(entry.type, scope) || Underscore.new) }
+        Generic.new(Path.global("NamedTuple"), type_vars: [] of ASTNode, named_args: entries)
+      when ProcInstanceType
+        TypeToRestriction.new(scope).convert(type)
+      when GenericInstanceType
+        converted = TypeToRestriction.new(scope).convert(type)
+        return converted unless converted.is_a?(Generic)
+        type_vars = [] of ASTNode
+        type.type_vars.each_value do |type_var|
+          if type_var.is_a?(NumberLiteral)
+            type_vars << type_var.clone
+          elsif type_var_type = type_var.type?
+            type_vars << (restriction_node(type_var_type, scope) || Underscore.new)
+          else
+            type_vars << Underscore.new
+          end
+        end
+        Generic.new(converted.name, type_vars)
+      else
+        TypeToRestriction.new(scope).convert(type)
+      end
+    end
+
+    # The alias whose union is exactly *type*, when one is defined in a file
+    # the converted files can see and the program has resolved it.
+    private def alias_for(type : Type) : AliasType?
+      return nil unless type.is_a?(UnionType)
+      aliases_by_union(type.program)[type.object_id]?
+    end
+
+    @aliases_by_union : Hash(UInt64, AliasType)?
+
+    private def aliases_by_union(program : Program) : Hash(UInt64, AliasType)
+      @aliases_by_union ||= begin
+        found = {} of UInt64 => AliasType
+        collect_aliases(program, found)
+        found
+      end
+    end
+
+    private def collect_aliases(namespace : Type, found : Hash(UInt64, AliasType)) : Nil
+      namespace.types?.try &.each_value do |type|
+        if type.is_a?(AliasType)
+          # An alias of an alias names the same union; the first one wins.
+          next unless type.value_processed? && !type.private? && visible_definition?(type)
+          next if type.aliased_type?.is_a?(AliasType)
+          target = type.remove_alias
+          found[target.object_id] ||= type if target.is_a?(UnionType)
+        else
+          collect_aliases(type, found)
+        end
+      end
     end
 
     # Whether every type *type* names is defined in a file the converted files
@@ -472,6 +616,10 @@ module Crystal::StrictTool
     def self.place(a_def : Def) : String
       location = a_def.location
       return "(unknown place)" unless location
+      place_of(location)
+    end
+
+    def self.place_of(location : Location) : String
       filename = location.original_filename || location.filename.to_s
       "#{::Path[filename].relative_to(Dir.current)}:#{location.line_number}"
     end

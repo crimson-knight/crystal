@@ -17,7 +17,9 @@ require "./strict/*"
 # inference of the program: a method whose new types break the build is
 # put back as it was (and listed), and the conversion runs again on the
 # result until it changes nothing, so a second run of the tool finds nothing
-# to do.
+# to do. The verification builds read the edited files from memory; only
+# the finished conversion is written, and `--check` and `--dry-run` write
+# nothing.
 module Crystal
   class Command
     private def strict
@@ -285,6 +287,10 @@ module Crystal
 
       @files = [] of FileState
       @file_by_name = {} of String => FileState
+
+      # The edited text of each file the verification builds read in place of
+      # the file on disk, by expanded filename.
+      @working = {} of String => String
       @builds = 0
       @strict_warnings_before : Int32?
       @strict_warnings_after : Int32?
@@ -317,22 +323,13 @@ module Crystal
         @files.each { |file| @file_by_name[file.filename] = file }
         @entries = @files.map(&.filename) if @entries.empty?
 
-        writes_to_disk = !@check && !@dry_run
-        completed = false
-        begin
-          convert
-          @files.each { |file| file.text = formatted(file) }
-          print_report
-          print_diffs if @dry_run
-          completed = true
-        ensure
-          # The verification builds edit the files in place; a run that only
-          # reports, or that stops early, puts every file back as it was.
-          if !writes_to_disk || !completed
-            @files.each { |file| File.write(file.filename, file.original_text) if File.read(file.filename) != file.original_text }
-          end
-        end
-        if writes_to_disk
+        convert
+        @files.each { |file| file.text = formatted(file) }
+        print_report
+        print_diffs if @dry_run
+        # The verification builds read the edits from memory: the files on
+        # disk change only here, once the conversion is done.
+        if !@check && !@dry_run
           @files.each { |file| File.write(file.filename, file.text) if file.text != file.original_text }
         end
         raise Stop.new(1) if @check && @files.any? { |file| file.text != file.original_text }
@@ -420,9 +417,11 @@ module Crystal
           compiler.prelude = prelude
         end
         recorder = StrictToolRecorder.new(@file_by_name.keys.to_set)
-        sources = @entries.map { |entry| Compiler::Source.new(entry, File.read(entry)) }
+        sources = @entries.map { |entry| Compiler::Source.new(entry, @working[entry]? || File.read(entry)) }
+        overrides = @working.dup
         result = compiler.compile_configure_program(sources, "strict-tool") do |program|
           program.strict_tool_recorder = recorder
+          program.source_overrides = overrides
         end
         required = result.program.requires
         @files.each do |file|
@@ -479,7 +478,7 @@ module Crystal
             record_outcomes(units)
             break unless recorder
           else
-            units.map(&.file).uniq.each { |file| file.text = File.read(file.filename) }
+            units.map(&.file).uniq.each { |file| file.text = working_text(file) }
             record_outcomes(units)
             break
           end
@@ -585,12 +584,17 @@ module Crystal
         units
       end
 
-      # Writes each file with the active units of *units* applied to its
-      # current text.
+      # Sets the working text of each file to its current text with the active
+      # units of *units* applied. Nothing is written to disk.
       private def write_units(units : Array(Unit)) : Nil
         units.group_by(&.file).each do |file, file_units|
-          File.write(file.filename, edited_text(file, file_units))
+          @working[file.filename] = edited_text(file, file_units)
         end
+      end
+
+      # The text the next verification build reads for *file*.
+      private def working_text(file : FileState) : String
+        @working[file.filename]? || file.text
       end
 
       private def edited_text(file : FileState, units : Array(Unit)) : String
@@ -669,7 +673,7 @@ module Crystal
       end
 
       private def commit(units : Array(Unit), recorder : StrictToolRecorder) : StrictToolRecorder
-        units.map(&.file).uniq.each { |file| file.text = File.read(file.filename) }
+        units.map(&.file).uniq.each { |file| file.text = working_text(file) }
         recorder
       end
 
@@ -764,7 +768,7 @@ module Crystal
       # text of *filename* now on disk.
       private def unit_at(units : Array(Unit), filename : String, line : Int32, column : Int32, edited_only : Bool) : Unit?
         file = @file_by_name[filename]? || return nil
-        text = File.read(filename)
+        text = working_text(file)
         # Map the def at this position (in the edited text) back to its plan
         # through its order among the file's defs.
         edited_defs = file_defs(text, filename).values
@@ -788,7 +792,7 @@ module Crystal
       # The description of the planned method whose def holds *line*:*column*
       # in the text of *file* now on disk.
       private def method_at(file : FileState, line : Int32, column : Int32) : String?
-        edited_defs = file_defs(File.read(file.filename), file.filename).values
+        edited_defs = file_defs(working_text(file), file.filename).values
         index = edited_defs.index do |a_def|
           start = a_def.location.not_nil!
           finish = a_def.end_location || start
@@ -866,12 +870,12 @@ module Crystal
       end
 
       private def formatted(file : FileState) : String
-        text = File.read(file.filename)
+        text = file.text
         return text if text == file.original_text
         Crystal.format(text, file.filename)
       rescue ex
         @error_output.puts "strict tool: the formatter could not format #{file.filename} (#{ex.message}); the file is written unformatted"
-        File.read(file.filename)
+        file.text
       end
 
       private def relative(filename : String) : String

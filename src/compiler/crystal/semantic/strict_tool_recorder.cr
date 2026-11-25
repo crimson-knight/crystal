@@ -62,5 +62,14 @@ module Crystal
   class Program
     # Set by `crystal tool strict` before type inference; `nil` otherwise.
     property strict_tool_recorder : StrictToolRecorder?
+
+    # Source text to use in place of the file on disk, by expanded filename:
+    # `crystal tool strict` type-checks its edits without writing them.
+    property source_overrides : Hash(String, String)?
+
+    # The source of the required file *filename*: its override, or the file.
+    def read_source(filename : String) : String
+      source_overrides.try(&.[filename]?) || File.read(filename)
+    end
   end
 end

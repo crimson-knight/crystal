@@ -106,7 +106,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
     if (compiler = @program.compiler) && compiler.incremental?
       parse_cache = compiler.parse_cache
-      content = File.read(filename)
+      content = @program.read_source(filename)
       @program.infer_reuse_record.try &.add_source(filename, content)
       content_hash = Crystal::Digest::MD5.hexdigest(content)
 
@@ -142,7 +142,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       end
     else
       # Original code path (no incremental compilation)
-      content = File.read(filename)
+      content = @program.read_source(filename)
       @program.infer_reuse_record.try &.add_source(filename, content)
       parser = @program.new_parser(content)
       parser.filename = filename
@@ -371,6 +371,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     end
 
     return false unless the_macro.is_a?(Macro)
+    check_type_once_macro_call(node, the_macro) if obj.nil?
 
     # If we find a macro outside a def/block and this is not the first pass it means that the
     # macro was defined before we first found this call, so it's an error
