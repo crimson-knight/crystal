@@ -39,3 +39,19 @@ describe Crystal::InferReuse::TypedProgramDigest do
     first.differences(second).should_not be_empty
   end
 end
+
+describe "Crystal::InferReuse::TypedProgramDigest.def_name" do
+  it "names a typed def the same whatever numbers its fresh argument names got" do
+    code = <<-CRYSTAL
+      def take(*values)
+        values
+      end
+
+      take(1, 2)
+      CRYSTAL
+    first = digest_after_fresh_names(code, 0)
+    second = digest_after_fresh_names(code, 40)
+    first.digests_by_def_name.keys.should eq(second.digests_by_def_name.keys)
+    first.differences(second).should be_empty
+  end
+end

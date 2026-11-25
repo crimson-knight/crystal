@@ -147,6 +147,24 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
     end
   end
 
+  it "re-types a body that keeps the same instance variable assignments" do
+    with_project("infer-reuse-ivar-kept") do |project|
+      main = MAIN.sub("  def total : Int32\n", "  def reset(name : String) : String\n    @count = 0\n    \"reset \#{name}\"\n  end\n\n  def total : Int32\n") + "puts counter.reset(\"a\")\n"
+      project.write("main.cr", main)
+      expect_build(project, "Hello world\n11\n0\nreset a\n", reused: false)
+
+      # Another line of the body changes; the assignment stays as it was.
+      project.write("main.cr", main.sub(%("reset \#{name}"), %("cleared \#{name}")))
+      report = expect_build(project, "Hello world\n11\n0\ncleared a\n", reused: true)
+      report["retyped_instances"].as_i.should eq(1)
+
+      # The assigned value changes: the type guess could change, so it types fresh.
+      project.write("main.cr", main.sub("    @count = 0\n", "    @count = 1\n"))
+      report = expect_build(project, "Hello world\n11\n0\nreset a\n", reused: false)
+      report["reason"].as_s.should contain("assigns instance variable @count")
+    end
+  end
+
   it "types the whole program again for a new overload called from outside a method" do
     with_project("infer-reuse-overload") do |project|
       expect_build(project, "Hello world\n11\n0\n", reused: false)
