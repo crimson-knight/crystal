@@ -18,6 +18,9 @@ module Crystal::InferReuse
     property replayed_expansions : Int32? = nil
     property retyped_instances : Int32? = nil
     property new_typed_defs : Int32? = nil
+    # Programs a macro ran (`run`) that were run again, and how long that took.
+    property program_runs : Int32? = nil
+    property program_run_seconds : Float64? = nil
     property build_child_footprint_bytes : UInt64? = nil
     property verify_seconds : Float64? = nil
     property verified_defs : Int32? = nil
