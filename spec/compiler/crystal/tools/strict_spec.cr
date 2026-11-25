@@ -408,19 +408,19 @@ describe "crystal tool strict" do
       end
 
       {% if flag?(:with_decimal) %}
-        alias Value = Int32 | Char | Decimal
+        alias ColumnValue = Int32 | Char | Decimal
       {% else %}
-        alias Value = Int32 | Char
+        alias ColumnValue = Int32 | Char
       {% end %}
 
       def keep(value)
         value
       end
 
-      keep(1.as(Value))
+      keep(1.as(ColumnValue))
       CRYSTAL
 
-    converted.should contain("def keep(value : Value) : Value\n")
+    converted.should contain("def keep(value : ColumnValue) : ColumnValue\n")
   end
 
   it "types a parameter assigned to an instance variable with the variable's type" do
@@ -430,21 +430,21 @@ describe "crystal tool strict" do
         end
       end
 
-      alias Value = Int32 | Char
+      alias ColumnValue = Int32 | Char
 
       class Relation
-        @wrapped : Wrapper(Value)
+        @wrapped : Wrapper(ColumnValue)
         @limit : Int32 | Char | Nil
 
         def initialize(@wrapped, @limit)
         end
       end
 
-      Relation.new(Wrapper(Value).new(1), 1)
-      Relation.new(Wrapper(Value).new('a'), 2)
+      Relation.new(Wrapper(ColumnValue).new(1), 1)
+      Relation.new(Wrapper(ColumnValue).new('a'), 2)
       CRYSTAL
 
-    converted.should contain("def initialize(@wrapped : Wrapper(Value), @limit : ")
+    converted.should contain("def initialize(@wrapped : Wrapper(ColumnValue), @limit : ")
     converted.should match(/@limit : [^)]*Char[^)]*\)\n/)
     converted.should match(/@limit : [^)]*Nil/)
   end

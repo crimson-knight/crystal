@@ -57,6 +57,18 @@ module Crystal
     def instances_of(a_def : Def) : Array(Instance)
       @instances[a_def]? || [] of Instance
     end
+
+    # The first macro each def called without a receiver, by untyped def.
+    @macro_calls = Hash(Def, Call).new.compare_by_identity
+
+    def record_macro_call(untyped_def : Def, call : Call) : Nil
+      return unless records?(untyped_def)
+      @macro_calls[untyped_def] ||= call
+    end
+
+    def macro_call_of(a_def : Def) : Call?
+      @macro_calls[a_def]?
+    end
   end
 
   class Program

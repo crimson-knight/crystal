@@ -41,7 +41,7 @@ module Crystal::StrictTool
         return plan
       end
 
-      if reason = macro_call_reason(a_def, owner, instances)
+      if reason = macro_call_reason(a_def, owner)
         plan.reason = reason
         return plan
       end
@@ -323,36 +323,13 @@ module Crystal::StrictTool
     # it calls a macro on its receiver, and a typed-once copy would expand the
     # macro once, for the declaring type, where each receiver now expands it
     # for itself (the compiler refuses such a copy).
-    private def macro_call_reason(a_def : Def, owner : ModuleType, instances : Array(StrictToolRecorder::Instance)) : String?
+    private def macro_call_reason(a_def : Def, owner : ModuleType) : String?
       return nil if a_def.receiver || owner.metaclass?
       return nil unless (owner.is_a?(NonGenericClassType) && !owner.struct?) || owner.is_a?(NonGenericModuleType)
-      instances.each do |instance|
-        finder = MacroCallFinder.new
-        instance.typed_def.body.accept finder
-        if call = finder.call
-          location = call.location
-          place = location ? " at #{Planner.place_of(location)}" : ""
-          return "it calls the macro '#{call.name}' on its receiver#{place}; typed once, the macro would expand once, for #{owner}, instead of for each receiver, so it stays typed per receiver"
-        end
-      end
-      nil
-    end
-
-    # Finds the first call in a typed body that expanded a macro looked up on
-    # the receiver (a call without a receiver).
-    class MacroCallFinder < Visitor
-      getter call : Call?
-
-      def visit(node : Call) : Bool
-        if @call.nil? && node.obj.nil? && node.expanded_macro && !node.super? && !node.previous_def?
-          @call = node
-        end
-        @call.nil?
-      end
-
-      def visit(node : ASTNode) : Bool
-        @call.nil?
-      end
+      call = @recorder.macro_call_of(a_def) || return nil
+      location = call.location
+      place = location ? " at #{Planner.place_of(location)}" : ""
+      "it calls the macro '#{call.name}' on its receiver#{place}; typed once, the macro would expand once, for #{owner}, instead of for each receiver, so it stays typed per receiver"
     end
 
     # The type of the instance variable that *written* assigns parameter *arg*

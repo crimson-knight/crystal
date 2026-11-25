@@ -104,6 +104,7 @@ module Crystal
     # declaring type: refused, as a `{{ }}` written in the body is.
     private def check_type_once_macro_call(node : Call, the_macro : Macro) : Nil
       untyped_def = @untyped_def || return
+      @program.strict_tool_recorder.try &.record_macro_call(untyped_def, node)
       return unless untyped_def.type_once? && @typed_def
       self_type = @scope || return
       return unless @program.type_once_shared_self?(self_type)
@@ -155,9 +156,15 @@ module Crystal
         matches.each do |match|
           target_arg = match.def.args[index]? || next
           next if target_arg.restriction || match.def.splat_index == index
-          member = match.arg_types[index]? || next
+          taken = matches.compact_map { |other| other.def.args[index]?.try(&.restriction) ? other.arg_types[index]? : nil }
+          members = arg_type.union_types.reject { |member| taken.any? { |other| other.same?(member) || (other.is_a?(UnionType) && other.union_types.includes?(member)) } }
+          member = members.empty? ? (match.arg_types[index]? || next) : program.type_merge(members.map(&.as(Type?))) || next
+          member_text = member.to_s
+          member_text = member_text[1...-1] if member_text.starts_with?('(') && member_text.ends_with?(')')
+          union_text = arg_type.to_s
+          union_text = union_text[1...-1] if union_text.starts_with?('(') && union_text.ends_with?(')')
           target = "#{program.type_once_method_name(match.def)}(#{match.def.args.map(&.name).join(", ")})"
-          note = "it passes parameter '#{arg.name}' (#{arg_type}) whole to '#{name}', so each member of the union picks its own overload, and #{member} reaches '#{target}'#{Program.type_once_place(match.def.location)}, whose parameter '#{target_arg.name}' has no type restriction"
+          note = "it passes parameter '#{arg.name}' (#{union_text}) whole to '#{name}', so each member of the union picks its own overload, and #{member_text} reaches '#{target}'#{Program.type_once_place(match.def.location)}, whose parameter '#{target_arg.name}' has no type restriction"
           notes = program.type_once_union_forwards[typed_caller.object_id] ||= [] of String
           notes << note unless notes.includes?(note)
         end
@@ -172,12 +179,19 @@ module Crystal
       ::raise error if type_once_error_in?(error) || error.is_a?(FrozenTypeException)
 
       a_def = match.def
-      innermost = error
-      while innermost.is_a?(TypeException) && (inner = innermost.inner)
-        innermost = inner
+      # The frames of the error, from the call in the body inward. The reason
+      # is the innermost frame that says something; the failing call is the
+      # outermost frame that instantiates one.
+      frames = [] of CodeError
+      current = error.as(CodeError?)
+      while current
+        frames << current
+        current = current.is_a?(TypeException) ? current.inner : nil
       end
-      reason = first_line(innermost.message)
-      reason += type_once_error_place(innermost) unless innermost.same?(error)
+      reason_frame = frames.reverse.find { |frame| !first_line(frame.message).empty? } || error
+      reason = first_line(reason_frame.message)
+      call_frame = frames.find { |frame| !frame.same?(reason_frame) && first_line(frame.message).starts_with?("instantiating '") }
+      reason += type_once_error_place(reason_frame) if call_frame || frames.size > 1
 
       message = String.build do |io|
         io << program.type_once_label(a_def) << " can't be typed once: "
@@ -185,12 +199,11 @@ module Crystal
           io << notes.first << ". That overload fails: " << reason
         else
           io << "typed for its declared types " << type_once_types(a_def, match) << ", "
-          failed_call = first_line(error.message)
-          if (quoted = failed_call.match(/\Ainstantiating '(.+)'\z/)) && !innermost.same?(error)
-            io << "the call '" << quoted[1] << "'" << type_once_error_place(error) << " fails: " << reason
+          if call_frame && (quoted = first_line(call_frame.message).match(/\Ainstantiating '(.+)'\z/))
+            io << "the call '" << quoted[1] << "'" << type_once_error_place(call_frame) << " fails: " << reason
           else
             io << "its body fails: " << reason
-            io << type_once_error_place(error) if innermost.same?(error)
+            io << type_once_error_place(reason_frame) unless call_frame || frames.size > 1
           end
           io << ". The method may only call what every type it is typed for accepts"
         end

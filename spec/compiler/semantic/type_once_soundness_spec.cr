@@ -187,7 +187,7 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         )
     end
 
-    it "is an error at the annotation that names the failing call" do
+    it "is an error at the annotation that names the method, its declared types and the failure" do
       assert_type_once_error MODELS + %(
         @[TypeOnce]
         def store(record : Model) : Int32
@@ -195,7 +195,30 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         end
 
         store(Post.new)
-        ), "@[TypeOnce] method 'store' can't be typed once: typed for its declared types (record : Model+), the call 'Model+#save()'", "fails: save needs a concrete model, not Model"
+        ), "@[TypeOnce] method 'store' can't be typed once: typed for its declared types (record : Model+), its body fails: save needs a concrete model, not Model"
+    end
+
+    it "names the call in the body that fails" do
+      assert_type_once_error %(
+        class Record
+          def publish_all : Int32
+            publish
+          end
+        end
+
+        class Post < Record
+          def publish : Int32
+            1
+          end
+        end
+
+        @[TypeOnce]
+        def release(record : Record) : Int32
+          record.publish_all
+        end
+
+        release(Post.new)
+        ), "@[TypeOnce] method 'release' can't be typed once: typed for its declared types (record : Record+), the call 'Record+#publish_all()'", "fails: undefined local variable or method 'publish' for Record"
     end
 
     it "names the types the callers pass" do
@@ -233,7 +256,7 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         end
 
         Query.new.order("name")
-        ), "@[TypeOnce] method 'Query#order' can't be typed once: it passes parameter 'sql' (String | Trusted) whole to 'order!', so each member of the union picks its own overload, and Trusted reaches 'Query#order!(dsl)'", ", whose parameter 'dsl' has no type restriction. That overload fails: undefined method 'columns' for Trusted"
+        ), "@[TypeOnce] method 'Query#order' can't be typed once: it passes parameter 'sql' (String | Trusted) whole to 'order!', so each member of the union picks its own overload, and Trusted reaches 'Query#order!(dsl)'", ", whose parameter 'dsl' has no type restriction. That overload fails: undefined method 'columns'"
     end
   end
 
