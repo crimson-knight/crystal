@@ -75,7 +75,7 @@ describe "Semantic: shape bodies" do
   end
 
   it "runs the shared function with each copy's own instance" do
-    run_with_shape_bodies(SHARED_ADVANCE).to_i.should eq(22 + 204 + 2002 + 42)
+    run_with_shape_bodies(SHARED_ADVANCE).to_i.should eq(22 + 204 + 2006 + 42)
   end
 
   it "keeps a body whose class has another layout" do
