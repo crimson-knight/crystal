@@ -733,8 +733,8 @@ module Crystal
     #   goes there, at the end, as in a `Hash`).
     #
     # A copy shares both overlay hashes until either side writes, and a map
-    # whose overlay outgrows `#flatten_threshold` folds it into a new base of
-    # its own.
+    # whose overlay has outgrown `#flatten_threshold` when it is copied folds
+    # it into a new base of its own first.
     class Layers
       getter base : Base
       @changed_by_name : Hash(String, MetaVar?)?
@@ -752,6 +752,7 @@ module Crystal
       end
 
       def copy : Layers
+        flatten if overlay_size > flatten_threshold && @iteration_depth == 0
         copy = Layers.new(@base, @changed_by_name, @added_by_name, @deleted_count)
         if @changed_by_name || @added_by_name
           @shares_overlay = true
@@ -786,7 +787,6 @@ module Crystal
         else
           (@added_by_name ||= Hash(String, MetaVar).new)[name] = var
         end
-        flatten if overlay_size > flatten_threshold && @iteration_depth == 0
         var
       end
 
@@ -872,9 +872,10 @@ module Crystal
         (@changed_by_name.try(&.size) || 0) + (@added_by_name.try(&.size) || 0)
       end
 
-      # An overlay of about twice the square root of the base: a copy then
-      # costs that much, and a write that folds the overlay into a new base
-      # comes once per as many writes.
+      # An overlay of about twice the square root of the base: a copy costs
+      # at most that much, and a copy that first folds a larger overlay into
+      # a new base comes after at least as many writes. Writes alone never
+      # fold, so a map filled one variable at a time stays linear.
       private def flatten_threshold : Int32
         Math.max(32, 2 * Math.sqrt(@base.size).to_i)
       end
