@@ -559,4 +559,117 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
       report["reason"].as_s.should contain("typed once for every instance")
     end
   end
+
+  it "types the top-level code of an edited routes-like file alone" do
+    with_tempfile("infer-reuse-top-level") do |directory|
+      project = InferReuseProject.new(directory)
+      begin
+        project.write("main.cr", <<-CRYSTAL)
+          class Registry
+            @@list_of_paths = [] of String
+
+            def self.draw(&) : Nil
+              with new yield
+            end
+
+            def add(path : String) : Nil
+              @@list_of_paths << path
+            end
+
+            def self.list_of_paths : Array(String)
+              @@list_of_paths
+            end
+          end
+
+          require "./routes"
+
+          puts Registry.list_of_paths.join(",")
+
+          CRYSTAL
+        routes = "Registry.draw do\n  add \"/a\"\n  add \"/b\"\nend\n"
+        project.write("routes.cr", routes)
+        expect_build(project, "/a,/b\n", reused: false)
+
+        project.write("routes.cr", routes.sub("  add \"/a\"\n", "  add \"/c\"\n  add \"/a\"\n"))
+        report = expect_build(project, "/c,/a,/b\n", reused: true)
+        report["reason"].as_s.should contain("top-level code of 1 files typed again")
+
+        # A constant in the file types the whole program again.
+        project.write("routes.cr", "EXTRA = \"/e\"\n" + routes)
+        report = expect_build(project, "/a,/b\n", reused: false)
+        report["reason"].as_s.should contain("assigns EXTRA")
+      ensure
+        project.stop_servers
+      end
+    end
+  end
+
+  it "takes in a new file a glob require finds, when it only declares new types" do
+    with_tempfile("infer-reuse-new-file") do |directory|
+      project = InferReuseProject.new(directory)
+      begin
+        Dir.mkdir_p(File.join(directory, "models"))
+        project.write("models/person.cr", <<-CRYSTAL)
+          class Person
+            getter first_name : String
+
+            def initialize(@first_name : String)
+            end
+          end
+          CRYSTAL
+        main = <<-CRYSTAL
+          require "./models/**"
+
+          class Greeter
+            def greet(person : Person) : String
+              "Hello \#{person.first_name}"
+            end
+          end
+
+          puts Greeter.new.greet(Person.new("Ada"))
+
+          CRYSTAL
+        project.write("main.cr", main)
+        expect_build(project, "Hello Ada\n", reused: false)
+
+        project.write("models/person_label.cr", <<-CRYSTAL)
+          struct PersonLabel
+            def initialize(@person : Person)
+            end
+
+            def to_s(io : IO) : Nil
+              io << "label: " << @person.first_name
+            end
+          end
+          CRYSTAL
+        project.write("main.cr", main.sub(%("Hello \#{person.first_name}"), %("Hello \#{PersonLabel.new(person)}")))
+        report = expect_build(project, "Hello label: Ada\n", reused: true)
+        report["reason"].as_s.should contain("1 new files")
+
+        # The next edit compares with the file the server took in.
+        project.write("main.cr", main.sub(%("Hello \#{person.first_name}"), %("Hi \#{PersonLabel.new(person)}")))
+        expect_build(project, "Hi label: Ada\n", reused: true)
+      ensure
+        project.stop_servers
+      end
+    end
+  end
+
+  it "types the whole program again for a new file that reopens a type" do
+    with_tempfile("infer-reuse-new-file-reopen") do |directory|
+      project = InferReuseProject.new(directory)
+      begin
+        Dir.mkdir_p(File.join(directory, "models"))
+        project.write("models/person.cr", "class Person\n  def name : String\n    \"Ada\"\n  end\nend\n")
+        project.write("main.cr", "require \"./models/**\"\n\nputs Person.new.name\n")
+        expect_build(project, "Ada\n", reused: false)
+
+        project.write("models/person_more.cr", "class Person\n  def other : String\n    \"Bob\"\n  end\nend\n")
+        report = expect_build(project, "Ada\n", reused: false)
+        report["reason"].as_s.should contain("which the program has")
+      ensure
+        project.stop_servers
+      end
+    end
+  end
 end

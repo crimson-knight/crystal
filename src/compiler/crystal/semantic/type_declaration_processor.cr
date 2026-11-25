@@ -128,9 +128,15 @@ struct Crystal::TypeDeclarationProcessor
       @guessed_instance_vars, @initialize_infos, @instance_vars_outside, @errors)
   end
 
-  def process(node)
+  # *finished_hooks* is false for the declarations of a new file a build
+  # server takes in (`InferReuse::NewFile`): the hooks ran in the kept build.
+  def process(node, finished_hooks : Bool = true)
     # First check type declarations
-    @program.visit_with_finished_hooks(node, type_decl_visitor)
+    if finished_hooks
+      @program.visit_with_finished_hooks(node, type_decl_visitor)
+    else
+      node.accept type_decl_visitor
+    end
 
     # Use the last type found for class variables to declare them
     type_decl_visitor.class_vars.each do |owner, vars|
@@ -141,7 +147,11 @@ struct Crystal::TypeDeclarationProcessor
 
     # Then use several syntactic rules to infer the types of
     # variables that don't have an explicit type set
-    @program.visit_with_finished_hooks(node, type_guess_visitor)
+    if finished_hooks
+      @program.visit_with_finished_hooks(node, type_guess_visitor)
+    else
+      node.accept type_guess_visitor
+    end
 
     # Process class variables
     type_guess_visitor.class_vars.each do |owner, vars|

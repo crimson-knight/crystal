@@ -2164,19 +2164,25 @@ module Crystal
       when "superclass"
         interpret_check_args { TypeNode.superclass(type) }
       when "subclasses"
+        interpreter.@program.infer_reuse_record.try &.add_type_list_read(type)
         interpret_check_args { TypeNode.subclasses(type) }
       when "all_subclasses"
+        interpreter.@program.infer_reuse_record.try &.add_type_list_read(type)
         interpret_check_args { TypeNode.all_subclasses(type) }
       when "includers"
+        interpreter.@program.infer_reuse_record.try &.add_type_list_read(type)
         interpret_check_args { TypeNode.includers(type) }
       when "constants"
+        interpreter.@program.infer_reuse_record.try &.add_type_list_read(type)
         interpret_check_args { TypeNode.constants(type) }
       when "constant"
+        interpreter.@program.infer_reuse_record.try &.add_type_list_read(type)
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#constant'")
           TypeNode.constant(type, value)
         end
       when "has_constant?"
+        interpreter.@program.infer_reuse_record.try &.add_type_list_read(type)
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#has_constant?'")
           TypeNode.has_constant?(type, value)
