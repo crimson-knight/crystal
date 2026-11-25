@@ -148,9 +148,15 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       parser = @program.new_parser(content)
       parser.filename = filename
       parser.wants_doc = @program.wants_doc?
+      # The bodies of the defs this file declares can be parsed again from
+      # its text once they are let go (see `lazy_def_bodies.cr`).
+      file_inside_exp = inside_exp?
+      lazy_recorder = @program.lazy_def_bodies? ? ReparsableDefBodies.new(@program, filename, content, nil, ->(parsed : ASTNode) { @program.normalize(parsed, inside_exp: file_inside_exp) }) : nil
+      parser.def_body_recorder = lazy_recorder
       begin
         parsed_nodes = parser.parse
         parsed_nodes = @program.normalize(parsed_nodes, inside_exp: inside_exp?)
+        lazy_recorder.try &.attach_sources
         # We must type the node immediately, in case a file requires another
         # *before* one of the files in `filenames`
         parsed_nodes.accept self

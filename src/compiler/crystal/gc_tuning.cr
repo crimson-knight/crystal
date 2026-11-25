@@ -11,6 +11,7 @@
   lib LibGC
     fun set_free_space_divisor = GC_set_free_space_divisor(value : Word)
     fun get_free_space_divisor = GC_get_free_space_divisor : Word
+    fun set_min_bytes_allocd = GC_set_min_bytes_allocd(value : SizeT)
   end
 {% end %}
 
@@ -93,23 +94,42 @@ module Crystal
       {% end %}
     end
 
-    # The divisor of a code generation child of the build server (see
-    # `enter_build_server_child`).
-    BUILD_SERVER_CHILD_FREE_SPACE_DIVISOR = 1_u64
+    # How much a code generation child of the build server allocates, at
+    # least, between two collections (see `enter_build_server_child`).
+    BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED = 500_000_000_u64
 
-    # Lets the collector of a code generation child of the build server
-    # (`InferReuse`) grow its heap by as much as the heap it inherits before
-    # it collects. The child starts with the typed program of the server
-    # (4.4 GB of live data in an Amber app of 300 resources), and with the
-    # compiler's divisor it marked all of it about four times while it
-    # generated the code of a one-method edit (1.6 s), each time to find
-    # little more than what the child had allocated since. With this divisor
-    # it collects once its own allocations reach the size of that heap.
-    # `CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR=N` sets another one (0 keeps the
-    # compiler's), for measuring.
+    # Sets how often the collector of a code generation child of the build
+    # server (`InferReuse`) collects. The child starts with the typed program
+    # of the server (4.4 GB of live data in an Amber app of 300 resources).
+    #
+    # A free space divisor of 1 (#64) let the child collect less while it
+    # generated the code of an edit, but in the first build, whose child
+    # generates the code of the whole program, it let the heap grow from 4.5
+    # to 7.8 GB (2.7 GB more than the compiler's divisor); 2 and 3 did the
+    # same (two collections in either case). Measured on amber300
+    # (notes/rebuild-round3.md), the child now keeps the compiler's divisor
+    # and collects after `BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED` at least:
+    #
+    # | Child setting | First build peak | Body edit peak | Collections in an edit |
+    # |---|---|---|---|
+    # | divisor 1 | 9.7 GB | 9.4 GB | 1 |
+    # | compiler's divisor (10) | 9.2 GB | 8.6 GB | 2 |
+    # | floor of 1 GB | 8.9 GB | 8.7 GB | 2 |
+    # | floor of 500 MB | 8.7 GB | 8.7 GB | 2 |
+    #
+    # (The first-build peaks of the floors also leave out the owner shape walk,
+    # see `Holder#walk_owner_shapes`.) An edit saves one collection at most with
+    # a lower divisor, a fraction of a second, so the floor is set for memory.
+    #
+    # For measuring: `CRYSTAL_GC_CHILD_MIN_BYTES_ALLOCATED=N` sets the floor
+    # (0 keeps the collector's), and `CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR=N` sets
+    # a divisor as well (0 or unset keeps the compiler's).
     def self.enter_build_server_child : Nil
       {% unless flag?(:gc_none) || flag?(:wasm32) %}
-        divisor = ENV["CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR"]?.try(&.to_u64?) || BUILD_SERVER_CHILD_FREE_SPACE_DIVISOR
+        min_bytes_allocated = ENV["CRYSTAL_GC_CHILD_MIN_BYTES_ALLOCATED"]?.try(&.to_u64?) || BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED
+        LibGC.set_min_bytes_allocd(LibC::SizeT.new(min_bytes_allocated)) if min_bytes_allocated > 0
+
+        divisor = ENV["CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR"]?.try(&.to_u64?) || 0_u64
         return if divisor == 0
 
         LibGC.set_free_space_divisor(LibGC::Word.new(divisor))
@@ -149,6 +169,30 @@ module Crystal
           LibGC.set_free_space_divisor(previous_divisor)
         end
       {% end %}
+    end
+
+    # The number of collections so far (0 without the collector).
+    def self.collection_number : UInt64
+      {% if flag?(:gc_none) || flag?(:wasm32) %}
+        0_u64
+      {% else %}
+        LibGC.gc_no.to_u64!
+      {% end %}
+    end
+
+    # Collects once more if the collector collected since *collection_number*.
+    #
+    # The collector works out how much to allocate before its next collection
+    # at the first allocation after a collection, from the divisor it has then,
+    # and keeps that amount until it collects again. A re-typing that collected
+    # with `BUILD_SERVER_RETYPE_FREE_SPACE_DIVISOR` left that amount (half the
+    # heap or more) to the code generation child forked after it, whose divisor
+    # and floor (`enter_build_server_child`) then did not apply: a body edit of
+    # Grant300 grew the child's heap from 4.6 to 6.1 GB without a collection,
+    # a peak 1.9 GB above the same edit's. One collection here, after the
+    # divisor is back, makes the collector work it out again.
+    def self.collect_if_collected_since(collection_number : UInt64) : Nil
+      GC.collect if self.collection_number != collection_number
     end
 
     class_property? collects_at_stages : Bool = false

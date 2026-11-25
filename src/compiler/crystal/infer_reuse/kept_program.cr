@@ -42,12 +42,12 @@ module Crystal::InferReuse
 
       loop do
         if pid = InferReuse.fork_process
-          walk_owner_shapes(kept)
           exit_code = InferReuse.wait_for(pid)
           exit exit_code unless exit_code == 0
 
           hand_over(status_writer)
           File.write("#{socket_path}.pid", "#{::Process.pid}\n")
+          walk_owner_shapes(kept)
           kept, status_writer = Server.new(listener, socket_path).serve(kept)
           # A build child that re-typed an edit: generate code again.
         else
@@ -59,10 +59,15 @@ module Crystal::InferReuse
       end
     end
 
-    # Walks the typed defs of the kept program for owner shape sharing while
-    # the code generation child builds, so that the next build child walks
-    # only what its edit changed (see `OwnerShapeSharing::WalkCache`). The
-    # walks only save time: a failure leaves the program without them.
+    # Walks the typed defs of the kept program for owner shape sharing once
+    # the code generation child is done and the build handed over, so that
+    # the next build child walks only what its edit changed (see
+    # `OwnerShapeSharing::WalkCache`). Walking while the child built added
+    # what the walk allocates (1.0 to 1.3 GB in an Amber app of 300
+    # resources) to the build's memory peak; now it is idle time of the
+    # server, and a build that comes at once waits for the walk in the
+    # listening queue. The walks only save time: a failure leaves the
+    # program without them.
     private def walk_owner_shapes(kept : KeptProgram) : Nil
       OwnerShapeSharing.walk_all(kept.program, kept.node)
     rescue ex

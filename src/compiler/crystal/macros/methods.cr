@@ -1752,7 +1752,7 @@ module Crystal
           end
         end
       when "body"
-        interpret_check_args { @body }
+        interpret_check_args { body }
       when "receiver"
         interpret_check_args { receiver || Nop.new }
       when "visibility"
