@@ -39,20 +39,32 @@ class Crystal::CodeGenVisitor
 
   private def match_any_type_id_with_function(type, type_id)
     record_ir_type_effect(IrSkip::TraceKind::Match, type)
-    func = match_fun_in_main(type)
-    func = check_main_fun func.func.name, func
-    call func, [type_id] of LLVM::Value
+    call match_fun(type), [type_id] of LLVM::Value
   end
 
   # The function that tells whether a type id is that of *type* or of one
-  # of its subtypes, defined in the main module on first use.
-  def match_fun_in_main(type : UnionType | VirtualType | VirtualMetaclassType) : LLVMTypedFunction
+  # of its subtypes, in the module code is being generated into: one of the
+  # type tables (see `TypeTables`).
+  def match_fun(type : UnionType | VirtualType | VirtualMetaclassType) : LLVMTypedFunction
     match_fun_name = "~match<#{type.llvm_name}>"
-    typed_fun?(@main_mod, match_fun_name) || create_match_fun(match_fun_name, type)
+    @type_table_requests.match_type_by_fun_name[match_fun_name] ||= type unless type_tables_home
+    type_table_fun(match_fun_name, LLVM::Type.function([llvm_context.int32], llvm_context.int1)) do
+      create_match_fun(match_fun_name, type)
+    end
+  end
+
+  # Makes sure the subtype check of *type* is defined, without declaring it
+  # in the module code is being generated into. A replayed trace asks this way.
+  def request_match_fun(type : UnionType | VirtualType | VirtualMetaclassType) : Nil
+    if home = type_tables_home
+      in_module(home) { match_fun(type) }
+    else
+      @type_table_requests.match_type_by_fun_name["~match<#{type.llvm_name}>"] ||= type
+    end
   end
 
   private def create_match_fun(name, type)
-    in_main do
+    in_module(type_tables_home || raise "BUG: #{name} is defined before the type tables are generated") do
       define_main_function(name, ([llvm_context.int32]), llvm_context.int1) do |func|
         set_internal_fun_debug_location(func, name)
         type_id = func.params.first

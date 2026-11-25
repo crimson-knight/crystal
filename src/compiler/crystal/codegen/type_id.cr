@@ -1,16 +1,28 @@
 require "./codegen"
 
 class Crystal::CodeGenVisitor
-  # The global that holds the id of *type*, defined in the main module on
-  # first use. Every other module reads the id from it.
-  def type_id_global_in_main(type : Type) : LLVM::Value
-    type_id_name = "#{type.llvm_name}:type_id"
+  # Makes sure the global that holds the id of *type* is defined: in the
+  # module that defines the type tables (see `TypeTables`), or, before that
+  # module is generated, among its requests. A replayed trace asks this way.
+  def request_type_id_global(type : Type) : Nil
+    if home = type_tables_home
+      type_id_global_in(home, type)
+    else
+      @type_table_requests.type_by_type_id_name["#{type.llvm_name}:type_id"] ||= type
+    end
+  end
 
-    global = @main_mod.globals[type_id_name]?
+  # The global that holds the id of *type* in *module_info*, the module
+  # that defines the type tables.
+  def type_id_global_in(module_info : ModuleInfo, type : Type) : LLVM::Value
+    type_id_name = "#{type.llvm_name}:type_id"
+    llvm_mod = module_info.mod
+
+    global = llvm_mod.globals[type_id_name]?
     unless global
-      global = @main_mod.globals.add(@main_llvm_context.int32, type_id_name)
+      global = llvm_mod.globals.add(llvm_mod.context.int32, type_id_name)
       global.linkage = LLVM::Linkage::Internal if @single_module
-      global.initializer = @main_llvm_context.int32.const_int(@program.llvm_id.type_id(type))
+      global.initializer = llvm_mod.context.int32.const_int(@program.llvm_id.type_id(type))
       global.global_constant = true
     end
     global
@@ -82,15 +94,15 @@ class Crystal::CodeGenVisitor
   private def type_id_impl(type)
     record_ir_type_effect(IrSkip::TraceKind::TypeId, type)
     type_id_name = "#{type.llvm_name}:type_id"
-    global = type_id_global_in_main(type)
+    request_type_id_global(type)
 
-    if @llvm_mod != @main_mod
-      global = @llvm_mod.globals[type_id_name]?
-      unless global
-        global = @llvm_mod.globals.add(@llvm_context.int32, type_id_name)
-        global.linkage = LLVM::Linkage::External
-        global.global_constant = true
-      end
+    # The module that defines the tables has the global; every other module
+    # declares it.
+    global = @llvm_mod.globals[type_id_name]?
+    unless global
+      global = @llvm_mod.globals.add(@llvm_context.int32, type_id_name)
+      global.linkage = LLVM::Linkage::External
+      global.global_constant = true
     end
 
     load(@llvm_context.int32, global)

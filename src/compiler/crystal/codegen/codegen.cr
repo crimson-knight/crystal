@@ -673,7 +673,7 @@ module Crystal
       generate_deferred_funs
 
       finish_ir_skip
-      codegen_typeinfo
+      generate_type_tables
       check_no_deferred_funs_left
 
       env_dump = ENV["DUMP"]?
@@ -1821,7 +1821,7 @@ module Crystal
       @needs_typeinfo = true
 
       # A module that is skipped (see `IrSkip`) replays this effect, so the
-      # main module still defines the map.
+      # type tables still define the map.
       record_ir_effect(IrSkip::TraceKind::ClassNameMap)
 
       type_id_map = load llvm_type(@program.string).pointer, define_type_id_to_class_name_ptr
@@ -1829,34 +1829,37 @@ module Crystal
       load llvm_type(@program.string), str_ptr
     end
 
-    def create_type_id_to_class_name_map
+    def create_type_id_to_class_name_map(module_info : ModuleInfo)
       llvm_id = @program.llvm_id
-      string_type = @main_llvm_typer.llvm_type(@program.string)
+      string_type = module_info.typer.llvm_type(@program.string)
       # An id that no type has (possible with kept ids) maps to a null
       # string; no value ever carries such an id.
       id_map = Array(LLVM::Value).new(size: llvm_id.id_limit, value: string_type.null)
       llvm_id.each_type_with_id do |type, type_id|
-        id_map[type_id] = build_string_constant(type.to_s, module_info: @main_module_info)
+        id_map[type_id] = build_string_constant(type.to_s, module_info: module_info)
       end
 
       string_type.const_array(id_map)
     end
 
-    def codegen_typeinfo : Nil
+    # Defines the map from type ids to class names in *module_info*, the
+    # module that defines the type tables (see `TypeTables`).
+    def codegen_typeinfo(module_info : ModuleInfo) : Nil
       return unless @needs_typeinfo
 
-      str_type = @main_llvm_typer.llvm_type(@program.string)
+      llvm_mod = module_info.mod
+      str_type = module_info.typer.llvm_type(@program.string)
       map_type = str_type.array(@program.llvm_id.id_limit)
 
-      map_global = @main_mod.globals.add(map_type, TYPE_ID_TO_CLASS_NAME_MAP)
+      map_global = llvm_mod.globals.add(map_type, TYPE_ID_TO_CLASS_NAME_MAP)
       map_global.linkage = LLVM::Linkage::Private
-      map_global.initializer = create_type_id_to_class_name_map
+      map_global.initializer = create_type_id_to_class_name_map(module_info)
       map_global.global_constant = true
 
-      ptr_global = define_type_id_to_class_name_ptr(llvm_mod: @main_mod, llvm_typer: @main_llvm_typer)
+      ptr_global = define_type_id_to_class_name_ptr(llvm_mod: llvm_mod, llvm_typer: module_info.typer)
       # The map's own address (the GEP to element 0 folds to it with opaque
       # pointers); a GEP built here would take its indices from the LLVM
-      # context of the module generated last, which is not the main one.
+      # context of the module generated last, which is not this one.
       {% if LibLLVM::IS_LT_150 %}
         ptr_global.initializer = gep(map_type, map_global, 0, 0)
       {% else %}
@@ -2142,6 +2145,13 @@ module Crystal
     end
 
     def in_main(&)
+      in_module(@main_module_info) { yield }
+    end
+
+    # Generates what the block generates into *module_info* (the main module,
+    # or the type tables, see `TypeTables`), then returns to the function
+    # code was being generated into.
+    def in_module(module_info : ModuleInfo, &)
       old_builder = self.builder
       old_position = old_builder.insert_block
       old_llvm_mod = @llvm_mod
@@ -2158,11 +2168,11 @@ module Crystal
       old_needs_value = @needs_value
       old_debug_location = @current_debug_location
 
-      @llvm_mod = @main_mod
-      @module_info = @main_module_info
-      @llvm_context = @main_llvm_context
-      @llvm_typer = @main_llvm_typer
-      @builder = @main_builder
+      @llvm_mod = module_info.mod
+      @module_info = module_info
+      @llvm_context = module_info.mod.context
+      @llvm_typer = module_info.typer
+      @builder = module_info.builder
 
       @ensure_exception_handlers = nil
       @rescue_block = nil
@@ -2202,11 +2212,11 @@ module Crystal
     end
 
     def define_main_function(name, type : LLVM::Type, needs_alloca : Bool = false, &)
-      if @llvm_mod != @main_mod
+      unless @module_info.same?(@main_module_info) || @module_info.same?(@type_tables_module_info)
         raise "wrong usage of define_main_function: you must put it inside an `in_main` block"
       end
 
-      func = add_typed_fun(@main_mod, name, type)
+      func = add_typed_fun(@module_info, name, type)
       context.fun = func.func
       context.fun_type = type
       context.fun.linkage = LLVM::Linkage::Internal if @single_module

@@ -275,14 +275,14 @@ class Crystal::CodeGenVisitor
         type = ir_trace_type?(walk, entry.subject_index, entry.text)
         return "a type of the trace is not known" unless type
 
-        type_id_global_in_main(type)
+        request_type_id_global(type)
       in .match?
         type = ir_trace_type?(walk, entry.subject_index, entry.text)
         unless type.is_a?(UnionType) || type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
           return "a type of the trace is not known"
         end
 
-        match_fun_in_main(type)
+        request_match_fun(type)
       in .const_pointer?
         const = walk.list_of_consts[entry.subject_index]?
         return "a constant of the trace is not among the constants of the def" unless const
@@ -296,7 +296,7 @@ class Crystal::CodeGenVisitor
 
         request_class_var_pointer_in_main(class_var)
       in .metaclass?
-        metaclass_fun_in_main
+        request_metaclass_fun
       in .check_proc_is_not_closure?
         check_proc_is_not_closure_fun_in_main
       in .class_name_map?
