@@ -2,8 +2,11 @@ require "uri"
 require "./http/client"
 require "./http/server"
 # The umbrella keeps HTTP::Server#bind_tls, which HTTP::Client no longer brings
-# in now that the client speaks TLS through Beryl.
-require "./http/server/tls"
+# in now that the client speaks TLS through Beryl. A build without OpenSSL (the
+# compiler itself is one) has no server TLS to keep.
+{% unless flag?(:without_openssl) %}
+  require "./http/server/tls"
+{% end %}
 require "./http/log"
 require "./http/common"
 
