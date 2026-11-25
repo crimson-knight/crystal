@@ -48,6 +48,7 @@ class Crystal::Program
     end
     MemoryCensus.report(self, result, "Semantic (main)") if MemoryCensus.enabled?
     report_receiver_free_sharing
+    report_lazy_def_bodies
     GenericTypeOnce.check_assumptions(self)
     GenericTypeOnce::Probe.report(self)
 

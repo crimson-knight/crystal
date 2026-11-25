@@ -58,6 +58,7 @@ module Crystal
     property lazy_def_bodies_dropped = 0
     property lazy_def_bodies_parsed_again = 0
     property lazy_def_bodies_differ = 0
+    property lazy_def_bodies_dropped_again = 0
 
     # Lets go of the bodies that can be parsed again. Called when type
     # inference starts.
@@ -71,6 +72,13 @@ module Crystal
       if (verify && @lazy_def_bodies_differ > 0) || ENV["CRYSTAL_LAZY_DEF_BODIES_STATS"]? == "1"
         STDERR.puts "lazy def bodies: #{@lazy_def_bodies_dropped} let go#{verify ? ", #{@lazy_def_bodies_differ} kept because they differ when parsed again" : ""}"
       end
+    end
+
+    # Prints how many bodies were parsed again, with
+    # `CRYSTAL_LAZY_DEF_BODIES_STATS=1`. Called when type inference ends.
+    def report_lazy_def_bodies : Nil
+      return unless lazy_def_bodies? && ENV["CRYSTAL_LAZY_DEF_BODIES_STATS"]? == "1"
+      STDERR.puts "lazy def bodies: #{@lazy_def_bodies_parsed_again} parsed again during type inference, #{@lazy_def_bodies_dropped_again} let go again once typed"
     end
 
     private def drop_lazy_def_bodies(type : Type, visited : Set(UInt64), verify : Bool) : Nil
