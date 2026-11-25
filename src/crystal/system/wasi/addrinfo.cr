@@ -2,6 +2,12 @@ module Crystal::System::Addrinfo
   alias Handle = NoReturn
 
   protected def initialize(addrinfo : Handle)
+    # `Socket::Addrinfo` declares these as non-nilable, so they are set before
+    # the raise even though WASI never builds an address.
+    @family = ::Socket::Family::UNSPEC
+    @type = ::Socket::Type::STREAM
+    @protocol = ::Socket::Protocol::IP
+    @size = 0
     raise NotImplementedError.new("Crystal::System::Addrinfo#initialize: DNS resolution is not available in WASI Preview 1. Networking support will be added when Crystal targets WASI Preview 2.")
   end
 

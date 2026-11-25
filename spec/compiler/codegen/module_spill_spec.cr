@@ -234,6 +234,53 @@ describe "Compiler#resident_modules and Compiler#resident_ir_megabytes" do
     end
   end
 
+  it "generates the deferred functions of a deep chain that only an uncalled `fun` reaches" do
+    with_tempfile("module_spill_deep_chain_in_fun") do |directory|
+      Dir.mkdir_p(directory)
+      program = File.join(directory, "program.cr")
+      # `fun` bodies that no Crystal code calls are generated last, after
+      # the deferred functions of the main program. Each `fun` starts a
+      # chain of 12 functions in 12 modules, so the end of each chain is
+      # deferred; before the fix it was declared and never defined, and the
+      # link failed with undefined symbols.
+      File.write(program, <<-CRYSTAL)
+        require "prelude"
+
+        {% for index in 1..12 %}
+          module Step{{index}}
+            def self.call(value : Int32) : Int32
+              {% if index > 1 %}
+                Step{{index - 1}}.call(value + {{index}})
+              {% else %}
+                value + 1
+              {% end %}
+            end
+          end
+        {% end %}
+
+        fun spec_deep_chain_first(value : Int32) : Int32
+          Step12.call(value)
+        end
+
+        fun spec_deep_chain_second(value : Int32) : Int32
+          Step12.call(value * 2)
+        end
+
+        puts "linked"
+        CRYSTAL
+      executable = File.join(directory, "deep_chain_in_fun")
+
+      compiler = Crystal::Compiler.new
+      compiler.resident_ir_megabytes = 1
+      ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
+      compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
+
+      module_spill = compiler.last_module_spill.should_not be_nil
+      module_spill.deferred_fun_count.should be > 0
+      Process.capture(executable).should eq("linked\n")
+    end
+  end
+
   it "keeps every module in memory with 0" do
     with_tempfile("module_spill_off") do |directory|
       Dir.mkdir_p(directory)

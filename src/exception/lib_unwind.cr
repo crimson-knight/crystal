@@ -248,7 +248,9 @@ end
   # :nodoc:
   fun _Unwind_SetGR(context : Void*, index : Int32, value : LibC::SizeT)
     if index == LibUnwind::EH_REGISTER_1
-      LibWasmEH.__wasm_lpad_context.selector = value.to_i32
+      # Write through a pointer: reading the lib global returns a copy of the
+      # struct, and a field write on that copy never reaches the global.
+      pointerof(LibWasmEH.__wasm_lpad_context).value.selector = value.to_i32
     end
   end
 

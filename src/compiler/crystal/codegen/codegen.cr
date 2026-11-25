@@ -668,9 +668,13 @@ module Crystal
       @unused_fun_defs.each do |node|
         codegen_fun node.real_name, node.external, @program, is_exported_fun: true
       end
+      # A `fun` with a body that no Crystal code calls is generated only
+      # here, and a deep chain in it defers functions like any other.
+      generate_deferred_funs
 
       finish_ir_skip
       codegen_typeinfo
+      check_no_deferred_funs_left
 
       env_dump = ENV["DUMP"]?
       case env_dump
