@@ -219,6 +219,29 @@ describe "Semantic: receiver-free copies" do
       )).should eq(1)
   end
 
+  it "gives the error a copy of its own would give when a receiver reusing the copy has no access to a protected method" do
+    assert_error MODELS + %(
+      class Vault < Model
+        protected def secret : Int32
+          1
+        end
+      end
+
+      class InnerVault < Vault
+      end
+
+      class Model
+        def peek(vault : Vault) : Int32
+          vault.secret
+        end
+      end
+
+      InnerVault.new.peek(Vault.new)
+      First.new.peek(Vault.new)
+      ),
+      "protected method 'secret' called for Vault", inject_primitives: true
+  end
+
   it "is the same program with sharing on as with sharing off (types of every call)" do
     result = semantic(MODELS + %(
       a = First.new.double(1)

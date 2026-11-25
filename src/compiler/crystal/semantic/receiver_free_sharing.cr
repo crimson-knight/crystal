@@ -26,7 +26,9 @@ require "./call"
 #   pointer, `super` or `previous_def`;
 # * every call without a receiver resolves to no method of the receiver (so
 #   the lookup falls through to the top level for every receiver alike), and
-#   no call that could be a macro, or a protected method, is made;
+#   no call that could be a macro is made (a call to a protected method is
+#   checked again for each receiver that reuses the copy, once type inference
+#   ends);
 # * the method takes no block, no splat and no default argument at the call,
 #   and has no free variables.
 #
@@ -103,7 +105,10 @@ module Crystal
       getter? receiver_free : Bool
       getter list_of_receiverless_names : Array(String)
 
-      def initialize(@receiver_free : Bool, @list_of_receiverless_names : Array(String))
+      # Why the body is not receiver free, for the probe.
+      getter refusal : String?
+
+      def initialize(@receiver_free : Bool, @list_of_receiverless_names : Array(String), @refusal : String? = nil)
       end
     end
 
@@ -111,8 +116,14 @@ module Crystal
     class Scanner < Visitor
       getter? receiver_free = true
       getter list_of_receiverless_names = [] of String
+      getter refusal : String?
 
-      def initialize(@macro_names : Set(String), @protected_names : Set(String))
+      def initialize(@macro_names : Set(String))
+      end
+
+      def refuse(reason : String) : Nil
+        @refusal ||= reason
+        @receiver_free = false
       end
 
       def visit(node : ASTNode) : Bool
@@ -120,13 +131,13 @@ module Crystal
       end
 
       def visit(node : Var) : Bool
-        @receiver_free = false if node.name == "self"
+        refuse("self") if node.name == "self"
         false
       end
 
       def visit(node : InstanceVar | ClassVar | Self | Yield | ProcLiteral | ProcPointer | Primitive | Out | Def | Macro |
                        MacroExpression | MacroIf | MacroFor | MacroLiteral | MacroVerbatim | MacroVar) : Bool
-        @receiver_free = false
+        refuse(node.class.name.lchop("Crystal::"))
         false
       end
 
@@ -135,7 +146,7 @@ module Crystal
 
         name = node.name
         if node.super? || node.previous_def?
-          @receiver_free = false
+          refuse("super or previous_def")
           return false
         end
 
@@ -144,7 +155,7 @@ module Crystal
           # A global call (`::foo`) only looks at the top level.
           unless node.global?
             if @macro_names.includes?(name)
-              @receiver_free = false
+              refuse("macro name #{name}")
               return false
             end
             @list_of_receiverless_names << name unless @list_of_receiverless_names.includes?(name)
@@ -152,13 +163,7 @@ module Crystal
         else
           # A macro called on a type expands in the receiver's scope.
           if (obj.is_a?(Path) || obj.is_a?(Generic)) && @macro_names.includes?(name)
-            @receiver_free = false
-            return false
-          end
-          # Whether a protected method may be called depends on the caller's
-          # type.
-          if @protected_names.includes?(name)
-            @receiver_free = false
+            refuse("macro name #{name}")
             return false
           end
         end
@@ -188,7 +193,6 @@ module Crystal
   class Program
     @receiver_free_scans = {} of UInt64 => ReceiverFreeSharing::Scan
     @receiver_free_macro_names : Set(String)?
-    @receiver_free_protected_names : Set(String)?
     @receiver_free_method_missing : Bool?
 
     # The shared copies, by what they were typed for.
@@ -196,6 +200,18 @@ module Crystal
 
     # Copies compared in verify mode.
     getter list_of_receiver_free_verify_pairs = [] of ReceiverFreeSharing::VerifyPair
+
+    # `CRYSTAL_SHARE_RECEIVER_FREE_PROBE=<file>`: for every source def, its
+    # typed copies and why they were not shared.
+    getter receiver_free_probe : Hash(UInt64, {Def, Int32, String})? do
+      ENV["CRYSTAL_SHARE_RECEIVER_FREE_PROBE"]?.presence ? Hash(UInt64, {Def, Int32, String}).new : nil
+    end
+
+    def note_receiver_free_probe(source_def : Def, reason : String) : Nil
+      probe = receiver_free_probe || return
+      entry = probe[source_def.object_id]?
+      probe[source_def.object_id] = {source_def, (entry.try(&.[1]) || 0) + 1, entry.try(&.[2]) || reason}
+    end
 
     property receiver_free_shared_calls = 0_i64
     property receiver_free_registered = 0_i64
@@ -210,12 +226,12 @@ module Crystal
     def receiver_free_scan(a_def : Def) : ReceiverFreeSharing::Scan
       @receiver_free_scans[a_def.object_id] ||= begin
         if receiver_free_candidate?(a_def)
-          scanner = ReceiverFreeSharing::Scanner.new(receiver_free_macro_names, receiver_free_protected_names)
+          scanner = ReceiverFreeSharing::Scanner.new(receiver_free_macro_names)
           a_def.body.accept scanner
           a_def.return_type.try { |return_type| scanner.visit_return_type(return_type) }
-          ReceiverFreeSharing::Scan.new(scanner.receiver_free?, scanner.list_of_receiverless_names)
+          ReceiverFreeSharing::Scan.new(scanner.receiver_free?, scanner.list_of_receiverless_names, scanner.refusal)
         else
-          ReceiverFreeSharing::Scan.new(false, [] of String)
+          ReceiverFreeSharing::Scan.new(false, [] of String, "kind of method")
         end
       end
     end
@@ -250,18 +266,28 @@ module Crystal
       end
     end
 
-    private def receiver_free_protected_names : Set(String)
-      @receiver_free_protected_names ||= begin
-        names = Set(String).new
-        visited = Set(UInt64).new
-        collect_receiver_free_names(self, visited) do |type|
-          {type, type.metaclass}.each do |owner|
-            owner.defs.try &.each do |name, list|
-              names << name if list.any?(&.def.visibility.protected?)
-            end
+    # Every receiver that reused a shared copy, with that copy.
+    getter receiver_free_reuses = {} of {UInt64, UInt64} => {Type, Def}
+
+    def note_receiver_free_reuse(receiver : Type, shared_copy : Def) : Nil
+      @receiver_free_reuses[{receiver.object_id, shared_copy.object_id}] ||= {receiver, shared_copy}
+    end
+
+    # Raises, as a copy typed for the receiver would have, when a receiver
+    # that reused a shared copy has no access to a protected method the
+    # copy calls (access depends on the caller's type).
+    def check_receiver_free_protected_access : Nil
+      protected_calls = {} of UInt64 => Array(Call)
+      @receiver_free_reuses.each_value do |(receiver, shared_copy)|
+        calls = protected_calls[shared_copy.object_id] ||= ReceiverFreeSharing::ProtectedCalls.new.tap { |finder| shared_copy.body.accept(finder) }.list_of_calls
+        calls.each do |call|
+          call.target_defs.try &.each do |target|
+            next unless target.visibility.protected?
+            owner_type = (target.original_owner? || target.owner).instance_type
+            next if receiver.instance_type.has_protected_access_to?(owner_type)
+            call.raise "protected method '#{target.name}' called for #{target.original_owner? || target.owner}"
           end
         end
-        names
       end
     end
 
@@ -275,6 +301,16 @@ module Crystal
     # the shared copy, and prints the counters. Runs once type inference has
     # ended, when every type is final.
     def report_receiver_free_sharing : Nil
+      check_receiver_free_protected_access
+      if (probe = receiver_free_probe) && (path = ENV["CRYSTAL_SHARE_RECEIVER_FREE_PROBE"]?.presence)
+        File.open(path, "w") do |file|
+          probe.values.sort_by! { |entry| -entry[1] }.each do |entry|
+            a_def = entry[0]
+            location = a_def.location
+            file.puts "#{entry[1]}\t#{a_def.owner?}#{a_def.receiver ? "." : "#"}#{a_def.name}\t#{location.try(&.original_filename)}:#{location.try(&.line_number)}\t#{entry[2]}"
+          end
+        end
+      end
       if ReceiverFreeSharing.mode.verify?
         differ = 0
         @list_of_receiver_free_verify_pairs.each do |pair|
@@ -296,8 +332,29 @@ module Crystal
     # The declared return type is resolved again for each receiver (see
     # `Call#receiver_free_copy`); only `self` in it is refused here.
     def visit_return_type(node : ASTNode) : Nil
-      @receiver_free = false if node.is_a?(Self) || (node.is_a?(Path) && node.names == ["self"])
+      refuse("self in the return type") if node.is_a?(Self) || (node.is_a?(Path) && node.names == ["self"])
       node.accept(self) if node.is_a?(Generic) || node.is_a?(Union) || node.is_a?(Metaclass) || node.is_a?(ProcNotation)
+    end
+  end
+
+  # Finds the calls of a typed body that reach a protected method.
+  class ReceiverFreeSharing::ProtectedCalls < Visitor
+    getter list_of_calls = [] of Call
+
+    def visit(node : ASTNode) : Bool
+      if node.is_a?(ExpandableNode) && (expanded = node.expanded)
+        expanded.accept(self)
+      end
+      true
+    end
+
+    def visit(node : Call) : Bool
+      @list_of_calls << node if node.target_defs.try &.any?(&.visibility.protected?)
+      if expanded = node.expanded
+        expanded.accept(self)
+        return false
+      end
+      true
     end
   end
 
@@ -396,39 +453,45 @@ module Crystal
     # The receiver-free key for this call's *match*, or `nil` when the call
     # types its own copy (see `ReceiverFreeSharing`).
     private def receiver_free_key(match : Match, self_type : Type?) : ReceiverFreeSharing::Key?
-      return nil unless program.share_receiver_free_copies?
-      return nil if self_type || super? || previous_def? || with_scope
+      key = receiver_free_key_or_refusal(match, self_type)
+      key.is_a?(ReceiverFreeSharing::Key) ? key : nil
+    end
+
+    # The key, or why this call types its own copy.
+    protected def receiver_free_key_or_refusal(match : Match, self_type : Type?) : ReceiverFreeSharing::Key | String
+      return "off" unless program.share_receiver_free_copies?
+      return "super, previous_def, self type or with scope" if self_type || super? || previous_def? || with_scope
 
       a_def = match.def
-      return nil unless match.arg_types.size == a_def.args.size && match.named_arg_types.nil?
+      return "default, splat or named arguments" unless match.arg_types.size == a_def.args.size && match.named_arg_types.nil?
       scan = program.receiver_free_scan(a_def)
-      return nil unless scan.receiver_free?
+      return scan.refusal || "body" unless scan.receiver_free?
 
       context = match.context
-      return nil if context.def_free_vars || context.self_restriction_type
+      return "free variables" if context.def_free_vars || context.self_restriction_type
       if bound_free_vars = context.bound_free_vars
-        return nil unless bound_free_vars.empty?
+        return "free variables" unless bound_free_vars.empty?
       end
 
       receiver = context.instantiated_type
       if call_obj = obj
         call_receiver = call_obj.type?.try(&.remove_indirection)
-        return nil unless call_receiver && call_receiver.same?(receiver)
+        return "receiver differs from the call's" unless call_receiver && call_receiver.same?(receiver)
       end
       kind = ReceiverFreeSharing.receiver_kind(receiver)
-      return nil unless kind
+      return "receiver kind" unless kind
 
       unless scan.list_of_receiverless_names.empty?
         # A call without a receiver looks at the receiver first: it must find
         # nothing there, for this receiver as for the one typed first.
-        return nil if receiver.is_a?(VirtualType) || receiver.is_a?(VirtualMetaclassType)
-        return nil if receiver.class? && receiver.abstract?
+        return "receiverless call on a virtual receiver" if receiver.is_a?(VirtualType) || receiver.is_a?(VirtualMetaclassType)
+        return "receiverless call on an abstract receiver" if receiver.class? && receiver.abstract?
         if program.receiver_free_method_missing?
-          return nil if receiver.instance_type.lookup_method_missing
-          return nil unless receiver.instance_type.subclasses.empty?
+          return "method_missing" if receiver.instance_type.lookup_method_missing
+          return "method_missing" unless receiver.instance_type.subclasses.empty?
         end
         scan.list_of_receiverless_names.each do |name|
-          return nil unless receiver.lookup_defs(name).empty?
+          return "receiverless call #{name} finds a method of the receiver" unless receiver.lookup_defs(name).empty?
         end
       end
 

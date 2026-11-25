@@ -578,6 +578,7 @@ class Crystal::Call
             typed_def = shared_copy
             shared_copy.receiver_free = true
             program.receiver_free_shared_calls += 1
+            program.note_receiver_free_reuse(match.context.instantiated_type, shared_copy)
           end
         end
       end
@@ -586,6 +587,21 @@ class Crystal::Call
       unless typed_def
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
         newly_typed_def = typed_def
+        if program.receiver_free_probe
+          reason = if receiver_free_key
+                     "typed first (shared)"
+                   elsif !use_cache || block
+                     "block or uncached"
+                   elsif typed_once
+                     "TypeOnce"
+                   elsif !single_match
+                     "dispatch"
+                   else
+                     key_or_refusal = receiver_free_key_or_refusal(match, self_type)
+                     key_or_refusal.is_a?(String) ? key_or_refusal : "return type differs"
+                   end
+          program.note_receiver_free_probe(match.def, reason)
+        end
         program.infer_reuse_new_typed_defs.try &.<< typed_def
         program.infer_reuse_record.try &.add_uncached_call(match.def.name) unless use_cache
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
