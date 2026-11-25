@@ -111,5 +111,15 @@ module Crystal
       @str << "# body released after codegen"
       false
     end
+
+    def visit(node : SharedShapeBody)
+      @str << "# body shared with a copy of the same shape"
+      false
+    end
+
+    def visit(node : ShapeBodies::TypeHolder)
+      @str << "# type of a shared body node"
+      false
+    end
   end
 end

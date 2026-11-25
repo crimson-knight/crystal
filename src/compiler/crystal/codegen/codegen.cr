@@ -314,8 +314,12 @@ module Crystal
       @abi = ABI.from(@program.target_machine)
       # Before owner shapes, which can release typed bodies the analysis reads.
       @dispatch_prune = @program.dispatch_prune || @program.analyze_dispatch_prune(@node)
-      if @program.share_owner_shapes?
-        sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
+      # Copies that let their bodies go during type inference need the
+      # analysis to reach their representatives' functions.
+      if @program.share_owner_shapes? || @program.shape_bodies.try(&.shares_any?)
+        sharing = OwnerShapeSharing.new(@program)
+        sharing.semantic_shares_only = !@program.share_owner_shapes?
+        sharing.analyze(@node)
         @owner_shape_sharing = sharing
         @dispatch_prune.try &.keep_shared_representatives(sharing)
       end
@@ -667,7 +671,7 @@ module Crystal
       end
 
       @unused_fun_defs.each do |node|
-        codegen_fun node.real_name, node.external, @program, is_exported_fun: true
+        codegen_fun node.real_name, node.external, @program, is_exported_fun: true, fun_module_info: @main_module_info
       end
       # A `fun` with a body that no Crystal code calls is generated only
       # here, and a deep chain in it defers functions like any other.
@@ -729,14 +733,14 @@ module Crystal
         node.external.dead = true
 
         if node.external.used?
-          codegen_fun node.real_name, node.external, @program, is_exported_fun: true
+          codegen_fun node.real_name, node.external, @program, is_exported_fun: true, fun_module_info: @main_module_info
         else
           # If the fun is not invoked we codegen it at the end so
           # we don't have issues with constants being used before
           # they are declared.
           # But, apparently, llvm requires us to define them so that
           # calls can find them, so we do so.
-          codegen_fun node.real_name, node.external, @program, is_exported_fun: false
+          codegen_fun node.real_name, node.external, @program, is_exported_fun: false, fun_module_info: @main_module_info
           @unused_fun_defs << node
         end
       end
@@ -2089,6 +2093,10 @@ module Crystal
 
     def visit(node : ReleasedBody)
       raise "BUG: reached a def body that was released after its function was generated"
+    end
+
+    def visit(node : SharedShapeBody)
+      raise "BUG: reached the body of a typed copy that shares another copy's function"
     end
 
     def check_proc_is_not_closure(value, type)

@@ -3256,6 +3256,10 @@ class Crystal::Repl::Compiler < Crystal::Visitor
     raise "BUG: reached a def body that was released after its function was generated"
   end
 
+  def visit(node : SharedShapeBody)
+    raise "BUG: reached the body of a typed copy that shares another copy's function"
+  end
+
   def visit(node : ErasedTypeVar)
     node.raise "a type parameter read at run time is not supported by the interpreter"
   end

@@ -594,6 +594,8 @@ class Crystal::Call
           check_return_type(typed_def, typed_def_return_type, match, match_owner)
         end
 
+        shape_bodies = program.shape_bodies
+        typed_initialize = false
         bubbling_exception do
           check_recursive_splat_call match.def, typed_def_args do
             visitor = MainVisitor.new(program, typed_def_args, typed_def)
@@ -611,14 +613,19 @@ class Crystal::Call
               match.def.block_nest += 1
             end
 
-            if typed_once
-              begin
+            shape_bodies.try &.enter_typing(typed_def)
+            begin
+              if typed_once
+                begin
+                  typed_def.body.accept visitor
+                rescue ex : CodeError
+                  raise_type_once_failure(typed_def, match, called_match, ex)
+                end
+              else
                 typed_def.body.accept visitor
-              rescue ex : CodeError
-                raise_type_once_failure(typed_def, match, called_match, ex)
               end
-            else
-              typed_def.body.accept visitor
+            ensure
+              shape_bodies.try &.leave_typing(typed_def)
             end
 
             if yields_to_block
@@ -626,6 +633,7 @@ class Crystal::Call
             end
 
             if visitor.is_initialize
+              typed_initialize = true
               if match.def.macro_def?
                 visitor.check_initialize_instance_vars_types(owner)
               end
@@ -641,7 +649,15 @@ class Crystal::Call
         program.lazy_def_bodies_dropped_again += 1 if match.def.drop_body_again
 
         block_instance.ready = true if block_instance
+
+        # A copy with the shape of an earlier one lets its body go.
+        if shape_bodies && use_cache && !block && !typed_once && !typed_initialize
+          shape_bodies.consider(typed_def, ShapeBodies::Recipe.new(match.def, match_owner, lookup_self_type,
+            match.arg_types, named_args_types, match.context))
+        end
       end
+
+      program.shape_bodies.try &.note_super_target(typed_def) if super?
 
       program.type_once_reused += 1 if typed_once && !typed_def.same?(newly_typed_def)
       GenericTypeOnce::Probe.note(program, match, newly_typed_def) if newly_typed_def && GenericTypeOnce::Probe.enabled?

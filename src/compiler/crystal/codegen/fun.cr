@@ -594,7 +594,7 @@ class Crystal::CodeGenVisitor
       next if typed_def.block_arg || typed_def.block_arity
       case typed_def.body
       when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral, Var, InstanceVar,
-           Primitive, ReleasedBody
+           Primitive, ReleasedBody, SharedShapeBody
         next
       end
       release_typed_body(typed_def)
@@ -1017,10 +1017,22 @@ class Crystal::CodeGenVisitor
     @types_to_modules[type]? || @modules[module_type_name(type)]?.try { |module_info| @types_to_modules[type] = module_info }
   end
 
+  # The module of the methods defined at the top level (`def` in no type).
+  #
+  # They used to go to the main module, which is never written to disk
+  # while IR is generated (`ModuleSpill`), and in an Amber app of 300
+  # resources held 35 MB of LLVM memory at the peak of the build. In a
+  # module of their own they are written out like any type's methods. The
+  # well-known `fun`s (`__crystal_malloc64` and the like) stay in the main
+  # module, which code generation reads them from.
+  TOP_LEVEL_MODULE_NAME = "~top-level~"
+
   private def module_type_name(type) : String
     type = type.remove_typedef
     case type
-    when Nil, Program, LibType
+    when Program
+      TOP_LEVEL_MODULE_NAME
+    when Nil, LibType
       ""
     else
       type.instance_type.to_s

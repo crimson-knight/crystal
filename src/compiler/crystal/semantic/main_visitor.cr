@@ -5,6 +5,9 @@ module Crystal
     def visit_main(node, visitor : MainVisitor = MainVisitor.new(self), process_finished_hooks = false, cleanup = true)
       node.accept visitor
       program.process_finished_hooks(visitor) if process_finished_hooks
+      # Shared bodies whose sharing no longer holds are typed again before
+      # anything reads the typed program.
+      program.shape_bodies.try &.settle if process_finished_hooks
 
       missing_types = FixMissingTypes.new(self)
       node.accept missing_types
