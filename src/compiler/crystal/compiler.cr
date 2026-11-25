@@ -424,6 +424,7 @@ module Crystal
 
       # Reset incremental state from previous compilation (watch mode)
       @compilation_skipped = false
+      @sources_checked_at_unix_ms = Time.utc.to_unix_ms
       @link_skipped = false
 
       node = parse program, source
@@ -466,6 +467,8 @@ module Crystal
               break
             end
           end
+
+          any_changed ||= !reason_unfingerprinted_inputs_changed(program, cached_data, output_filename).nil?
 
           unless any_changed
             expanded_output = File.expand_path(output_filename)
@@ -2123,6 +2126,43 @@ module Crystal
       end
     end
 
+    @sources_checked_at_unix_ms : Int64?
+
+    # Why the program can have changed though no file of the previous
+    # compilation did, or `nil`: a glob require finds other files, or a file
+    # that a program its macros ran (`run`) can read changed since that
+    # compilation began (see `InferReuse::ProgramRunInputs`).
+    private def reason_unfingerprinted_inputs_changed(program : Program, cached_data : IncrementalCacheData, output_filename : String) : String?
+      cached_data.glob_requires.try &.each do |glob_require|
+        list_of_found_filenames = begin
+          program.find_in_path(glob_require.filename, glob_require.relative_to)
+        rescue CrystalPath::NotFoundError
+          nil
+        end
+        unless list_of_found_filenames == glob_require.list_of_found_filenames
+          return "require \"#{glob_require.filename}\" in #{glob_require.relative_to} finds other files"
+        end
+      end
+
+      list_of_runs = cached_data.macro_program_runs
+      return if list_of_runs.nil? || list_of_runs.empty?
+
+      working_directory = cached_data.working_directory
+      sources_checked_at_unix_ms = cached_data.sources_checked_at_unix_ms
+      return "the cache does not say when the sources were read" unless working_directory && sources_checked_at_unix_ms
+
+      output_path = File.expand_path(output_filename)
+      list_of_output_paths = [output_path, "#{output_path}.dwarf", "#{output_path}.dwarf.tmp"]
+      changed_files = InferReuse::ChangedFiles.under(working_directory, Time.unix_ms(sources_checked_at_unix_ms), list_of_output_paths)
+      return "more than #{InferReuse::ChangedFiles::MAXIMUM_ENTRY_COUNT} entries under #{working_directory}" if changed_files.overflowed?
+      return if changed_files.list_of_paths.empty?
+
+      list_of_run_inputs = list_of_runs.map { |run| {run.filename, run.list_of_arguments} }
+      InferReuse::ProgramRunInputs.new(list_of_run_inputs, working_directory).reason_to_run_again(changed_files.list_of_paths) do |path|
+        cached_data.file_fingerprints.has_key?(path)
+      end
+    end
+
     private def print_compilation_skip_stats
       return unless @progress_tracker.stats?
       puts
@@ -2303,6 +2343,10 @@ module Crystal
         file_signatures: @last_file_signatures,
         allocation_hints: hints,
         file_dependencies: file_deps,
+        glob_requires: program.list_of_glob_requires.empty? ? nil : program.list_of_glob_requires,
+        macro_program_runs: program.set_of_macro_program_runs.empty? ? nil : program.set_of_macro_program_runs.to_a,
+        working_directory: Dir.current,
+        sources_checked_at_unix_ms: @sources_checked_at_unix_ms,
       )
 
       IncrementalCache.save(output_dir, data, cache_filename)

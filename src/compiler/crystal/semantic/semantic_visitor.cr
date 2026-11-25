@@ -72,6 +72,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     @program.infer_reuse_record.try &.add_require(filename, relative_to, filenames)
 
     if filenames
+      @program.record_glob_require(filename, relative_to, filenames)
       nodes = Array(ASTNode).new(filenames.size)
 
       @program.run_requires(node, filenames) do |filename|
