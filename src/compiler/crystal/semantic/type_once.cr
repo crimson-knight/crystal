@@ -71,6 +71,7 @@ module Crystal
       end
 
       instantiated_type = type_once_self_type(a_def, context.instantiated_type)
+      check_type_once_self_return(a_def, instantiated_type)
       lookup_self_type = instantiated_type.instance_type
       defining_type = context.defining_type
 

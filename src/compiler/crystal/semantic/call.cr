@@ -687,6 +687,7 @@ class Crystal::Call
 
       program.type_once_reused += 1 if typed_once && !typed_def.same?(newly_typed_def)
       GenericTypeOnce::Probe.note(program, match, newly_typed_def) if newly_typed_def && GenericTypeOnce::Probe.enabled?
+      check_type_once_callee_macro(typed_def, match)
       typed_defs << typed_def
     end
 

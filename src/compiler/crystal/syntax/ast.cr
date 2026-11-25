@@ -1589,6 +1589,12 @@ module Crystal
     rare_property splat_index : Int32?
     rare_property doc : String?
 
+    # Set on a typed def typed with a `self` shared by several receivers (a
+    # class and its subclasses) whose body, or a method it calls with that
+    # `self`, calls a macro without a receiver: what is called, for the error
+    # a typed-once caller gives (see `type_once_soundness.cr`).
+    rare_property macro_for_shared_self : String?
+
     # Where the body can be parsed again from: set while the body is out of
     # memory, and kept once it is parsed again so the body can be let go
     # again (`#drop_body_again`). Assigning `#body` forgets it.

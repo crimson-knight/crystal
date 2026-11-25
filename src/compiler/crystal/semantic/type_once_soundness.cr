@@ -105,9 +105,14 @@ module Crystal
     private def check_type_once_macro_call(node : Call, the_macro : Macro) : Nil
       untyped_def = @untyped_def || return
       @program.strict_tool_recorder.try &.record_macro_call(untyped_def, node)
-      return unless untyped_def.type_once? && @typed_def
+      typed_def = @typed_def || return
       self_type = @scope || return
       return unless @program.type_once_shared_self?(self_type)
+
+      # A typed-once method that calls this one with the same shared `self`
+      # makes it typed once too (see `Call#check_type_once_callee_macro`).
+      typed_def.macro_for_shared_self ||= "the macro '#{node.name}'#{Program.type_once_place(node.location)}"
+      return unless untyped_def.type_once?
 
       declaring = self_type
       declaring = declaring.instance_type if declaring.is_a?(VirtualMetaclassType)
@@ -168,6 +173,78 @@ module Crystal
           notes = program.type_once_union_forwards[typed_caller.object_id] ||= [] of String
           notes << note unless notes.includes?(note)
         end
+      end
+    end
+
+    # A typed-once method whose `self` stands for several receivers calls
+    # *typed_def*, typed with that shared `self`, whose body (or a method it
+    # calls the same way) calls a macro without a receiver. Typed for each
+    # receiver, the callee would be typed for each receiver too and the macro
+    # would expand for each; typed once, the callee is typed once with it and
+    # the macro expands once, for the declaring type: refused. A caller that
+    # is not typed once itself passes the note on to its own callers.
+    private def check_type_once_callee_macro(typed_def : Def, match : Match) : Nil
+      reason = typed_def.macro_for_shared_self || return
+      return unless program.type_once_shared_self?(match.context.instantiated_type)
+      visitor = @parent_visitor || return
+      caller_typed = visitor.typed_def? || return
+      scope = visitor.scope? || return
+      return unless program.type_once_shared_self?(scope)
+      caller = visitor.untyped_def? || return
+
+      callee = "#{program.type_once_method_name(match.def)}"
+      unless caller.type_once?
+        caller_typed.macro_for_shared_self ||= "'#{callee}', which calls #{reason}"
+        return
+      end
+
+      declaring = scope
+      declaring = declaring.instance_type if declaring.is_a?(VirtualMetaclassType)
+      declaring = declaring.base_type if declaring.is_a?(VirtualType)
+      message = String.build do |io|
+        io << program.type_once_label(caller) << " can't call '" << callee << "'" << Program.type_once_place(location)
+        io << ": the method is typed once for " << declaring << " and every "
+        io << (declaring.is_a?(GenericClassInstanceType) ? "instance of #{declaring.generic_type}" : "subclass")
+        io << ", so '" << callee << "' is typed once for them too, and it calls " << reason
+        io << ", which expands once, for " << declaring << ", instead of once for each receiver."
+        io << " Call a method in place of the macro, or " << program.type_once_opt_out(caller) << " to type the method for each receiver."
+      end
+      program.raise_type_once_error(caller, message)
+    end
+
+    # `: self` (or a type that holds `self`) as the declared return type of a
+    # typed-once method whose `self` stands for several receivers: each
+    # caller would get its own receiver's type back, and gets the shared one
+    # (`Model+`) instead.
+    private def check_type_once_self_return(a_def : Def, shared_self : Type) : Nil
+      return_type = a_def.return_type || return
+      return unless program.type_once_shared_self?(shared_self)
+      finder = SelfRestrictionFinder.new
+      return_type.accept(finder)
+      return unless finder.found?
+
+      declaring = shared_self
+      declaring = declaring.instance_type if declaring.is_a?(VirtualMetaclassType)
+      declaring = declaring.base_type if declaring.is_a?(VirtualType)
+      message = String.build do |io|
+        io << program.type_once_label(a_def) << " can't declare its return type as '" << return_type << "'"
+        io << ": the method is typed once for " << declaring << " and every subclass, so 'self' in the return type is "
+        io << shared_self << " for every caller, where each caller typed for its own receiver gets that receiver's type back."
+        io << " Declare the return type without 'self', or " << program.type_once_opt_out(a_def) << " to type the method for each receiver."
+      end
+      program.raise_type_once_error(a_def, message)
+    end
+
+    private class SelfRestrictionFinder < Visitor
+      getter? found = false
+
+      def visit(node : Self) : Bool
+        @found = true
+        false
+      end
+
+      def visit(node : ASTNode) : Bool
+        !@found
       end
     end
 
