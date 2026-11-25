@@ -118,7 +118,7 @@ module Crystal
           resident.sum(&.list_of_generated_fun_names.size))
 
         if signatures = @fun_signatures
-          io.printf("function signatures: %d declarations\n", signatures.fun_types.size)
+          io.printf("function signatures: %d recorded\n", recorded_fun_signature_count)
           context = signatures.mod.context
           signatures.detach
           context.dispose
