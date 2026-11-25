@@ -112,13 +112,17 @@ private def assert_type_once_error(code : String, *parts : String, inject_primit
   parts.each { |part| text.should contain(part), file: file, line: line }
 end
 
-# Types *code* with its `@[TypeOnce]` marks and without them, and expects the
-# last expression to have *expected* as its type both ways.
-private def assert_same_type_typed_once_and_per_receiver(code : String, expected : String, file = __FILE__, line = __LINE__) : Nil
-  typed_once = semantic(code).node.type.to_s
-  per_receiver = semantic(code.gsub("@[TypeOnce]\n", "")).node.type.to_s
-  per_receiver.should eq(expected), file: file, line: line
-  typed_once.should eq(per_receiver), file: file, line: line
+# Types *code* followed by each call in *expected* (call => type), with its
+# `@[TypeOnce]` marks and without them, and expects the call to have that type
+# both ways.
+private def assert_same_type_typed_once_and_per_receiver(code : String, expected : Hash(String, String), file = __FILE__, line = __LINE__) : Nil
+  expected.each do |call, type|
+    program = "#{code}\n#{call}\n"
+    per_receiver = semantic(program.gsub("@[TypeOnce]\n", "")).node.type.to_s
+    typed_once = semantic(program).node.type.to_s
+    per_receiver.should eq(type), file: file, line: line
+    typed_once.should eq(per_receiver), file: file, line: line
+  end
 end
 
 describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
@@ -428,8 +432,7 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         end
 
         model = flip ? Model.new : Post.new
-        model.touch(Post.new)
-        ), "Model+"
+        ), {"model.touch(Post.new)" => "Model+"}
     end
 
     # Grant's `Builder(Model)`: a model with a named scope gets a subclass of
@@ -462,8 +465,7 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         end
 
         builder = flip ? Builder(Post).new : PostScopes.new
-        {builder.where(Post.new), builder.first?}
-        ), "Tuple(Builder(Post)+, Builder(Post)+)"
+        ), {"builder.where(Post.new)" => "Builder(Post)+", "builder.first?" => "Builder(Post)+"}
     end
 
     # Grant's class-level finders: a model with subclasses is `Model.class+`
@@ -493,8 +495,7 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         end
 
         model_class = flip ? Model : Post
-        {model_class.build(Post.new), model_class.build_box(Post.new)}
-        ), "Tuple(Model+, Box(Model+))"
+        ), {"model_class.build(Post.new)" => "Model+", "model_class.build_box(Post.new)" => "Box(Model+)"}
     end
   end
 end
