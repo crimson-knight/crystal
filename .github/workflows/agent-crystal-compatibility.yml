@@ -87,6 +87,11 @@ jobs:
       - name: Build Agent Crystal fork
         run: bin/ci with_build_env 'make llvm_ext crystal release=true FLAGS=--no-debug threads=1'
 
+      # amber-lsp builds src/docs_main.cr for its stdlib lookup layer, so the
+      # stdlib docs must build with every release.
+      - name: Build standard library docs
+        run: bin/ci with_build_env 'make docs threads=1'
+
       - name: Run compatibility release gate
         env:
           CRYSTAL_TOOLCHAIN_FORK: ${{ github.workspace }}/.build/crystal
