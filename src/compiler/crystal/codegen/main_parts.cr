@@ -16,7 +16,7 @@ class Crystal::CodeGenVisitor
   # main function. Where one part ends is decided by the statements
   # themselves (`Plan`): one statement more or less moves the end of one
   # part, not of every part after it, and a part's name comes from its
-  # first statement. An edit of one route then changes one part, the parts
+  # statements. An edit of one route then changes one part, the parts
   # whose lines moved get their objects' lines patched like the main
   # module's (`LinePatch::MainModule`), and a clean build compiles the parts
   # in parallel.
@@ -205,9 +205,19 @@ class Crystal::CodeGenVisitor
       getter var_names = Set(String).new
       property node_count = 0
       property? outlined = false
-      getter head : IrSkip::Digest
+      @hasher = IrSkip::Hasher.new
 
-      def initialize(@head)
+      # The key of the part's name: the heads of all its statements. Two
+      # parts have one only when their statements start the same way.
+      def head : IrSkip::Digest
+        @hasher.digest
+      end
+
+      def add(index : Int32, head : IrSkip::Digest, scan : Scan) : Nil
+        @list_of_indexes << index
+        @hasher.mix(head)
+        @var_names.concat(scan.var_names)
+        @node_count += scan.node_count
       end
     end
 
@@ -241,10 +251,8 @@ class Crystal::CodeGenVisitor
             plan.close(current, part_node_count)
             current = nil
           end
-          group = current ||= Group.new(head)
-          group.list_of_indexes << index
-          group.var_names.concat(scan.var_names)
-          group.node_count += scan.node_count
+          group = current ||= Group.new
+          group.add(index, head, scan)
           group.outlined = outlinable
           if !outlinable || ends_part?(head, scan.node_count, group.node_count, part_node_count)
             plan.close(group, part_node_count)
