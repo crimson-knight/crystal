@@ -316,8 +316,17 @@ module Crystal::InferReuse
       refuse.call("is written by a macro") if program_def.macro_def?
       refuse.call("assigns a special variable") if program_def.assigns_special_var? || changed.new_def.assigns_special_var?
       refuse.call("is a primitive or a lib function") if program_def.is_a?(External) || program_def.body.is_a?(Primitive)
+      # An instance variable assignment is allowed when the old and the new
+      # body assign the same values to the same instance variables: the
+      # top-level pass guessed every instance variable's type from those
+      # assignments, so it would guess the same types from the new text.
+      old_checker = BodyChecker.new
+      changed.old_def.body.accept old_checker
+      new_checker = BodyChecker.new
+      changed.new_def.body.accept new_checker
+      assigns_the_same_instance_vars = old_checker.list_of_instance_var_assignments.sort == new_checker.list_of_instance_var_assignments.sort
       {program_def.body, changed.old_def.body, changed.new_def.body}.each do |body|
-        checker = BodyChecker.new
+        checker = BodyChecker.new(allows_instance_var_assignments: assigns_the_same_instance_vars)
         body.accept checker
         if reason = checker.reason
           refuse.call(reason)
@@ -801,16 +810,31 @@ module Crystal::InferReuse
 
   # Looks for what a method body must not hold when it is re-typed alone:
   # assignments to instance, class and global variables (other files read
-  # their types), macro code, and `yield`.
+  # their types), macro code, and `yield`. Instance variable assignments
+  # pass when the caller found the old and new bodies assign the same
+  # values to them (`allows_instance_var_assignments`).
   class BodyChecker < Visitor
     getter reason : String?
+
+    # Each instance variable assignment of the body, as the name with the
+    # text of the assigned value (empty for a target without one, such as a
+    # multiple assignment or a declaration, which always refuses).
+    getter list_of_instance_var_assignments = [] of {String, String}
+
+    def initialize(@allows_instance_var_assignments : Bool = false)
+    end
 
     def visit(node : ASTNode) : Bool
       true
     end
 
-    def visit(node : Assign | OpAssign) : Bool
-      check_target(node.target)
+    def visit(node : Assign) : Bool
+      check_target(node.target, node.value.to_s)
+      true
+    end
+
+    def visit(node : OpAssign) : Bool
+      check_target(node.target, "#{node.op}= #{node.value}")
       true
     end
 
@@ -834,10 +858,11 @@ module Crystal::InferReuse
       true
     end
 
-    private def check_target(target : ASTNode) : Nil
+    private def check_target(target : ASTNode, value_text : String = "") : Nil
       case target
       when InstanceVar
-        @reason ||= "assigns instance variable #{target.name}"
+        @list_of_instance_var_assignments << {target.name, value_text}
+        @reason ||= "assigns instance variable #{target.name}" unless @allows_instance_var_assignments && !value_text.empty?
       when ClassVar
         @reason ||= "assigns class variable #{target.name}"
       when Global
