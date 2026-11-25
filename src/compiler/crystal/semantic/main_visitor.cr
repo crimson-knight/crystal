@@ -1329,6 +1329,29 @@ module Crystal
       @used_ivars_in_calls_in_initialize = nil
     end
 
+    # The variables a proc literal's def keeps once it is typed and its
+    # visitor released: its own, the ones it closured, `self`, and every
+    # outer variable whose name appears in its body (a block typed late by
+    # this visitor can still look one up by name). The proc literal started
+    # with a copy of every variable of the scope around it; codegen allocates
+    # only its own and the closured ones, and the rest are never read. A long
+    # top-level block with one proc literal per entry, such as Amber's routes,
+    # otherwise keeps a copy per proc literal that grows with each entry: 1.3
+    # GB of hash tables for a 300-resource Amber app.
+    def trim_proc_literal_vars(a_def : Def) : MetaVars
+      meta_vars = @meta_vars
+      body_names = ProcLiteralVarNames.collect(a_def.body)
+      return meta_vars unless body_names
+
+      trimmed = MetaVars.new
+      meta_vars.each do |name, meta_var|
+        if name == "self" || meta_var.belongs_to?(a_def) || meta_var.closured? || body_names.includes?(name)
+          trimmed[name] = meta_var
+        end
+      end
+      @meta_vars = trimmed
+    end
+
     # A variable of a def is closured only by a block, proc literal or proc
     # pointer of that def, and the def is not visited again once typed (a
     # late block or proc literal is typed by the visitor of the def it is
@@ -1487,6 +1510,9 @@ module Crystal
 
       node.def.body.accept block_visitor
       block_visitor.release_inference_state if @program.release_inference_state?
+      if block_visitor.vars_released? && @program.trims_proc_literal_vars?
+        node.def.vars = block_visitor.trim_proc_literal_vars(node.def)
+      end
 
       false
     end

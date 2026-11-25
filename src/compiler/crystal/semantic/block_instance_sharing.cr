@@ -369,6 +369,11 @@ module Crystal
     # keeps them.
     property? release_local_var_lists : Bool = ENV["CRYSTAL_RELEASE_LOCAL_VAR_LISTS"]? != "0"
 
+    # Whether a typed proc literal keeps only the variables it can still use
+    # (see `MainVisitor#trim_proc_literal_vars`). `CRYSTAL_TRIM_PROC_LITERAL_VARS=0`
+    # keeps its copy of every variable of the scope around it.
+    property? trims_proc_literal_vars : Bool = ENV["CRYSTAL_TRIM_PROC_LITERAL_VARS"]? != "0"
+
     getter inference_release_stats = InferenceReleaseStats.new
 
     getter block_instance_stats = BlockInstanceStats.new
