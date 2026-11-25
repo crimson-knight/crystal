@@ -21,6 +21,9 @@ module Crystal::InferReuse
     # Programs a macro ran (`run`) that were run again, and how long that took.
     property program_runs : Int32? = nil
     property program_run_seconds : Float64? = nil
+    # Why the programs were run again (`nil` when they were not, or when the
+    # kept build ran none).
+    property program_run_reason : String? = nil
     property build_child_footprint_bytes : UInt64? = nil
     property verify_seconds : Float64? = nil
     property verified_defs : Int32? = nil
