@@ -11,6 +11,7 @@
   lib LibGC
     fun set_free_space_divisor = GC_set_free_space_divisor(value : Word)
     fun get_free_space_divisor = GC_get_free_space_divisor : Word
+    fun set_min_bytes_allocd = GC_set_min_bytes_allocd(value : SizeT)
   end
 {% end %}
 
@@ -93,23 +94,34 @@ module Crystal
       {% end %}
     end
 
-    # The divisor of a code generation child of the build server (see
-    # `enter_build_server_child`).
-    BUILD_SERVER_CHILD_FREE_SPACE_DIVISOR = 1_u64
+    # How much a code generation child of the build server allocates, at
+    # least, between two collections (see `enter_build_server_child`).
+    BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED = 1_000_000_000_u64
 
     # Lets the collector of a code generation child of the build server
-    # (`InferReuse`) grow its heap by as much as the heap it inherits before
-    # it collects. The child starts with the typed program of the server
-    # (4.4 GB of live data in an Amber app of 300 resources), and with the
-    # compiler's divisor it marked all of it about four times while it
-    # generated the code of a one-method edit (1.6 s), each time to find
-    # little more than what the child had allocated since. With this divisor
-    # it collects once its own allocations reach the size of that heap.
-    # `CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR=N` sets another one (0 keeps the
-    # compiler's), for measuring.
+    # (`InferReuse`) collect less often. The child starts with the typed
+    # program of the server (4.4 GB of live data in an Amber app of 300
+    # resources). With the compiler's divisor it collects after each 440 MB
+    # or so it allocates, and each collection marks the whole inherited heap:
+    # four of them took 1.6 s of the code generation of a one-method edit.
+    #
+    # The child collects once it has allocated
+    # `BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED`, and from then on keeps the
+    # compiler's divisor. A free space divisor of 1 or 2 (what the child had
+    # before) saved the same time on an edit, but in the first build, whose
+    # child generates the code of the whole program, it let the heap grow
+    # from 4.5 to 7.8 GB, 2.7 GB more than the compiler's divisor. A floor
+    # bounds that growth to about the floor, whatever the child generates.
+    #
+    # For measuring: `CRYSTAL_GC_CHILD_MIN_BYTES_ALLOCATED=N` sets the floor
+    # (0 keeps the collector's), and `CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR=N` sets
+    # a divisor as well (0 or unset keeps the compiler's).
     def self.enter_build_server_child : Nil
       {% unless flag?(:gc_none) || flag?(:wasm32) %}
-        divisor = ENV["CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR"]?.try(&.to_u64?) || BUILD_SERVER_CHILD_FREE_SPACE_DIVISOR
+        min_bytes_allocated = ENV["CRYSTAL_GC_CHILD_MIN_BYTES_ALLOCATED"]?.try(&.to_u64?) || BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED
+        LibGC.set_min_bytes_allocd(LibC::SizeT.new(min_bytes_allocated)) if min_bytes_allocated > 0
+
+        divisor = ENV["CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR"]?.try(&.to_u64?) || 0_u64
         return if divisor == 0
 
         LibGC.set_free_space_divisor(LibGC::Word.new(divisor))
