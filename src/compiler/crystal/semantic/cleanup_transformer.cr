@@ -852,7 +852,10 @@ module Crystal
 
     def untyped_expression(node, msg = nil)
       ex_msg = String.build do |str|
-        str << "can't execute `" << node << "` at " << node.location
+        str << "can't execute `" << node << "` at "
+        if location = node.location
+          str << @program.location_for_runtime_message(location)
+        end
         if msg
           str << ": "
           str << msg

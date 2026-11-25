@@ -1792,7 +1792,7 @@ module Crystal
         call_args = [
           cast_to_void_pointer(type_id_to_class_name(type_id)),
           cast_to_void_pointer(build_string_constant(to_type.to_s)),
-          location ? cast_to_void_pointer(build_string_constant(location.expanded_location.to_s)) : llvm_context.void_pointer.null,
+          location ? cast_to_void_pointer(build_string_constant(@program.location_for_runtime_message(location))) : llvm_context.void_pointer.null,
         ] of LLVM::Value
 
         if (rescue_block = @rescue_block)

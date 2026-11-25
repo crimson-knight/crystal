@@ -1,3 +1,5 @@
+require "./linker_symbols"
+
 module Crystal::System::Thread
   alias Handle = Nil
 
@@ -48,7 +50,7 @@ module Crystal::System::Thread
 
   private def stack_address : Void*
     # The lowest address of the main stack, which grows down from
-    # `__stack_high` (see `src/crystal/system/wasi/main.cr`).
+    # `__stack_high` (see `src/crystal/system/wasi/linker_symbols.cr`).
     pointerof(LibC.__stack_low).as(Void*)
   end
 

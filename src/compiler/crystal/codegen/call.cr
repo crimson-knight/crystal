@@ -463,7 +463,7 @@ class Crystal::CodeGenVisitor
           position_at_end current_def_label
 
           if left_out
-            codegen_unreachable_type(node, dispatch_type_name(obj_type_id, owner))
+            codegen_unreachable_type(node) { dispatch_type_name(obj_type_id, owner) }
             position_at_end next_def_label
             next
           end
@@ -488,7 +488,7 @@ class Crystal::CodeGenVisitor
         # "unreachable type" error, in release builds too: the check costs
         # one cold call, and a wrong analysis must never run on silently.
         if left_out_any
-          codegen_unreachable_type(node, dispatch_type_name(obj_type_id, owner))
+          codegen_unreachable_type(node) { dispatch_type_name(obj_type_id, owner) }
         end
         unreachable
       end
@@ -497,10 +497,6 @@ class Crystal::CodeGenVisitor
     @needs_value = old_needs_value
   end
 
-  # Stops the program with an "unreachable type" error: a value of the
-  # type named by the string *type_name* reached *node*, a call compiled
-  # without code for that type (see `DispatchPrune`). Does nothing when the
-  # prelude has no `__crystal_raise_unreachable_type`.
   # The name of the type a dispatch branches on, for the "unreachable type"
   # error: read from the type id at run time, or the owner's name when the
   # owner is not passed at run time and has no type id (upstream #17424).
@@ -508,14 +504,27 @@ class Crystal::CodeGenVisitor
     obj_type_id ? type_id_to_class_name(obj_type_id) : build_string_constant(owner.to_s)
   end
 
-  private def codegen_unreachable_type(node : Call, type_name : LLVM::Value) : Nil
-    codegen_unreachable_type(type_name, node.name, node.location)
+  # Stops the program with an "unreachable type" error: a value of the
+  # type the block names (as a string value) reached *node*, a call compiled
+  # without code for that type (see `DispatchPrune`). The block only runs
+  # when the error is reported, so a lean build never reads the type name
+  # table.
+  private def codegen_unreachable_type(node : Call, & : -> LLVM::Value) : Nil
+    codegen_unreachable_type(node.name, node.location) { yield }
   end
 
   # The same, for a call to the method *call_name* at *location*. Ends the
   # current block with `unreachable` whether or not the prelude has the
-  # function.
-  private def codegen_unreachable_type(type_name : LLVM::Value, call_name : String, location : Location?) : Nil
+  # function. With `-Dlean_unreachable` the program traps there instead
+  # (`llvm.trap`, the `unreachable` instruction on wasm32), so it carries
+  # neither the message, the type names nor the source locations.
+  private def codegen_unreachable_type(call_name : String, location : Location?, & : -> LLVM::Value) : Nil
+    if @program.has_flag?("lean_unreachable")
+      call trap_fun
+      unreachable
+      return
+    end
+
     func = crystal_raise_unreachable_type_fun
     unless func
       unreachable
@@ -523,12 +532,18 @@ class Crystal::CodeGenVisitor
     end
 
     call_args = [
-      cast_to_void_pointer(type_name),
+      cast_to_void_pointer(yield),
       cast_to_void_pointer(build_string_constant(call_name)),
-      location ? cast_to_void_pointer(build_string_constant(location.expanded_location.to_s)) : llvm_context.void_pointer.null,
+      location ? cast_to_void_pointer(build_string_constant(@program.location_for_runtime_message(location))) : llvm_context.void_pointer.null,
     ] of LLVM::Value
     call func, call_args
     unreachable
+  end
+
+  private def trap_fun : LLVMTypedFunction
+    fetch_typed_fun(@llvm_mod, "llvm.trap") do
+      LLVM::Type.function([] of LLVM::Type, @llvm_context.void)
+    end
   end
 
   def codegen_call(node, target_def, self_type, call_args)

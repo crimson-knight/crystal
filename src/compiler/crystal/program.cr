@@ -360,6 +360,38 @@ module Crystal
     # Returns a `CrystalPath` for this program.
     getter(crystal_path) { CrystalPath.new(codegen_target: codegen_target) }
 
+    # *location* as it reads in a message the compiled program prints: a
+    # failed cast, an unreachable type, code that has no type. On wasm32 the
+    # file is written relative to the `CRYSTAL_PATH` entry or the working
+    # directory it sits in, or by its name alone, so a module carries no
+    # absolute path of the machine that built it (wasm32 never decodes a
+    # backtrace, so nothing needs the full path). Elsewhere it is the full
+    # location, as in a backtrace.
+    def location_for_runtime_message(location : Location) : String
+      expanded_location = location.expanded_location
+      return "" unless expanded_location
+
+      filename = expanded_location.filename
+      return expanded_location.to_s unless has_flag?("wasm32") && filename.is_a?(String)
+
+      "#{portable_source_filename(filename)}:#{expanded_location.line_number}:#{expanded_location.column_number}"
+    end
+
+    # *filename* relative to the deepest `CRYSTAL_PATH` entry that holds it,
+    # else relative to the working directory, else its base name.
+    private def portable_source_filename(filename : String) : String
+      list_of_source_roots = crystal_path.entries.map { |entry| File.expand_path(entry) }
+      list_of_source_roots.sort_by!(&.size).reverse!
+      list_of_source_roots.each do |source_root|
+        if relative_filename = filename.lchop?(File.join(source_root, ""))
+          return relative_filename
+        end
+      end
+
+      relative_filename = Crystal.relative_filename(filename)
+      ::Path[relative_filename].absolute? ? File.basename(filename) : relative_filename
+    end
+
     # Returns a `Var` that has `Nil` as a type.
     # This variable is bound to other nodes in the semantic phase for things
     # that need to be nilable, for example to a variable that's only declared

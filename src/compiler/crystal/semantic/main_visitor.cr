@@ -264,6 +264,11 @@ module Crystal
 
       case type
       when Const
+        # A predefined constant (`ARGV_UNSAFE`, `Crystal::VERSION`) has a typed
+        # value from the start, so it is marked here: code generation only
+        # initializes the predefined constants the program reads.
+        type.used = true
+
         if !type.value.type? && !type.visited?
           type.visited = true
 
@@ -288,7 +293,6 @@ module Crystal
 
           type.fake_def = const_def
           type.visitor = self
-          type.used = true
 
           program.const_initializers << type
         end
