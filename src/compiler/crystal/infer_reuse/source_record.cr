@@ -27,8 +27,20 @@ module Crystal::InferReuse
 
     # When the build that typed the program read its sources, or a later
     # build that reused it compared them: a file modified after this moment
-    # may hold something the program has not seen (see `Retyper`).
-    property sources_checked_at : Time = Time.utc
+    # may hold something the program has not seen (see `Retyper`). Kept as
+    # Unix milliseconds, a plain number a type-inference snapshot
+    # (`InferPersist`) holds as it is; the truncation only moves the moment
+    # earlier, so no change is missed.
+    @sources_checked_at_unix_ms : Int64 = Time.utc.to_unix_ms
+
+    def sources_checked_at : Time
+      Time.unix_ms(@sources_checked_at_unix_ms)
+    end
+
+    def sources_checked_at=(time : Time) : Time
+      @sources_checked_at_unix_ms = time.to_unix_ms
+      time
+    end
 
     # Why no later build may reuse this program (a macro read something this
     # record cannot compare), or `nil`.
