@@ -456,7 +456,7 @@ module Crystal
           cached_data.file_fingerprints.each_value do |fp|
             begin
               info = File.info(fp.filename)
-              if info.modification_time.to_unix != fp.mtime_epoch || info.size != fp.byte_size
+              if info.modification_time.to_unix_ms != fp.mtime_epoch || info.size != fp.byte_size
                 any_changed = true
                 break
               end
@@ -2262,7 +2262,7 @@ module Crystal
             content_hash = Crystal::Digest::MD5.hexdigest(content)
             fingerprints[filename] = FileFingerprint.new(
               filename: filename,
-              mtime_epoch: info.modification_time.to_unix,
+              mtime_epoch: info.modification_time.to_unix_ms,
               content_hash: content_hash,
               byte_size: info.size,
             )
