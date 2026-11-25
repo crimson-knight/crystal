@@ -182,6 +182,30 @@ void LLVMExtSortFunctionDeclarationsByName(LLVMModuleRef M) {
     functions.splice(functions.end(), functions, function->getIterator());
 }
 
+// Moves the global variable declarations (externals, such as another
+// module's type ids) to the end of the module's globals, ordered by name,
+// like `LLVMExtSortFunctionDeclarationsByName`.
+void LLVMExtSortGlobalDeclarationsByName(LLVMModuleRef M) {
+  Module &module = *unwrap(M);
+  std::vector<GlobalVariable *> declarations;
+  for (GlobalVariable &global : module.globals())
+    if (global.isDeclaration())
+      declarations.push_back(&global);
+  llvm::sort(declarations, [](GlobalVariable *a, GlobalVariable *b) {
+    return a->getName() < b->getName();
+  });
+#if LLVM_VERSION_MAJOR >= 17
+  for (GlobalVariable *global : declarations) {
+    module.removeGlobalVariable(global);
+    module.insertGlobalVariable(global);
+  }
+#else
+  auto &globals = module.getGlobalList();
+  for (GlobalVariable *global : declarations)
+    globals.splice(globals.end(), globals, global->getIterator());
+#endif
+}
+
 // Whether `LLVMExtSplitModuleToBitcode` can split this module: it needs
 // LLVM 17 or later, and a module without module-level assembly, which
 // SplitModule cannot keep consistent across parts.

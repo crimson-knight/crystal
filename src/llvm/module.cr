@@ -91,6 +91,12 @@ class LLVM::Module
     LibLLVMExt.sort_function_declarations_by_name(self)
   end
 
+  # Moves the global variable declarations to the end of the module's
+  # globals, ordered by name.
+  def sort_global_declarations_by_name : Nil
+    LibLLVMExt.sort_global_declarations_by_name(self)
+  end
+
   def can_be_split? : Bool
     LibLLVMExt.module_can_be_split(self) != 0
   end
