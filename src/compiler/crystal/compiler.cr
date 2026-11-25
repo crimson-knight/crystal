@@ -1741,8 +1741,14 @@ module Crystal
     getter main_part_outcomes = {} of String => String
     @main_part_outcomes_lock = Sync::Mutex.new
 
+    # What happened to the main module object in the last build, if its
+    # bitcode changed.
+    getter main_module_outcome : String?
+
     def print_main_module_outcome(unit_name : String, outcome : String, seconds : Float64) : Nil
-      unless unit_name == "_main"
+      if unit_name == "_main"
+        @main_module_outcome = outcome
+      else
         @main_part_outcomes_lock.synchronize { @main_part_outcomes[unit_name] = outcome }
       end
       return unless @progress_tracker.stats?

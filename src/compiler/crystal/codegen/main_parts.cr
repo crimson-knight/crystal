@@ -313,20 +313,96 @@ class Crystal::CodeGenVisitor
   private def accept_in_parts(body : Expressions, plan : MainParts::Plan, scope_vars : MetaVars?, owner, list_of_arg_names : Array(String)) : Nil
     statements = body.expressions
     locals_by_group = local_vars_by_group(plan, scope_vars, owner, list_of_arg_names)
+    index_key = main_part_index_key(owner)
+    index_call_site = owner.is_a?(Block) ? owner.call : nil
 
     old_needs_value = @needs_value
     last_index = statements.size - 1
-    plan.list_of_groups.each_with_index do |group, group_index|
+    list_of_groups = plan.list_of_groups
+    group_index = 0
+    while group_index < list_of_groups.size
       break if @builder.end
+      group = list_of_groups[group_index]
+
+      # A run of parts is called from an index part of its own (see
+      # `codegen_main_part_index`).
+      run_end = group_index
+      if group.outlined?
+        while list_of_groups[run_end + 1]?.try(&.outlined?)
+          run_end += 1
+        end
+      end
+      if run_end > group_index && codegen_main_part_index(statements, list_of_groups, group_index..run_end, locals_by_group, index_key, index_call_site)
+        group_index = run_end + 1
+        next
+      end
+
       if group.outlined? && codegen_main_part(statements, group, locals_by_group[group_index]? || ([] of MetaVar))
+        group_index += 1
         next
       end
       group.list_of_indexes.each do |index|
         @needs_value = old_needs_value && index == last_index
         accept statements[index]
       end
+      group_index += 1
     end
     @needs_value = old_needs_value
+  end
+
+  # The key of the index part names of a scope: the call whose block the
+  # body is (without its block), or the file. Neither changes when a
+  # statement of the body is added, removed or edited.
+  private def main_part_index_key(owner) : String
+    hasher = IrSkip::Hasher.new
+    if owner.is_a?(Block) && (call = owner.call)
+      head = MainParts::Head.new
+      call.accept head
+      hasher.mix(head.digest)
+    else
+      hasher.mix(owner.to_s)
+    end
+    hasher.digest.to_s
+  end
+
+  # Calls the parts of the groups *range* of *list_of_groups* from a part of
+  # their own, the *index*, and calls the index. A part's name comes from its
+  # statements, so a statement added or removed renames one part, and the
+  # function that calls the parts changes with it: as the main function, a
+  # routes edit compiled the whole main module again (11 s at -O3 in an
+  # Amber app of 300 resources). The index holds only the calls, and its
+  # name comes from the scope (`main_part_index_key`). The call to it is
+  # placed at *call_site* (the call whose block the body is), not at its
+  # first statement, so a statement added at the top leaves no position of
+  # the calling function on an edited line. Returns false, generating
+  # nothing, when a variable cannot be passed.
+  private def codegen_main_part_index(statements : Array(ASTNode), list_of_groups : Array(MainParts::Group), range : Range(Int32, Int32), locals_by_group : Hash(Int32, Array(MetaVar)), index_key : String, call_site : ASTNode?) : Bool
+    names = Set(String).new
+    range.each do |group_index|
+      local_names = (locals_by_group[group_index]? || [] of MetaVar).map(&.name)
+      list_of_groups[group_index].var_names.each do |name|
+        names << name if context.vars.has_key?(name) && !local_names.includes?(name)
+      end
+    end
+    list_of_passed, list_of_void_names = main_part_params(names.to_a) || return false
+
+    key = "index~#{index_key}"
+    turn = (@main_part_name_counts[key] += 1)
+    name = turn == 1 ? "#{MainParts::NAME_PREFIX}#{key}" : "#{MainParts::NAME_PREFIX}#{key}~#{turn}"
+    first_statement = statements[list_of_groups[range.begin].list_of_indexes.first]
+
+    codegen_main_part_function(name, first_statement, list_of_passed, list_of_void_names, call_site || first_statement) do
+      range.each do |group_index|
+        break if @builder.end
+        group = list_of_groups[group_index]
+        next if codegen_main_part(statements, group, locals_by_group[group_index]? || ([] of MetaVar))
+        group.list_of_indexes.each do |index|
+          break if @builder.end
+          accept statements[index]
+        end
+      end
+    end
+    true
   end
 
   # The variables declared in the scope that only one part names, by the
@@ -372,13 +448,12 @@ class Crystal::CodeGenVisitor
     end
   end
 
-  # Generates the statements of *group* as a part, and calls it. Returns
-  # false, generating nothing, when a variable cannot be passed.
-  private def codegen_main_part(statements : Array(ASTNode), group : MainParts::Group, locals : Array(MetaVar)) : Bool
-    local_names = locals.map(&.name).to_set
+  # The variables of the enclosing scope named *names*, plus `self` and the
+  # `with ... yield` receiver, as a part receives them: passed, or void.
+  # `nil` when one cannot be passed.
+  private def main_part_params(names : Array(String)) : {Array({String, LLVMVar}), Array(String)}?
     list_of_passed = [] of {String, LLVMVar}
     list_of_void_names = [] of String
-    names = group.var_names.select { |name| context.vars.has_key?(name) && !local_names.includes?(name) }
     names << "self" if context.vars.has_key?("self")
     names << "%scope" if context.vars.has_key?("%scope")
     names.uniq!.sort!
@@ -389,14 +464,48 @@ class Crystal::CodeGenVisitor
       elsif main_part_param_type(var, llvm_context)
         list_of_passed << {name, var}
       else
-        return false
+        return nil
       end
     end
+    {list_of_passed, list_of_void_names}
+  end
+
+  # Generates the statements of *group* as a part, and calls it. Returns
+  # false, generating nothing, when a variable cannot be passed.
+  private def codegen_main_part(statements : Array(ASTNode), group : MainParts::Group, locals : Array(MetaVar)) : Bool
+    local_names = locals.map(&.name).to_set
+    names = group.var_names.select { |name| context.vars.has_key?(name) && !local_names.includes?(name) }
+    list_of_passed, list_of_void_names = main_part_params(names) || return false
 
     key = group.head.to_s
     turn = (@main_part_name_counts[key] += 1)
     name = turn == 1 ? "#{MainParts::NAME_PREFIX}#{key}" : "#{MainParts::NAME_PREFIX}#{key}~#{turn}"
     first_statement = statements[group.list_of_indexes.first]
+
+    codegen_main_part_function(name, first_statement, list_of_passed, list_of_void_names, first_statement) do
+      unless locals.empty?
+        local_vars = MetaVars.new
+        locals.each { |var| local_vars[var.name] = var }
+        alloca_non_closured_vars local_vars, locals.first.context
+        locals.each do |var|
+          next unless bound_to_mod_nil?(var)
+          next unless local_var = context.vars[var.name]?
+          assign local_var.pointer, local_var.type, @program.nil, llvm_nil
+        end
+      end
+
+      group.list_of_indexes.each do |index|
+        break if @builder.end
+        accept statements[index]
+      end
+    end
+    true
+  end
+
+  # Generates a part named *name*, a function in a module of its own that
+  # receives *list_of_passed* and whose body the block generates, and calls
+  # it where the builder is, at the position of *call_site*.
+  private def codegen_main_part_function(name : String, first_statement : ASTNode, list_of_passed : Array({String, LLVMVar}), list_of_void_names : Array(String), call_site : ASTNode, &) : Nil
     location = first_statement.location
 
     llvm_mod, llvm_typer = new_module_and_typer(name)
@@ -407,7 +516,6 @@ class Crystal::CodeGenVisitor
     @main_part_count += 1
 
     ended = false
-    part_vars = context.vars
     in_module(module_info) do
       with_cloned_context do
         context.return_phi = nil
@@ -449,29 +557,16 @@ class Crystal::CodeGenVisitor
         list_of_void_names.each do |var_name|
           context.vars[var_name] = LLVMVar.new(llvm_nil, @program.void)
         end
-        unless locals.empty?
-          local_vars = MetaVars.new
-          locals.each { |var| local_vars[var.name] = var }
-          alloca_non_closured_vars local_vars, locals.first.context
-          locals.each do |var|
-            next unless bound_to_mod_nil?(var)
-            next unless local_var = context.vars[var.name]?
-            assign local_var.pointer, local_var.type, @program.nil, llvm_nil
-          end
-        end
 
         @needs_value = false
-        group.list_of_indexes.each do |index|
-          break if @builder.end
-          accept statements[index]
-        end
+        yield
         ended = @builder.end
         ret unless ended
         br_from_alloca_to_entry
       end
     end
 
-    set_current_debug_location first_statement if @debug.line_numbers?
+    set_current_debug_location call_site if @debug.line_numbers?
     parent_fun_type = LLVM::Type.function(list_of_passed.map { |(_, var)| main_part_param_type(var, llvm_context).not_nil! }, llvm_context.void)
     callee = typed_fun?(@module_info, name) || add_typed_fun(@module_info, name, parent_fun_type)
     args = list_of_passed.map { |(_, var)| var.pointer }
@@ -484,6 +579,5 @@ class Crystal::CodeGenVisitor
     end
     unreachable if ended
     @last = llvm_nil
-    true
   end
 end

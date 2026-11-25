@@ -204,9 +204,11 @@ describe "Code gen: top-level code in parts" do
       main_parts_program.list_of_paths = list_of_paths
       compiler = main_parts_program.build
 
-      list_of_compiled = compiler.main_part_outcomes.select { |_, outcome| outcome.starts_with?("compiled") }
-      # The edited route is in one part of each of the three blocks.
+      list_of_compiled = compiler.main_part_outcomes.select { |name, outcome| outcome.starts_with?("compiled") && !name.includes?("index") }
+      # The edited route is in one part of each of the three blocks, and
+      # the index part of each block calls it under its new name.
       list_of_compiled.size.should be <= 3, compiler.main_part_outcomes.inspect
+      compiler.main_module_outcome.to_s.should_not start_with("compiled")
       main_parts_program.part_objects.size.should be > 4
       main_parts_program.output.should eq(expected_output(list_of_paths))
     end
@@ -219,10 +221,14 @@ describe "Code gen: top-level code in parts" do
       main_parts_program.inserted = true
       compiler = main_parts_program.build
 
-      list_of_compiled = compiler.main_part_outcomes.select { |_, outcome| outcome.starts_with?("compiled") }
+      list_of_compiled = compiler.main_part_outcomes.select { |name, outcome| outcome.starts_with?("compiled") && !name.includes?("index") }
       list_of_patched = compiler.main_part_outcomes.select { |_, outcome| outcome.includes?("patched") }
       list_of_compiled.size.should be <= 3, compiler.main_part_outcomes.inspect
       list_of_patched.size.should be > 0, compiler.main_part_outcomes.inspect
+      # The parts are called from an index part whose name comes from the
+      # block, so the main module is not compiled again.
+      compiler.main_module_outcome.to_s.should_not start_with("compiled")
+      compiler.main_part_outcomes.keys.any?(&.includes?("index")).should be_true, compiler.main_part_outcomes.inspect
       main_parts_program.output.should eq(expected_output(list_of_paths, inserted: true))
       main_parts_program.output(["boom"]).should eq(expected_output(list_of_paths, boom: true, inserted: true))
     end
