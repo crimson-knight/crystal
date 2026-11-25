@@ -515,6 +515,11 @@ module Crystal
         @reached_defs << a_def.object_id
         @reached_from[a_def.object_id] = @current_def if @explained_type_name
         @list_of_pending_defs << a_def
+        # A copy that let its body go during type inference runs its
+        # representative's code (see `ShapeBodies`).
+        if shared_copy = @program.shape_bodies.try(&.shared_copy?(a_def))
+          reach(shared_copy.representative)
+        end
       end
 
       private def drain_pending_defs : Nil
@@ -770,6 +775,11 @@ module Crystal
 
       def visit(node : ReleasedBody)
         give_up("a def whose body was released")
+        false
+      end
+
+      # Its representative runs instead, and is reached with it (`#reach`).
+      def visit(node : SharedShapeBody)
         false
       end
 

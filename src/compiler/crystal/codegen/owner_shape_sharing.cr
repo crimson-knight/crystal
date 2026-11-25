@@ -74,6 +74,10 @@ module Crystal
     @super_targets = Set(UInt64).new
     @types = TypeFacts.new
 
+    # The copies that let their bodies go during type inference, with their
+    # representatives (see `ShapeBodies`).
+    @list_of_semantic_shares = [] of {Shape, Def}
+
     def initialize(@program : Program)
     end
 
@@ -168,6 +172,14 @@ module Crystal
         @shape_by_def[typed_def.object_id] = shape
         @shapes << shape
 
+        # A copy that let its body go during type inference (`ShapeBodies`)
+        # has its representative's shape.
+        if shared_copy = @program.shape_bodies.try(&.shared_copy?(typed_def))
+          @list_of_semantic_shares << {shape, shared_copy.representative}
+          pending << shared_copy.representative
+          next
+        end
+
         result = cache.try(&.result_by_def_id[typed_def.object_id]?)
         if result && (replaced_ids.empty? || result.list_of_discovered.none? { |found| replaced_ids.includes?(found.object_id) })
           apply(result, shape)
@@ -184,6 +196,18 @@ module Crystal
         end
         new_cache.try &.result_by_def_id[typed_def.object_id] = result
         list_of_discovered.each { |found| pending << found unless @shape_by_def.has_key?(found.object_id) }
+      end
+
+      @list_of_semantic_shares.each do |(shape, representative)|
+        representative_shape = @shape_by_def[representative.object_id]
+        shape.base_first = representative_shape.base_first
+        shape.base_second = representative_shape.base_second
+        shape.callees.concat(representative_shape.callees)
+        shape.shareable = representative_shape.shareable?
+        shape.pinned = representative_shape.pinned?
+        shape.blocker = representative_shape.blocker
+        shape.owner_use = representative_shape.owner_use
+        shape.node_count = representative_shape.node_count
       end
 
       if new_cache
@@ -316,6 +340,8 @@ module Crystal
         @stats.unshareable += 1 unless shape.shareable?
         @stats.pinned += 1 if shape.pinned?
         next unless shape.shareable?
+        # A copy without a body never stands for a group.
+        next if @program.shape_bodies.try(&.shared_copy?(shape.typed_def))
         key = {shape.first, shape.second}
         if representative = first_of_group[key]?
           first_of_group[key] = shape.typed_def if stands_before?(shape.typed_def, representative)
@@ -325,12 +351,21 @@ module Crystal
       end
       @shapes.each do |shape|
         next unless shape.shareable?
-        representative = first_of_group[{shape.first, shape.second}]
+        representative = first_of_group[{shape.first, shape.second}]?
+        next unless representative
         next if representative.same?(shape.typed_def)
         @representatives[shape.typed_def.object_id] = representative
         @stats.shared += 1
       end
       @stats.groups = groups
+
+      # A copy that let its body go calls the function its representative
+      # calls, whatever group the walk put it in.
+      @list_of_semantic_shares.each do |(shape, representative)|
+        function_def = @representatives[representative.object_id]? || representative
+        @stats.shared += 1 unless @representatives.has_key?(shape.typed_def.object_id)
+        @representatives[shape.typed_def.object_id] = function_def
+      end
     end
 
     # Whether *typed_def* is the representative of its group rather than
@@ -530,16 +565,17 @@ module Crystal
       STORAGE_PRIMITIVES = Set{"pointer_malloc", "pointer_set", "pointer_get", "pointer_address", "pointer_new",
                                "pointer_realloc", "pointer_add", "pointer_diff", "object_id"}
 
-      LEAVE         = 0x1f83d9abfb41bd6b_u64
-      TOKEN_CLASS   = 0x452821e638d01377_u64
-      TOKEN_NILABLE = 0xbe5466cf34e90c6c_u64
-      TOKEN_POINTER = 0xc0ac29b7c97c50dd_u64
-      TOKEN_GENERIC = 0x3f84d5b5b5470917_u64
-      TOKEN_VIRTUAL = 0xa4093822299f31d0_u64
-      TOKEN_NAME    = 0x082efa98ec4e6c89_u64
-      TOKEN_META    = 0x9216d5d98979fb1b_u64
-      TOKEN_EDGE    = 0xd1310ba698dfb5ac_u64
-      TOKEN_CONST   = 0x2ffd72dbd01adfb7_u64
+      LEAVE          = 0x1f83d9abfb41bd6b_u64
+      TOKEN_CLASS    = 0x452821e638d01377_u64
+      TOKEN_NILABLE  = 0xbe5466cf34e90c6c_u64
+      TOKEN_POINTER  = 0xc0ac29b7c97c50dd_u64
+      TOKEN_GENERIC  = 0x3f84d5b5b5470917_u64
+      TOKEN_VIRTUAL  = 0xa4093822299f31d0_u64
+      TOKEN_NAME     = 0x082efa98ec4e6c89_u64
+      TOKEN_META     = 0x9216d5d98979fb1b_u64
+      TOKEN_EDGE     = 0xd1310ba698dfb5ac_u64
+      TOKEN_CONST    = 0x2ffd72dbd01adfb7_u64
+      TOKEN_EXPANDED = 0xb8e1afed6a267e96_u64
 
       getter discovered = [] of Def
 
@@ -575,7 +611,7 @@ module Crystal
         @def_filename = typed_def.location.try(&.filename)
         @place = "signature"
 
-        if typed_def.is_a?(External) || typed_def.body.is_a?(Primitive) || typed_def.body.is_a?(ReleasedBody)
+        if typed_def.is_a?(External) || typed_def.body.is_a?(Primitive) || typed_def.body.is_a?(ReleasedBody) || typed_def.body.is_a?(SharedShapeBody)
           block("external, primitive or released def")
         else
           mix_def(typed_def)
@@ -599,6 +635,19 @@ module Crystal
       # When set, every mixed value is recorded with the place it came from
       # (census diagnostics only).
       property trace : Array({UInt64, String})?
+
+      # Whether the walk goes into the expansions of macro calls and other
+      # expandable nodes. Type inference leaves them in the tree and cleanup
+      # replaces them later, so a walk of a body that cleanup has not seen
+      # yet (`ShapeBodies`) has to read them: two bodies whose expansions
+      # differ are not the same code.
+      property? walks_expansions = false
+
+      # Yields the interchangeable classes the last walk numbered (the
+      # owner first, when it is one).
+      def each_numbered_type(& : Type ->) : Nil
+        @numbered.each { |type| yield type }
+      end
 
       private def mix(value : UInt64) : Nil
         @trace.try &.<<({value, @place})
@@ -1014,9 +1063,16 @@ module Crystal
         mix(node.name)
         mix(node.global?)
 
-        # Codegen raises on a call that still has an expansion, so a typed
-        # def that codegen reaches never runs this one: it is dead code.
-        return false if node.expanded
+        if expanded = node.expanded
+          # Codegen raises on a call that still has an expansion, so a typed
+          # def that codegen reaches never runs this one: it is dead code.
+          # Before cleanup, the expansion is the code.
+          if walks_expansions?
+            mix(TOKEN_EXPANDED)
+            expanded.accept(self)
+          end
+          return false
+        end
         if node.uses_with_scope?
           block("a call that uses with scope")
           return false
@@ -1159,6 +1215,10 @@ module Crystal
       # typed, so only its place in the tree matters.
       def visit(node : ExpandableNode) : Bool
         mix(node.crystal_type_id)
+        if walks_expansions? && (expanded = node.expanded)
+          mix(TOKEN_EXPANDED)
+          expanded.accept(self)
+        end
         false
       end
 

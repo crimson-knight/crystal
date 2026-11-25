@@ -2091,6 +2091,10 @@ module Crystal
       raise "BUG: reached a def body that was released after its function was generated"
     end
 
+    def visit(node : SharedShapeBody)
+      raise "BUG: reached the body of a typed copy that shares another copy's function"
+    end
+
     def check_proc_is_not_closure(value, type)
       check_fun_name = "~check_proc_is_not_closure"
       record_ir_effect(IrSkip::TraceKind::CheckProcIsNotClosure)

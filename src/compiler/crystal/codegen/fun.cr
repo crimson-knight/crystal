@@ -569,7 +569,7 @@ class Crystal::CodeGenVisitor
       next if typed_def.block_arg || typed_def.block_arity
       case typed_def.body
       when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral, Var, InstanceVar,
-           Primitive, ReleasedBody
+           Primitive, ReleasedBody, SharedShapeBody
         next
       end
       release_typed_body(typed_def)
