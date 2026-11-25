@@ -537,6 +537,50 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
     end
   end
 
+  it "types the top-level code of an edited routes-like file alone" do
+    with_tempfile("infer-reuse-top-level") do |directory|
+      project = InferReuseProject.new(directory)
+      begin
+        project.write("main.cr", <<-CRYSTAL)
+          class Registry
+            @@list_of_paths = [] of String
+
+            def self.draw(&) : Nil
+              with new yield
+            end
+
+            def add(path : String) : Nil
+              @@list_of_paths << path
+            end
+
+            def self.list_of_paths : Array(String)
+              @@list_of_paths
+            end
+          end
+
+          require "./routes"
+
+          puts Registry.list_of_paths.join(",")
+
+          CRYSTAL
+        routes = "Registry.draw do\n  add \"/a\"\n  add \"/b\"\nend\n"
+        project.write("routes.cr", routes)
+        expect_build(project, "/a,/b\n", reused: false)
+
+        project.write("routes.cr", routes.sub("  add \"/a\"\n", "  add \"/c\"\n  add \"/a\"\n"))
+        report = expect_build(project, "/c,/a,/b\n", reused: true)
+        report["reason"].as_s.should contain("top-level code of 1 files typed again")
+
+        # A definition in the file types the whole program again.
+        project.write("routes.cr", routes + "def helper_route : String\n  \"/d\"\nend\n")
+        report = expect_build(project, "/a,/b\n", reused: false)
+        report["reason"].as_s.should contain("cannot be typed alone")
+      ensure
+        project.stop_servers
+      end
+    end
+  end
+
   it "takes in a new file a glob require finds, when it only declares new types" do
     with_tempfile("infer-reuse-new-file") do |directory|
       project = InferReuseProject.new(directory)

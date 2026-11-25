@@ -27,6 +27,7 @@ module Crystal::InferReuse
 
     @list_of_file_edits = [] of FileEdit
     @list_of_new_files = [] of NewFile
+    @list_of_top_level_edits = [] of TopLevelEdit
     # What the require that found each new file finds now, by the new file.
     @list_of_found_files_by_new_filename = {} of String => Array(String)
     # The index in the record of each require that finds new files, with what it finds now.
@@ -100,6 +101,7 @@ module Crystal::InferReuse
         io << ", " << @added_def_count << " methods added" if @added_def_count > 0
         io << ", " << @removed_def_count << " methods removed" if @removed_def_count > 0
         io << ", " << @list_of_new_files.size << " new files" unless @list_of_new_files.empty?
+        io << ", top-level code of " << @list_of_top_level_edits.size << " files typed again" unless @list_of_top_level_edits.empty?
         moved = @list_of_file_edits.count { |edit| !edit.line_shift.identity? }
         io << ", lines moved in " << moved << " files" if moved > 0
       end
@@ -208,7 +210,14 @@ module Crystal::InferReuse
           raise Refusal.new("can't read #{filename}: #{ex.message}")
         end
         next if new_text == old_text
-        @list_of_file_edits << FileEdit.compare(program, filename, old_text, new_text)
+        begin
+          @list_of_file_edits << FileEdit.compare(program, filename, old_text, new_text)
+        rescue ex : Refusal
+          if reason = TopLevelEdit.refusal_reason(program, @kept.node, record, filename)
+            raise Refusal.new("#{ex.message}, and its top-level code cannot be typed alone: #{reason}")
+          end
+          @list_of_top_level_edits << TopLevelEdit.new(filename, new_text)
+        end
       end
       @list_of_changed_defs = @list_of_file_edits.flat_map(&.list_of_changed_defs)
 
@@ -292,7 +301,7 @@ module Crystal::InferReuse
     end
 
     private def retype_changed_defs : Nil
-      return if @list_of_file_edits.empty? && @list_of_new_files.empty?
+      return if @list_of_file_edits.empty? && @list_of_new_files.empty? && @list_of_top_level_edits.empty?
 
       def_by_location = program_defs_by_location(@list_of_file_edits.map(&.filename).to_set)
       types_before = program.after_inference_types.size
@@ -342,6 +351,7 @@ module Crystal::InferReuse
           @retyped_instance_count += 1
         end
       end
+      @list_of_top_level_edits.each(&.retype(program, @kept.node))
       program.infer_reuse_new_typed_defs = nil
 
       # A method of a generic type is re-typed in each instance the kept
@@ -367,6 +377,9 @@ module Crystal::InferReuse
       @list_of_file_edits.each do |edit|
         text = File.read(edit.filename)
         @kept.record.add_source(edit.filename, text)
+      end
+      @list_of_top_level_edits.each do |top_level_edit|
+        @kept.record.add_source(top_level_edit.filename, top_level_edit.text)
       end
       @list_of_new_files.each do |new_file|
         @kept.record.add_source(new_file.filename, new_file.text)
