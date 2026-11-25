@@ -495,7 +495,7 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         end
 
         model_class = flip ? Model : Post
-        ), {"model_class.build(Post.new)" => "Model+", "model_class.build_box(Post.new)" => "Box(Model+)"}
+        ), {"model_class.build(Post.new)" => "Model+", "model_class.build_box(Post.new)" => "Box(Model)"}
     end
   end
 end
