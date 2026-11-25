@@ -891,6 +891,10 @@ module Crystal
         end
       end
       program.dispatch_prune = nil
+      if @progress_tracker.stats?
+        main_part_count = llvm_modules.count { |type_name, _| CodeGenVisitor::MainParts.part_module_name?(type_name) }
+        puts "Main parts: #{main_part_count} modules of top-level code" if main_part_count > 0
+      end
       if stable_numbering
         stable_numbering.type_ids_by_stable_key = program.llvm_id.type_ids_in_use_by_stable_key
         list_of_part_fun_counts_by_module_name = {} of String => Array(Int32)
@@ -1730,8 +1734,23 @@ module Crystal
     end
 
     # Tells `--stats` what happened to the main module's changed bitcode.
-    def print_main_module_outcome(outcome : String, seconds : Float64) : Nil
-      puts "Main module: #{outcome} (#{seconds.round(2)} s)" if @progress_tracker.stats?
+    # What happened to the object of each part of the top-level code in the
+    # last build (see `CodeGenVisitor::MainParts`), by unit name: patched or
+    # compiled, and why. A part whose bitcode matched is not listed.
+    getter main_part_outcomes = {} of String => String
+    @main_part_outcomes_lock = Sync::Mutex.new
+
+    def print_main_module_outcome(unit_name : String, outcome : String, seconds : Float64) : Nil
+      unless unit_name == "_main"
+        @main_part_outcomes_lock.synchronize { @main_part_outcomes[unit_name] = outcome }
+      end
+      return unless @progress_tracker.stats?
+
+      if unit_name == "_main"
+        puts "Main module: #{outcome} (#{seconds.round(2)} s)"
+      else
+        puts "Main part #{unit_name}: #{outcome} (#{seconds.round(2)} s)"
+      end
     end
 
     @list_of_ir_skip_module_infos : Array(CodeGenVisitor::ModuleInfo)?
@@ -2919,7 +2938,7 @@ module Crystal
       # (see `LinePatch::MainModule`). Returns whether it did. Otherwise
       # leaves the digest of the new module's text for the next build.
       private def patch_main_module_lines : Bool
-        return false unless @original_name == "_main" && @part_count == 1 && !compiler.no_cache?
+        return false unless main_module_or_part? && @part_count == 1 && !compiler.no_cache?
         session = compiler.main_module_line_patch_session || return false
         list_of_part_hashes = @list_of_part_hashes || return false
         module_hash = BitcodeHash.of_module(list_of_part_hashes) || return false
@@ -2935,10 +2954,19 @@ module Crystal
           LinePatch::MainModule::Sidecar.new(module_hash, digests.text_digest).write(object_name)
         end
         seconds = (Time.instant - started_at).total_seconds
-        session.stats.main_module_outcome = outcome
-        session.stats.main_module_seconds = seconds
-        compiler.print_main_module_outcome(outcome, seconds)
+        if @original_name == "_main"
+          session.stats.main_module_outcome = outcome
+          session.stats.main_module_seconds = seconds
+        end
+        compiler.print_main_module_outcome(@original_name, outcome, seconds)
         patched
+      end
+
+      # Whether this unit is the main module or a part of the top-level
+      # code (see `CodeGenVisitor::MainParts`): both are generated in every
+      # build, and their objects are line patched from their text.
+      private def main_module_or_part? : Bool
+        @original_name == "_main" || CodeGenVisitor::MainParts.part_module_name?(@original_name)
       end
 
       # Patches the main module's cached object when the new text, with its
@@ -2964,7 +2992,7 @@ module Crystal
         pending_filename = "#{object_name}#{LinePatch::UnitPatcher::PENDING_EXTENSION}"
         File.write(pending_filename, patched_bytes)
         if session.verify?
-          compiler.add_line_patch_check(LinePatch::Verification::Check.new("_main", pending_filename, object_name))
+          compiler.add_line_patch_check(LinePatch::Verification::Check.new(@original_name, pending_filename, object_name))
           return {false, "compiled for verification: lines moved, patched object kept to compare"}
         end
 
