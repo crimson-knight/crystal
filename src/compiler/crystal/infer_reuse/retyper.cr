@@ -280,37 +280,10 @@ module Crystal::InferReuse
       return "more than #{ChangedFiles::MAXIMUM_ENTRY_COUNT} entries under #{working_directory}" if changed_files.overflowed?
       return nil if changed_files.list_of_paths.empty?
 
-      program_folders = Set(String).new
-      argument_paths = Set(String).new
-      argument_folders = Set(String).new
-      sibling_folders = Set(String).new
-      record.list_of_program_runs.each do |run|
-        program_folders << File.dirname(File.expand_path(run.filename, working_directory))
-        run.list_of_arguments.each do |argument|
-          path = File.expand_path(argument, working_directory)
-          if File.directory?(path)
-            argument_folders << path
-          elsif argument_paths.add?(path)
-            sibling_folders << File.dirname(path)
-          end
-        end
+      list_of_runs = record.list_of_program_runs.map { |run| {run.filename, run.list_of_arguments} }
+      ProgramRunInputs.new(list_of_runs, working_directory).reason_to_run_again(changed_files.list_of_paths) do |path|
+        record.text_by_filename.has_key?(path)
       end
-
-      changed_files.list_of_paths.each do |path|
-        return "#{path} changed, and a macro program takes it as an argument" if argument_paths.includes?(path)
-        folder = File.dirname(path)
-        if sibling_folders.includes?(folder) && !record.text_by_filename.has_key?(path)
-          return "#{path} changed, next to a file a macro program takes as an argument"
-        end
-        while folder.size > 1
-          return "#{path} changed, in the folder of a macro program (#{folder})" if program_folders.includes?(folder)
-          return "#{path} changed, in a folder a macro program takes as an argument (#{folder})" if argument_folders.includes?(folder)
-          parent = File.dirname(folder)
-          break if parent == folder
-          folder = parent
-        end
-      end
-      nil
     end
 
     # The files this build writes, which are modified after every build:

@@ -669,6 +669,34 @@ module Crystal
       recorded_requires << RecordedRequire.new(filename, relative_to)
     end
 
+# A glob require (`require "./models/**"`) and the files it found, in
+# order. An incremental build finds them again to tell a new or removed
+# file, which no fingerprint of the files it found can show.
+record GlobRequire, filename : String, relative_to : String, list_of_found_filenames : Array(String) do
+  include JSON::Serializable
+end
+getter list_of_glob_requires = [] of GlobRequire
+
+def record_glob_require(filename : String, relative_to : String?, list_of_found_filenames : Array(String)) : Nil
+  return unless relative_to
+  return unless filename.ends_with?("/*") || filename.ends_with?("/**")
+
+  glob_require = GlobRequire.new(filename, relative_to, list_of_found_filenames)
+  list_of_glob_requires << glob_require unless list_of_glob_requires.includes?(glob_require)
+end
+
+# A program a macro ran (`run`) and its arguments. An incremental build
+# compiles again when a file such a program can read changed (see
+# `InferReuse::ProgramRunInputs`).
+record MacroProgramRun, filename : String, list_of_arguments : Array(String) do
+  include JSON::Serializable
+end
+getter set_of_macro_program_runs = Set(MacroProgramRun).new
+
+def record_macro_program_run(filename : String, list_of_arguments : Array(String)) : Nil
+  set_of_macro_program_runs << MacroProgramRun.new(filename, list_of_arguments)
+end
+
     def run_requires(node : Require, filenames, &) : Nil
       dependency_printer = compiler.try(&.dependency_printer)
 

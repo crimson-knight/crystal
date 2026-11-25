@@ -357,6 +357,7 @@ module Crystal
 
       result = @program.macro_run(filename, run_args)
       @program.infer_reuse_record.try &.add_program_run(filename, run_args, result.status.success? ? result.stdout : nil)
+      @program.record_macro_program_run(filename, run_args)
       if result.status.success?
         @last = MacroId.new(result.stdout)
       else
