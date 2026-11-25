@@ -140,8 +140,8 @@ private class MainPartsProgram
     compiler
   end
 
-  def output(*arguments : String) : String
-    Process.capture(executable, *arguments)
+  def output(list_of_arguments : Array(String) = [] of String) : String
+    Process.capture([executable] + list_of_arguments)
   end
 
   # The object files of the parts in the cache, by name, with their
@@ -176,8 +176,8 @@ describe "Code gen: top-level code in parts" do
       main_parts_program.build
       main_parts_program.part_objects.size.should be > 4
       main_parts_program.output.should eq(expected_output(main_parts_program.list_of_paths))
-      main_parts_program.output("boom").should eq(expected_output(main_parts_program.list_of_paths, boom: true))
-      main_parts_program.output("nil").should contain("none=2")
+      main_parts_program.output(["boom"]).should eq(expected_output(main_parts_program.list_of_paths, boom: true))
+      main_parts_program.output(["nil"]).should contain("none=2")
     end
   end
 
@@ -217,7 +217,7 @@ describe "Code gen: top-level code in parts" do
       list_of_compiled.size.should be <= 3
       list_of_patched.size.should be > 0
       main_parts_program.output.should eq(expected_output(list_of_paths))
-      main_parts_program.output("boom").should eq(expected_output(list_of_paths, boom: true))
+      main_parts_program.output(["boom"]).should eq(expected_output(list_of_paths, boom: true))
     end
   end
 end
