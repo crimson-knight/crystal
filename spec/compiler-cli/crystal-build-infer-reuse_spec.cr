@@ -628,6 +628,11 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
 
           puts Greeter.new.greet(Person.new("Ada"))
 
+          # A macro that asks for another name does not see a new type.
+          {% if @top_level.has_constant?("Unrelated") %}
+            puts "unrelated"
+          {% end %}
+
           CRYSTAL
         project.write("main.cr", main)
         expect_build(project, "Hello Ada\n", reused: false)
@@ -649,6 +654,34 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
         # The next edit compares with the file the server took in.
         project.write("main.cr", main.sub(%("Hello \#{person.first_name}"), %("Hi \#{PersonLabel.new(person)}")))
         expect_build(project, "Hi label: Ada\n", reused: true)
+      ensure
+        project.stop_servers
+      end
+    end
+  end
+
+  it "types the whole program again for a new file of a name a macro asked for" do
+    with_tempfile("infer-reuse-new-file-asked") do |directory|
+      project = InferReuseProject.new(directory)
+      begin
+        Dir.mkdir_p(File.join(directory, "models"))
+        project.write("models/person.cr", "class Person\n  def name : String\n    \"Ada\"\n  end\nend\n")
+        main = <<-CRYSTAL
+          require "./models/**"
+
+          {% if @top_level.has_constant?("PersonBadge") %}
+            puts "badge"
+          {% end %}
+
+          puts Person.new.name
+
+          CRYSTAL
+        project.write("main.cr", main)
+        expect_build(project, "Ada\n", reused: false)
+
+        project.write("models/person_badge.cr", "struct PersonBadge\n  def text : String\n    \"badge\"\n  end\nend\n")
+        report = expect_build(project, "badge\nAda\n", reused: false)
+        report["reason"].as_s.should contain("which a macro asked")
       ensure
         project.stop_servers
       end

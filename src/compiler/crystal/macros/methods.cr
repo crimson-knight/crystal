@@ -2176,15 +2176,15 @@ module Crystal
         interpreter.@program.infer_reuse_record.try &.add_type_list_read(type)
         interpret_check_args { TypeNode.constants(type) }
       when "constant"
-        interpreter.@program.infer_reuse_record.try &.add_type_list_read(type)
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#constant'")
+          interpreter.@program.infer_reuse_record.try &.add_constant_name_read(type, value)
           TypeNode.constant(type, value)
         end
       when "has_constant?"
-        interpreter.@program.infer_reuse_record.try &.add_type_list_read(type)
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#has_constant?'")
+          interpreter.@program.infer_reuse_record.try &.add_constant_name_read(type, value)
           TypeNode.has_constant?(type, value)
         end
       when "methods"

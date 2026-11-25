@@ -14,8 +14,8 @@ module Crystal::InferReuse
   #   library (`getter`, `property` and their kin);
   # * no macro of the kept build listed the subclasses, includers or
   #   constants of the program or of an ancestor of a new type, or asked
-  #   for one of their constants, and no ancestor has a hook (`inherited`,
-  #   `method_added`);
+  #   one of them for a constant with a new type's name, and no ancestor
+  #   has a hook (`inherited`, `method_added`);
   # * after re-typing, no typed method of the program holds a value whose
   #   type is the virtual type of an ancestor of a new type (a new struct in
   #   an `Array(Struct)` would reach dispatches typed without it).
@@ -129,6 +129,12 @@ module Crystal::InferReuse
         if record.type_list_read_type_by_id.has_key?(watched.object_id) ||
            record.type_list_read_type_by_id.has_key?(watched.metaclass.object_id)
           refuse("adds to the subclasses or constants of #{watched}, which a macro listed")
+        end
+        {watched, watched.metaclass}.each do |read_owner|
+          list_of_read_names = record.constant_name_reads_by_type_id[read_owner.object_id]? || next
+          if name = @list_of_type_names.find { |type_name| list_of_read_names.includes?(type_name) }
+            refuse("declares #{name}, which a macro asked #{watched} for as a constant")
+          end
         end
         {watched, watched.metaclass}.each do |hook_owner|
           if hook_owner.as?(ModuleType).try(&.hooks).try(&.any?)
