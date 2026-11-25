@@ -286,6 +286,14 @@ module Crystal
         call.name_location = node.name_location
       end
 
+      # The setter in (3) or (4) writes to `tmp`, a copy of `a`; remember the
+      # source so a write to a struct copy can be reported (see
+      # `Program#check_write_to_struct_copy`).
+      if assign
+        setter = call.is_a?(BinaryOp) ? call.right : call
+        setter.op_assign_source = node if setter.is_a?(Call)
+      end
+
       # (1); (4)
       if assign
         Expressions.new([assign, call] of ASTNode).at(node)

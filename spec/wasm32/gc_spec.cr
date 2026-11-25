@@ -157,4 +157,22 @@ describe "WASM Garbage Collection" do
       GC.collect
     end
   end
+  describe "automatic collection" do
+    it "knows where the main stack starts" do
+      # bdwgc estimates the stack size as `stack bottom - sp`; a bottom below
+      # the stack pointer wraps around and postpones every collection.
+      _, stack_bottom = GC.current_thread_stack_bottom
+      marker = 0
+      stack_bottom.address.should be > pointerof(marker).address
+    end
+
+    it "keeps the heap near live data while short-lived arrays come and go" do
+      GC.collect
+      collections_before = LibGC.gc_no
+      # 64 MiB of garbage, 8 KiB at a time; live data stays under 1 MiB.
+      8192.times { Array(Float64).new(1024) { |i| i.to_f } }
+      (LibGC.gc_no - collections_before).should be > 4
+      GC.stats.heap_size.should be < 32_u64 * 1024 * 1024
+    end
+  end
 end

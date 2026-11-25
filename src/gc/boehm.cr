@@ -135,7 +135,7 @@ lib LibGC
   fun set_max_heap_size = GC_set_max_heap_size(Word)
   fun set_force_unmap_on_gcollect = GC_set_force_unmap_on_gcollect(Int)
 
-  fun get_prof_stats = GC_get_prof_stats(stats : ProfStats*, size : SizeT)
+  fun get_prof_stats = GC_get_prof_stats(stats : ProfStats*, size : SizeT) : SizeT
 
   fun get_start_callback = GC_get_start_callback : Void*
   fun set_start_callback = GC_set_start_callback(callback : ->)
@@ -258,6 +258,20 @@ module GC
       LibGC.set_handle_fork(1)
     {% end %}
     LibGC.init
+
+    {% if flag?(:wasm32) %}
+      # The wasm32-wasi build of bdwgc knows no stack base for WASI and
+      # leaves `GC_stackbottom` at 0. Its collection trigger estimates the
+      # stack size as `GC_stackbottom - sp`, which wraps around to about
+      # 4 GiB on wasm32 and postpones every automatic collection until about
+      # 1.4 GB have been allocated, so the heap (and linear memory, which
+      # never shrinks) grows to the program's total allocation. The main
+      # stack grows down from `__stack_high`; tell the collector so before
+      # the main fiber reads its stack bottom.
+      stack_base = LibGC::StackBase.new
+      stack_base.mem_base = pointerof(LibC.__stack_high).as(Void*)
+      LibGC.set_stackbottom(nil, pointerof(stack_base))
+    {% end %}
 
     {% unless flag?(:without_mt) %}
       @@lock = Crystal::RWLock.new
