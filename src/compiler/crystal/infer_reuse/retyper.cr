@@ -225,17 +225,19 @@ module Crystal::InferReuse
     # Why the programs the kept build's macros ran (`run`) must run again,
     # or `nil` when none of them can print anything new.
     #
-    # Such a program reads its own source files, the files its arguments
-    # name and whatever else it opens. Running all of them again on every
-    # build (7,206 runs of the ECR processor, 26 s, in an Amber app of 300
-    # resources) only finds a change when one of those files changed. So
-    # they run again only when a file under the working directory was
-    # modified since the sources were last compared and that file is not a
-    # Crystal source of the program the comparison covers, or lies in the
-    # folder of a macro program, or is named by a program's argument. A
-    # program that reads the clock or the network is not run again for an
-    # edit of the program's sources. `CRYSTAL_INFER_REUSE_RUN_PROGRAMS=1`
-    # runs every program again, as before.
+    # Running all of them again on every build (7,206 runs of the ECR
+    # processor, 26 s, in an Amber app of 300 resources) only finds a change
+    # when something such a program reads changed: its own source, which
+    # lies in its folder, or the files its arguments name, and what lies
+    # next to them (a template's layout). So they run again only when a file
+    # under the working directory was modified since the sources were last
+    # compared and that file lies in the folder of a macro program, is named
+    # by a program's argument or lies in a folder an argument names, or lies
+    # next to a file an argument names and is no Crystal source the
+    # comparison covers. A program that reads other files, the clock or the
+    # network is not run again for an edit elsewhere;
+    # `CRYSTAL_INFER_REUSE_RUN_PROGRAMS=1` runs every program again, as
+    # before.
     private def reason_to_run_programs_again(record : SourceRecord) : String?
       return "CRYSTAL_INFER_REUSE_RUN_PROGRAMS=1" if ENV["CRYSTAL_INFER_REUSE_RUN_PROGRAMS"]? == "1"
 
@@ -244,17 +246,35 @@ module Crystal::InferReuse
       return "more than #{ChangedFiles::MAXIMUM_ENTRY_COUNT} entries under #{working_directory}" if changed_files.overflowed?
       return nil if changed_files.list_of_paths.empty?
 
-      list_of_program_folders = record.list_of_program_runs.map { |run| File.dirname(File.expand_path(run.filename, working_directory)) + "/" }.uniq!
-      list_of_argument_paths = Set(String).new
+      program_folders = Set(String).new
+      argument_paths = Set(String).new
+      argument_folders = Set(String).new
+      sibling_folders = Set(String).new
       record.list_of_program_runs.each do |run|
-        run.list_of_arguments.each { |argument| list_of_argument_paths << File.expand_path(argument, working_directory) }
-      end
-      changed_files.list_of_paths.each do |path|
-        return "#{path} changed, and it is no Crystal source of the program" unless record.text_by_filename.has_key?(path)
-        if folder = list_of_program_folders.find { |program_folder| path.starts_with?(program_folder) }
-          return "#{path} changed, in the folder of a macro program (#{folder})"
+        program_folders << File.dirname(File.expand_path(run.filename, working_directory))
+        run.list_of_arguments.each do |argument|
+          path = File.expand_path(argument, working_directory)
+          if File.directory?(path)
+            argument_folders << path
+          elsif argument_paths.add?(path)
+            sibling_folders << File.dirname(path)
+          end
         end
-        return "#{path} changed, and a macro program takes it as an argument" if list_of_argument_paths.includes?(path)
+      end
+
+      changed_files.list_of_paths.each do |path|
+        return "#{path} changed, and a macro program takes it as an argument" if argument_paths.includes?(path)
+        folder = File.dirname(path)
+        if sibling_folders.includes?(folder) && !record.text_by_filename.has_key?(path)
+          return "#{path} changed, next to a file a macro program takes as an argument"
+        end
+        while folder.size > 1
+          return "#{path} changed, in the folder of a macro program (#{folder})" if program_folders.includes?(folder)
+          return "#{path} changed, in a folder a macro program takes as an argument (#{folder})" if argument_folders.includes?(folder)
+          parent = File.dirname(folder)
+          break if parent == folder
+          folder = parent
+        end
       end
       nil
     end
