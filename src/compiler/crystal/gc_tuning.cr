@@ -171,6 +171,30 @@ module Crystal
       {% end %}
     end
 
+    # The number of collections so far (0 without the collector).
+    def self.collection_number : UInt64
+      {% if flag?(:gc_none) || flag?(:wasm32) %}
+        0_u64
+      {% else %}
+        LibGC.gc_no.to_u64!
+      {% end %}
+    end
+
+    # Collects once more if the collector collected since *collection_number*.
+    #
+    # The collector works out how much to allocate before its next collection
+    # at the first allocation after a collection, from the divisor it has then,
+    # and keeps that amount until it collects again. A re-typing that collected
+    # with `BUILD_SERVER_RETYPE_FREE_SPACE_DIVISOR` left that amount (half the
+    # heap or more) to the code generation child forked after it, whose divisor
+    # and floor (`enter_build_server_child`) then did not apply: a body edit of
+    # Grant300 grew the child's heap from 4.6 to 6.1 GB without a collection,
+    # a peak 1.9 GB above the same edit's. One collection here, after the
+    # divisor is back, makes the collector work it out again.
+    def self.collect_if_collected_since(collection_number : UInt64) : Nil
+      GC.collect if self.collection_number != collection_number
+    end
+
     class_property? collects_at_stages : Bool = false
     class_property? traces_stages : Bool = false
 
