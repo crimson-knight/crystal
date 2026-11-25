@@ -164,7 +164,12 @@ module Crystal::InferReuse
 
         list_of_added.each do |filename|
           next if @list_of_new_files.any? { |new_file| new_file.filename == filename }
-          @list_of_new_files << NewFile.parse(program, filename)
+          new_file = begin
+            NewFile.parse(program, filename)
+          rescue ex : Refusal
+            raise Refusal.new("require \"#{result.filename}\" finds other files, and #{ex.message}")
+          end
+          @list_of_new_files << new_file
           @list_of_found_files_by_new_filename[filename] = list_of_found
         end
         @list_of_grown_requires << {index, SourceRecord::RequireResult.new(result.filename, result.relative_to, list_of_found)}
