@@ -667,7 +667,7 @@ module Crystal
       end
 
       @unused_fun_defs.each do |node|
-        codegen_fun node.real_name, node.external, @program, is_exported_fun: true
+        codegen_fun node.real_name, node.external, @program, is_exported_fun: true, fun_module_info: @main_module_info
       end
       # A `fun` with a body that no Crystal code calls is generated only
       # here, and a deep chain in it defers functions like any other.
@@ -729,14 +729,14 @@ module Crystal
         node.external.dead = true
 
         if node.external.used?
-          codegen_fun node.real_name, node.external, @program, is_exported_fun: true
+          codegen_fun node.real_name, node.external, @program, is_exported_fun: true, fun_module_info: @main_module_info
         else
           # If the fun is not invoked we codegen it at the end so
           # we don't have issues with constants being used before
           # they are declared.
           # But, apparently, llvm requires us to define them so that
           # calls can find them, so we do so.
-          codegen_fun node.real_name, node.external, @program, is_exported_fun: false
+          codegen_fun node.real_name, node.external, @program, is_exported_fun: false, fun_module_info: @main_module_info
           @unused_fun_defs << node
         end
       end
