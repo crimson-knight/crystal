@@ -184,9 +184,9 @@ class Crystal::CodeGenVisitor
     @codegen_fun_depth >= DEFERRED_GENERATION_DEPTH
   end
 
-  # Declares the function of *target_def* in the function-signature module,
-  # from which callers declare it, without generating it.
-  private def declare_deferred_fun(mangled_name, target_def, self_type) : LLVMTypedFunction
+  # Records the signature of the function of *target_def*, from which
+  # callers declare it, without generating it.
+  private def declare_deferred_fun(mangled_name, target_def, self_type) : FunSignature
     if known_signature = known_fun_signature?(mangled_name)
       return known_signature
     end
@@ -203,7 +203,7 @@ class Crystal::CodeGenVisitor
         @llvm_context = @llvm_mod.context
         @llvm_typer = signatures.typer
         codegen_fun_signature(mangled_name, target_def, self_type, false, false)
-        LLVMTypedFunction.new(context.fun_type, context.fun)
+        record_signature_of_scratch_fun(mangled_name, LLVMTypedFunction.new(context.fun_type, context.fun))
       end
     ensure
       @llvm_mod = old_llvm_mod
@@ -247,8 +247,17 @@ class Crystal::CodeGenVisitor
   # module has it already. Replaying a trace (see `IrSkip`) can generate
   # code into the current module late, and that code may have declared the
   # function in the meantime; a second declaration would get another name.
-  private def declare_in_current_module(mangled_name : String, func : LLVMTypedFunction) : LLVMTypedFunction
+  private def declare_in_current_module(mangled_name : String, func : LLVMTypedFunction | FunSignature) : LLVMTypedFunction
     typed_fun?(@module_info, mangled_name) || declare_fun(mangled_name, func)
+  end
+
+  # Records the signature of *func*, just generated into the function
+  # signature module, and takes the function out of that module again.
+  private def record_signature_of_scratch_fun(mangled_name : String, func : LLVMTypedFunction) : FunSignature
+    signature = record_fun_signature(mangled_name, func)
+    func.func.delete
+    fun_signatures.fun_types.delete(mangled_name)
+    signature
   end
 
   # The function named *mangled_name* when it needs no generating: it is in
@@ -302,6 +311,22 @@ class Crystal::CodeGenVisitor
       if attrs.value != 0
         param_type = new_fun.params[index].type
         new_fun.add_attribute(attrs, index + 1, param_type)
+      end
+    end
+
+    typed_fun
+  end
+
+  # Declares the function of *signature* in *module_info*.
+  def declare_fun(mangled_name, signature : FunSignature, module_info : ModuleInfo = @module_info) : LLVMTypedFunction
+    type = module_info.typer.copy_type(signature.type)
+    typed_fun = add_typed_fun(module_info, mangled_name, type)
+
+    if list_of_param_attributes = signature.list_of_param_attributes
+      new_fun = typed_fun.func
+      list_of_param_attributes.each_with_index do |attributes, index|
+        next if attributes.value == 0
+        new_fun.add_attribute(attributes, index + 1, new_fun.params[index].type)
       end
     end
 
