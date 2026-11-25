@@ -1573,6 +1573,12 @@ module Crystal
     rare_property splat_index : Int32?
     rare_property doc : String?
 
+    # Set on a typed def typed with a `self` shared by several receivers (a
+    # class and its subclasses) whose body, or a method it calls with that
+    # `self`, calls a macro without a receiver: what is called, for the error
+    # a typed-once caller gives (see `type_once_soundness.cr`).
+    rare_property macro_for_shared_self : String?
+
     flag_property? macro_def, 0
     property? calls_super = false
     property? calls_initialize = false
