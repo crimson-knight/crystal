@@ -188,13 +188,11 @@ Low priority but worth tracking:
 
 - Implement `--asyncify-only-list` to limit Asyncify instrumentation
   to functions that actually need it (reduces ~50% code size overhead)
-- Implement Asyncify-based GC root scanning (modeled on Emscripten's
-  `emscripten_scan_registers`): trigger an Asyncify unwind before GC
-  collection to spill all live WASM locals into linear memory, then
-  scan them. This guarantees all pointer roots are visible to Boehm GC.
-  **Note**: `--spill-pointers` (Binaryen pass) cannot be used -- it has
-  known bugs and is incompatible with Asyncify (see
-  emscripten/emscripten#18251).
+- GC root scanning is done: `--spill-pointers` runs before `--asyncify`
+  in every build with a collector, and each fiber runs on its own shadow
+  stack (WASM_GUIDE.md, "Garbage Collection"). An Asyncify-based scan
+  modeled on Emscripten's `emscripten_scan_registers` remains an option
+  if the spill pass's size cost needs to come down.
 - Benchmark debug vs release mode sizes
 
 ### D3: Error messages

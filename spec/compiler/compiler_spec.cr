@@ -94,3 +94,25 @@ describe "Compiler" do
     {% end %}
   end
 end
+
+describe "Crystal::Compiler.wasm_spill_and_asyncify_flags" do
+  it "spills pointers before asyncify in a build with fibers and a collector" do
+    flags = Crystal::Compiler.wasm_spill_and_asyncify_flags(skip_fibers: false, needs_pointer_spills: true)
+    flags.should start_with("--spill-pointers --asyncify ")
+    flags.should contain("--pass-arg=asyncify-removelist@_start")
+  end
+
+  it "spills pointers without fibers" do
+    Crystal::Compiler.wasm_spill_and_asyncify_flags(skip_fibers: true, needs_pointer_spills: true)
+      .should eq("--spill-pointers")
+  end
+
+  it "runs only asyncify with -Dgc_none" do
+    Crystal::Compiler.wasm_spill_and_asyncify_flags(skip_fibers: false, needs_pointer_spills: false)
+      .should start_with("--asyncify ")
+  end
+
+  it "runs neither without fibers and with -Dgc_none" do
+    Crystal::Compiler.wasm_spill_and_asyncify_flags(skip_fibers: true, needs_pointer_spills: false).should be_nil
+  end
+end

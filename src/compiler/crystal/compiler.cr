@@ -2468,54 +2468,68 @@ module Crystal
 
     # The post-link step of a wasm32 build. The order of the passes matters:
     #
-    # 1. `--asyncify` instruments functions so fibers can unwind and rewind
+    # 1. `--spill-pointers` stores every pointer-sized local that is live across
+    #    a call on the shadow stack (the stack in linear memory) before the call,
+    #    so Boehm's conservative scan of that stack sees it as a root. Without
+    #    it, an object whose only reference sits in a WebAssembly local is
+    #    invisible to the collector and can be freed while still in use. It runs
+    #    first, before asyncify, so the frame it reserves on the shadow stack is
+    #    ordinary code to asyncify, like the frame LLVM reserves: an unwind
+    #    leaves both in place for the suspended fiber, and a rewind restores the
+    #    local that points at the frame instead of reserving a new one. Run after
+    #    asyncify, it would also instrument asyncify's own unwind and rewind
+    #    paths (emscripten/emscripten#18251).
+    # 2. `--asyncify` instruments functions so fibers can unwind and rewind
     #    the stack. It only understands legacy exception handling
-    #    (try/catch), so it runs on the freshly linked module.
+    #    (try/catch), so it runs before step 4.
     #    `crystal_asyncify_switch` is declared an async import so its callers
     #    save and restore their state around it.
-    # 2. `wasm-merge` adds asyncify_helper.wasm, whose `crystal_*` wrappers
+    # 3. `wasm-merge` adds asyncify_helper.wasm, whose `crystal_*` wrappers
     #    call the `asyncify_*` functions the pass just created. It runs after
     #    the pass so the helper's imports and the pass's definitions do not
     #    collide.
-    # 3. `--translate-to-exnref` turns legacy exception handling into the
+    # 4. `--translate-to-exnref` turns legacy exception handling into the
     #    try_table/exnref form browsers run. It runs after asyncify.
-    # 4. `--spill-pointers` stores pointer-typed locals on the shadow stack at
-    #    every call, so Boehm's conservative scan sees them as roots.
     # 5. `-O1` to `-O3`, `-Os` or `-Oz`, matching the compiler's optimization
     #    mode, on the final module (none at `-O0`).
     #
-    # Steps 1 and 2 are for fibers only: a program built with
+    # Step 1 runs whenever there is a collector to scan the roots, with or
+    # without fibers: with `-Dgc_none` it would spill pointers nobody reads.
+    # Steps 2 and 3 are for fibers only: a program built with
     # `-Dfrontend_no_fibers` never switches fibers, so they are skipped, and
     # with them the asyncify instrumentation that slows every function down
     # and grows the module by about half.
-    #
-    # Step 4 runs only without asyncify, whose interaction with it is
-    # unverified (emscripten/emscripten#18251), and only when there is a
-    # collector to scan the roots: with `-Dgc_none` it would spill pointers
-    # nobody reads.
     private def run_wasm_opt(output_filename : String, optimization_mode : OptimizationMode,
                              skip_fibers : Bool, needs_pointer_spills : Bool) : Nil
       quoted = Process.quote_posix(output_filename)
 
-      unless skip_fibers
-        # _start is the asyncify boundary, so it stays uninstrumented.
-        run_wasm_opt_pass(quoted,
-          "--asyncify" \
-          " --pass-arg=asyncify-removelist@_start" \
-          " --pass-arg=asyncify-imports@env.crystal_asyncify_switch",
-          "asyncify")
-        run_wasm_merge(output_filename)
+      if pass_flags = Compiler.wasm_spill_and_asyncify_flags(skip_fibers, needs_pointer_spills)
+        run_wasm_opt_pass(quoted, pass_flags, "spill-pointers and asyncify")
       end
+      run_wasm_merge(output_filename) unless skip_fibers
 
       run_wasm_opt_pass(quoted, "--translate-to-exnref", "translate-to-exnref")
-
-      if skip_fibers && needs_pointer_spills
-        run_wasm_opt_pass(quoted, "--spill-pointers", "spill-pointers")
-      end
 
       if level = Compiler.wasm_opt_level(optimization_mode)
         run_wasm_opt_pass(quoted, level, "optimization")
       end
+    end
+
+    # The `wasm-opt` flags of steps 1 and 2 of the wasm32 post-link step, or
+    # `nil` when neither runs. Both passes go to one `wasm-opt` run because
+    # asyncify finds `_start` by its name, and `wasm-opt` drops the name
+    # section when it writes a module, so a separate spill run before it
+    # would hide `_start` and asyncify would instrument the boundary too.
+    def self.wasm_spill_and_asyncify_flags(skip_fibers : Bool, needs_pointer_spills : Bool) : String?
+      list_of_flags = [] of String
+      list_of_flags << "--spill-pointers" if needs_pointer_spills
+      unless skip_fibers
+        # _start is the asyncify boundary, so it stays uninstrumented.
+        list_of_flags << "--asyncify" \
+                         " --pass-arg=asyncify-removelist@_start" \
+                         " --pass-arg=asyncify-imports@env.crystal_asyncify_switch"
+      end
+      list_of_flags.join(' ').presence
     end
 
     # The `wasm-opt` optimization flag that matches *optimization_mode*, or
