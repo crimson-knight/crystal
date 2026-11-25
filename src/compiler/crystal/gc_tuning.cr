@@ -117,6 +117,40 @@ module Crystal
       {% end %}
     end
 
+    # The divisor of a build server's build child while it re-types an edit
+    # (see `with_build_server_retype_divisor`).
+    BUILD_SERVER_RETYPE_FREE_SPACE_DIVISOR = 2_u64
+
+    # How much a re-typing may grow the heap before the build child gives
+    # the free space back to the system (see `InferReuse::Server`).
+    RETYPE_HEAP_GROWTH_TO_RETURN = 2_000_000_000_u64
+
+    # Runs the block, the re-typing of an edit in a build child of the build
+    # server, with a smaller divisor. The child starts with the server's
+    # heap (5 GB in an Amber app of 300 resources). Typing the top-level code
+    # of that app's routes file alone allocates about 19 GB; with the
+    # compiler's divisor that was 26 full collections, 50 of the 54 s the
+    # re-typing took. With 1 it took 13 to 16 s, and the heap grew to 12.8 GB;
+    # 2 lets it grow by half before each collection. A body edit allocates
+    # little and collects as before. `CRYSTAL_GC_RETYPE_FREE_SPACE_DIVISOR=N`
+    # sets another one (0 keeps the compiler's), for measuring.
+    def self.with_build_server_retype_divisor(&)
+      {% if flag?(:gc_none) || flag?(:wasm32) %}
+        yield
+      {% else %}
+        divisor = ENV["CRYSTAL_GC_RETYPE_FREE_SPACE_DIVISOR"]?.try(&.to_u64?) || BUILD_SERVER_RETYPE_FREE_SPACE_DIVISOR
+        return yield if divisor == 0
+
+        previous_divisor = LibGC.get_free_space_divisor
+        LibGC.set_free_space_divisor(LibGC::Word.new(divisor))
+        begin
+          yield
+        ensure
+          LibGC.set_free_space_divisor(previous_divisor)
+        end
+      {% end %}
+    end
+
     class_property? collects_at_stages : Bool = false
     class_property? traces_stages : Bool = false
 

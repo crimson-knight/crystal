@@ -60,6 +60,10 @@ module Crystal
 
   # Fingerprint of a single source file for incremental compilation tracking.
   # Includes mtime, content hash, and byte size for fast change detection.
+  #
+  # `mtime_epoch` is the modification time in Unix milliseconds: whole
+  # seconds missed an edit that kept the size and came within the second of
+  # the previous build (a build server reuse takes well under a second).
   record FileFingerprint,
     filename : String,
     mtime_epoch : Int64,
@@ -163,7 +167,7 @@ module Crystal
 
       FileFingerprint.new(
         filename: filename,
-        mtime_epoch: info.modification_time.to_unix,
+        mtime_epoch: info.modification_time.to_unix_ms,
         content_hash: content_hash,
         byte_size: info.size,
       )
@@ -176,7 +180,7 @@ module Crystal
       info = File.info(filename)
       FileFingerprint.new(
         filename: filename,
-        mtime_epoch: info.modification_time.to_unix,
+        mtime_epoch: info.modification_time.to_unix_ms,
         content_hash: "",
         byte_size: info.size,
       )
@@ -200,7 +204,7 @@ module Crystal
         # Quick check: stat-based (mtime + size) before expensive hash
         begin
           info = File.info(filename)
-          if info.modification_time.to_unix != old_fp.mtime_epoch || info.size != old_fp.byte_size
+          if info.modification_time.to_unix_ms != old_fp.mtime_epoch || info.size != old_fp.byte_size
             changed.add(filename)
           end
         rescue IO::Error

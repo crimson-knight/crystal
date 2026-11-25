@@ -172,8 +172,15 @@ module Crystal::InferReuse
 
       reason = "the server holds no typed program yet"
       if kept
-        decision = Retyper.new(kept, request).run
+        heap_bytes_before = GC.stats.heap_size
+        decision = GCTuning.with_build_server_retype_divisor { Retyper.new(kept, request).run }
         if decision.reused?
+          # This process keeps the re-typed program as the next server. A
+          # re-typing that grew the heap (a routes file) leaves free space
+          # behind, which it and the code generation child would both keep.
+          if GC.stats.heap_size > heap_bytes_before + GCTuning::RETYPE_HEAP_GROWTH_TO_RETURN
+            InferReuse.return_free_memory_to_os
+          end
           return {kept, status_writer}
         end
         reason = decision.reason
