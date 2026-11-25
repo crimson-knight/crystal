@@ -65,6 +65,17 @@ module Crystal::InferReuse
     LibGC.start_mark_threads
   end
 
+  # Collects the heap twice with free blocks unmapped: the first collection
+  # frees the garbage, the second coalesces the free blocks so they can be
+  # unmapped.
+  def self.return_free_memory_to_os : Nil
+    {% unless flag?(:gc_none) || flag?(:wasm32) %}
+      LibGC.set_force_unmap_on_gcollect(1)
+      2.times { GC.collect }
+      LibGC.set_force_unmap_on_gcollect(0)
+    {% end %}
+  end
+
   # Waits for the forked process *pid* and returns its exit code (128 plus
   # the signal number when a signal ended it).
   def self.wait_for(pid : LibC::PidT) : Int32
