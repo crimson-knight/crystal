@@ -42,6 +42,7 @@ module Crystal::InferReuse
 
       loop do
         if pid = InferReuse.fork_process
+          walk_owner_shapes(kept)
           exit_code = InferReuse.wait_for(pid)
           exit exit_code unless exit_code == 0
 
@@ -56,6 +57,17 @@ module Crystal::InferReuse
           return kept.node
         end
       end
+    end
+
+    # Walks the typed defs of the kept program for owner shape sharing while
+    # the code generation child builds, so that the next build child walks
+    # only what its edit changed (see `OwnerShapeSharing::WalkCache`). The
+    # walks only save time: a failure leaves the program without them.
+    private def walk_owner_shapes(kept : KeptProgram) : Nil
+      OwnerShapeSharing.walk_all(kept.program, kept.node)
+    rescue ex
+      kept.program.owner_shape_walk_cache = nil
+      STDERR.puts "owner shapes: the build server could not walk its program: #{ex.message}" if ENV["CRYSTAL_OWNER_SHAPES_STATS"]?
     end
 
     # Tells the old server that this process serves from now on, after

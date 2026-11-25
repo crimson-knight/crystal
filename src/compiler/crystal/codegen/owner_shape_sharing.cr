@@ -99,13 +99,64 @@ module Crystal
       end
     end
 
+    # What the walk of one typed def found: everything `ShapeWalker#walk`
+    # leaves in the def's `Shape`, the defs it discovered and the targets of
+    # super calls among them.
+    record WalkResult, base_first : UInt64, base_second : UInt64, list_of_callees : Array(Def),
+      shareable : Bool, pinned : Bool, blocker : String?, owner_use : OwnerUse, node_count : Int32,
+      list_of_discovered : Array(Def), list_of_super_target_ids : Array(UInt64)
+
+    # The walks of a build server's typed program, by def (object id).
+    #
+    # A walk only reads the def's typed body and the types it names, and a
+    # build server keeps both from one build to the next: only re-typing an
+    # edit replaces typed defs (`Program#infer_reuse_replaced_def_ids`), and
+    # callers of a replaced def now call another one. So the server walks
+    # its program while a build child generates code (`#walk_all`), and the
+    # code generation child of the next build walks only the defs the edit
+    # re-typed or made, and the ones that call a replaced def. In an Amber
+    # app of 300 resources the walks were most of the 1.4 s the analysis
+    # took in every build child. `CRYSTAL_OWNER_SHAPES_WALK_CACHE=0` walks
+    # every def, for measuring.
+    class WalkCache
+      getter result_by_def_id = {} of UInt64 => WalkResult
+
+      def self.enabled? : Bool
+        ENV["CRYSTAL_OWNER_SHAPES_WALK_CACHE"]? != "0"
+      end
+    end
+
+    # How many defs the analysis took from the walk cache, and walked.
+    getter cached_walk_count = 0
+    getter fresh_walk_count = 0
+
     # Walks every typed def reachable from the program's types and from
     # *main_node*, then groups them.
     def analyze(main_node : ASTNode) : Nil
       started = Time.instant
+      walk_reachable_defs(main_node)
+      refine
+      @stats.seconds = (Time.instant - started).total_seconds
+    end
+
+    # Walks every typed def reachable from the program's types and from
+    # *main_node*, and keeps the walks in the program's walk cache for the
+    # code generation child of the next build. Run by the build server.
+    def self.walk_all(program : Program, main_node : ASTNode) : Nil
+      return unless program.share_owner_shapes? && WalkCache.enabled?
+
+      sharing = new(program)
+      sharing.walk_reachable_defs(main_node, keeps_walks: true)
+    end
+
+    protected def walk_reachable_defs(main_node : ASTNode, *, keeps_walks : Bool = false) : Nil
       pending = [] of Def
       collect_cached_defs(@program, Set(UInt64).new, pending)
       collect_calls(main_node, pending)
+
+      cache = WalkCache.enabled? ? @program.owner_shape_walk_cache : nil
+      replaced_ids = @program.infer_reuse_replaced_def_ids
+      new_cache = keeps_walks ? WalkCache.new : nil
 
       walker = ShapeWalker.new(@program, @types, @super_targets)
       index = 0
@@ -116,12 +167,54 @@ module Crystal
         shape = Shape.new(typed_def)
         @shape_by_def[typed_def.object_id] = shape
         @shapes << shape
-        walker.walk(shape)
-        walker.discovered.each { |found| pending << found unless @shape_by_def.has_key?(found.object_id) }
+
+        result = cache.try(&.result_by_def_id[typed_def.object_id]?)
+        if result && (replaced_ids.empty? || result.list_of_discovered.none? { |found| replaced_ids.includes?(found.object_id) })
+          apply(result, shape)
+          @cached_walk_count += 1
+          list_of_discovered = result.list_of_discovered
+        else
+          super_target_count = @super_targets.size
+          walker.walk(shape)
+          @fresh_walk_count += 1
+          list_of_discovered = walker.discovered.dup
+          result = WalkResult.new(shape.base_first, shape.base_second, shape.callees.dup,
+            shape.shareable?, shape.pinned?, shape.blocker, shape.owner_use, shape.node_count,
+            list_of_discovered, super_target_ids_since(super_target_count, list_of_discovered))
+        end
+        new_cache.try &.result_by_def_id[typed_def.object_id] = result
+        list_of_discovered.each { |found| pending << found unless @shape_by_def.has_key?(found.object_id) }
       end
 
-      refine
-      @stats.seconds = (Time.instant - started).total_seconds
+      if new_cache
+        @program.owner_shape_walk_cache = new_cache
+        replaced_ids.clear
+      end
+    end
+
+    private def apply(result : WalkResult, shape : Shape) : Nil
+      shape.base_first = result.base_first
+      shape.base_second = result.base_second
+      shape.callees.concat(result.list_of_callees)
+      shape.shareable = result.shareable
+      shape.pinned = result.pinned
+      shape.blocker = result.blocker
+      shape.owner_use = result.owner_use
+      shape.node_count = result.node_count
+      result.list_of_super_target_ids.each { |id| @super_targets << id }
+    end
+
+    # The super call targets a walk added: those among the defs it
+    # discovered that are in the set now and were not before. A set only
+    # grows, so when it did not grow there are none.
+    private def super_target_ids_since(count_before : Int32, list_of_discovered : Array(Def)) : Array(UInt64)
+      list_of_ids = [] of UInt64
+      return list_of_ids if @super_targets.size == count_before
+
+      list_of_discovered.each do |found|
+        list_of_ids << found.object_id if @super_targets.includes?(found.object_id)
+      end
+      list_of_ids
     end
 
     # Walks *first* and *second* again and describes the first place where
@@ -1082,5 +1175,13 @@ module Crystal
     # interchangeable classes (see `OwnerShapeSharing`).
     # `CRYSTAL_SHARE_OWNER_SHAPES=0` turns it off.
     property? share_owner_shapes : Bool = OwnerShapeSharing.enabled?
+
+    # The walks of the typed defs of a build server's program (see
+    # `OwnerShapeSharing::WalkCache`).
+    property owner_shape_walk_cache : OwnerShapeSharing::WalkCache? = nil
+
+    # The typed defs (by object id) that re-typing an edit replaced since the
+    # build server last walked its program.
+    getter infer_reuse_replaced_def_ids = Set(UInt64).new
   end
 end
