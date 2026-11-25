@@ -565,6 +565,23 @@ class Crystal::Call
         end
       end
 
+      # A body that never consults its receiver is typed once for every
+      # receiver of the same representation (see `receiver_free_sharing.cr`).
+      receiver_free_key = nil
+      verify_shared_copy = nil
+      if !typed_def && use_cache && !block && single_match && !typed_once
+        receiver_free_key = receiver_free_key(match, self_type)
+        if receiver_free_key && (shared_copy = receiver_free_copy(receiver_free_key, match))
+          if ReceiverFreeSharing.mode.verify?
+            verify_shared_copy = shared_copy
+          else
+            typed_def = shared_copy
+            shared_copy.receiver_free = true
+            program.receiver_free_shared_calls += 1
+          end
+        end
+      end
+
       newly_typed_def = nil
       unless typed_def
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
@@ -592,6 +609,15 @@ class Crystal::Call
 
         if typed_def_return_type = typed_def.return_type
           check_return_type(typed_def, typed_def_return_type, match, match_owner)
+        end
+
+        if receiver_free_key
+          if verify_shared_copy
+            program.list_of_receiver_free_verify_pairs << ReceiverFreeSharing::VerifyPair.new(typed_def, verify_shared_copy, match_owner)
+          elsif !program.receiver_free_copies.has_key?(receiver_free_key)
+            program.receiver_free_copies[receiver_free_key] = typed_def
+            program.receiver_free_registered += 1
+          end
         end
 
         bubbling_exception do

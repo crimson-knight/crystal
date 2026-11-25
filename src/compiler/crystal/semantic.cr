@@ -46,6 +46,7 @@ class Crystal::Program
       visit_main(node, process_finished_hooks: true, cleanup: cleanup, visitor: main_visitor)
     end
     MemoryCensus.report(self, result, "Semantic (main)") if MemoryCensus.enabled?
+    report_receiver_free_sharing
     GenericTypeOnce.check_assumptions(self)
     GenericTypeOnce::Probe.report(self)
 

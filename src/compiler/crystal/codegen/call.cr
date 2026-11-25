@@ -107,10 +107,14 @@ class Crystal::CodeGenVisitor
         call_args << llvm_nil
       else
         if obj && obj.type.passed_as_self?
-          call_args << type_once_cast(target_def, @last, target_def.owner, obj.type)
+          # A receiver-free copy never reads `self`: any receiver of its
+          # representation is passed as it is (see `ReceiverFreeSharing`).
+          call_args << (target_def.receiver_free? ? @last : type_once_cast(target_def, @last, target_def.owner, obj.type))
         else
           if node.uses_with_scope? && (yield_scope = context.vars["%scope"]?)
             call_args << downcast(yield_scope.pointer, target_def.owner, node.with_scope.not_nil!, true)
+          elsif target_def.receiver_free? && (self_var = context.vars["self"]?)
+            call_args << self_var.pointer
           elsif target_def.type_once? && (self_var = context.vars["self"]?)
             # An implicit call on `self` from a subclass's own copy.
             call_args << type_once_cast(target_def, self_var.pointer, owner, self_var.type)
