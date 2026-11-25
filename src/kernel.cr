@@ -75,10 +75,16 @@ STDERR = IO::FileDescriptor.from_stdio(2)
 #
 # See `Process.executable_path` for a more convenient alternative that always
 # returns the absolute real path to the executable file (if it exists).
-PROGRAM_NAME = String.new(ARGV_UNSAFE.value)
+#
+# A host may start the program with no arguments at all (`argc` is 0, as many
+# WebAssembly hosts do) or with a null `argv[0]`; the name is then empty.
+PROGRAM_NAME = begin
+  program_name_pointer = ARGC_UNSAFE > 0 ? ARGV_UNSAFE.value : Pointer(UInt8).null
+  program_name_pointer.null? ? "" : String.new(program_name_pointer)
+end
 
 # An array of arguments passed to the program.
-ARGV = Array.new(ARGC_UNSAFE - 1) { |i| String.new(ARGV_UNSAFE[1 + i]) }
+ARGV = Array.new(ARGC_UNSAFE > 1 ? ARGC_UNSAFE - 1 : 0) { |argument_index| String.new(ARGV_UNSAFE[1 + argument_index]) }
 
 # An `IO` for reading files from `ARGV`.
 #

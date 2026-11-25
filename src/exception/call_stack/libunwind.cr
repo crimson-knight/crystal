@@ -52,9 +52,9 @@ struct Exception::CallStack
       bt = data.as(typeof(callstack))
 
       ip = {% if flag?(:arm) %}
-             Pointer(Void).new(__crystal_unwind_get_ip(context))
+             Pointer(Void).new(__crystal_unwind_get_ip(context).to_u64!)
            {% else %}
-             Pointer(Void).new(LibUnwind.get_ip(context))
+             Pointer(Void).new(LibUnwind.get_ip(context).to_u64!)
            {% end %}
       # the last IP is often a NULL pointer on linux-gnu, or maybe it's
       # libunwind; in any case it's invalid, so we we skip it
@@ -93,9 +93,9 @@ struct Exception::CallStack
       last_frame = data.as(RepeatedFrame*)
 
       ip = {% if flag?(:arm) %}
-             Pointer(Void).new(__crystal_unwind_get_ip(context))
+             Pointer(Void).new(__crystal_unwind_get_ip(context).to_u64!)
            {% else %}
-             Pointer(Void).new(LibUnwind.get_ip(context))
+             Pointer(Void).new(LibUnwind.get_ip(context).to_u64!)
            {% end %}
 
       if last_frame.value.ip == ip
