@@ -422,9 +422,10 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
   it "keeps the macro programs' output when only sources of the program changed" do
     with_project("infer-reuse-macro-run-kept") do |project|
       Dir.mkdir_p(File.join(project.directory, "tools"))
+      Dir.mkdir_p(File.join(project.directory, "data"))
       project.write("tools/number.cr", "puts File.read(ARGV[0]).strip\n")
-      project.write("number.txt", "7\n")
-      run_main = MAIN + "puts {{ run(\"./tools/number\", \"number.txt\") }}\n"
+      project.write("data/number.txt", "7\n")
+      run_main = MAIN + "puts {{ run(\"./tools/number\", \"data/number.txt\") }}\n"
       project.write("main.cr", run_main)
       expect_build(project, "Hello world\n11\n0\n7\n", reused: false)
 
@@ -434,7 +435,7 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
       report["reason"].as_s.should contain("macro program runs kept")
 
       # A file the program reads changed: the program runs again.
-      project.write("number.txt", "8\n")
+      project.write("data/number.txt", "8\n")
       project.write("helper.cr", HELPER)
       report = expect_build(project, "Hello world\n11\n0\n8\n", reused: false)
       report["reason"].as_s.should contain("whose output changed")
