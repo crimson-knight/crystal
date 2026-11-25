@@ -3345,7 +3345,7 @@ module Crystal
     property def_body_recorder : DefBodyRecorder?
 
     abstract class DefBodyRecorder
-      abstract def record(a_def : Def, start : Lexer::LocationState) : Nil
+      abstract def record(a_def : Def, start : Lexer::LocationState, type_nest : Int32) : Nil
     end
 
     def parse_def(is_abstract = false, is_macro_def = false, doc = nil)
@@ -3371,7 +3371,7 @@ module Crystal
       @block_arg_name = nil
       @is_macro_def = false
       if def_start && (recorder = @def_body_recorder)
-        recorder.record(a_def, def_start)
+        recorder.record(a_def, def_start, @type_nest)
       end
       a_def
     end

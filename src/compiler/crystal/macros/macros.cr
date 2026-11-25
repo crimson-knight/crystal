@@ -77,7 +77,7 @@ class Crystal::Program
     virtual_file = VirtualFile.new(the_macro, generated_source, node.location, @program.macro_source_store)
     # The bodies of the defs this expansion declares can be parsed again
     # from its text once they are let go (see `lazy_def_bodies.cr`).
-    lazy_recorder = @program.lazy_def_bodies? && current_def.nil? ? LazyMacroDefBodies.new(@program, virtual_file, macro_expansion_pragmas, inside_type, ->(parsed : ASTNode) { normalize(parsed, inside_exp: inside_exp, current_def: nil) }) : nil
+    lazy_recorder = @program.lazy_def_bodies? && current_def.nil? ? ReparsableDefBodies.new(@program, virtual_file, nil, macro_expansion_pragmas, ->(parsed : ASTNode) { normalize(parsed, inside_exp: inside_exp, current_def: nil) }) : nil
     parser.def_body_recorder = lazy_recorder
     @program.virtual_files << virtual_file
     infer_reuse_record.try &.method_list_frames.attach(generated_source, virtual_file)

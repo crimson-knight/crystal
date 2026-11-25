@@ -1560,6 +1560,11 @@ module Crystal
   abstract class LazyDefBody
     # Parses the body of *a_def* again.
     abstract def body_for(a_def : Def) : ASTNode
+
+    # Whether the body can be let go again once it was parsed again.
+    def lets_go_again? : Bool
+      true
+    end
   end
 
   class Def < ASTNode
@@ -1632,7 +1637,7 @@ module Crystal
     # whether it did.
     def drop_body_again : Bool
       return false if lazy_body?
-      return false unless source = lazy_body
+      return false unless (source = lazy_body) && source.lets_go_again?
 
       drop_body(source)
       true

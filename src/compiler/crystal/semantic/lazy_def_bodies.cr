@@ -98,12 +98,12 @@ module Crystal
 
     private def drop_lazy_def_body(a_def : Def, verify : Bool) : Nil
       source = a_def.lazy_body
-      return unless source.is_a?(LazyMacroDefBodies::Source)
+      return unless source.is_a?(ReparsableDefBodies::Source)
       return if a_def.lazy_body?
 
       if verify
         parsed_again = source.body_for(a_def)
-        if difference = LazyMacroDefBodies.first_difference(a_def.body, parsed_again)
+        if difference = ReparsableDefBodies.first_difference(a_def.body, parsed_again)
           @lazy_def_bodies_differ += 1
           STDERR.puts "lazy def bodies: #{a_def.name} (#{a_def.location}) differs when parsed again: #{difference}" if @lazy_def_bodies_differ <= 20
           a_def.lazy_body = nil
@@ -116,54 +116,73 @@ module Crystal
     end
   end
 
-  # Records where the defs of one macro expansion start, and parses their
-  # bodies again on demand.
-  class LazyMacroDefBodies < Parser::DefBodyRecorder
-    # Where one def starts in the expansion's text.
+  # Records where the defs of one parsed text (a macro expansion or a
+  # required file) start, and parses their bodies again on demand.
+  class ReparsableDefBodies < Parser::DefBodyRecorder
+    # Where one def starts in the text.
     class Source < LazyDefBody
-      def initialize(@expansion : LazyMacroDefBodies, @start : Lexer::LocationState)
+      # How many times the body was parsed again.
+      getter parse_count = 0
+
+      def initialize(@text : ReparsableDefBodies, @start : Lexer::LocationState, @type_nest : Int32)
       end
 
       def body_for(a_def : Def) : ASTNode
-        @expansion.parse_body(a_def, @start)
+        @parse_count += 1
+        @text.parse_body(a_def, @start, @type_nest)
+      end
+
+      # A body that many calls type with different arguments is parsed
+      # again for each of them once let go; after the second time it stays.
+      def lets_go_again? : Bool
+        @parse_count < 2
       end
     end
 
-    # The location pragmas of the expansion, by position, in order.
+    # The location pragmas of the text, by position, in order.
     @list_of_pragmas : Array({Int32, Array(Lexer::LocPragma)})
-    @list_of_recorded = [] of {Def, Lexer::LocationState}
+    @list_of_recorded = [] of {Def, Lexer::LocationState, Int32}
 
-    # *normalize* is the normalization the expansion went through.
-    def initialize(@program : Program, @virtual_file : VirtualFile, pragmas : Hash(Int32, Array(Lexer::LocPragma))?,
-                   @inside_type : Bool, @normalize : ASTNode -> ASTNode)
+    # *filename* is what the parser was given as the file name: a macro
+    # expansion's `VirtualFile`, whose text the macro source store keeps, or
+    # a required file's path, whose *text* is kept here. *normalize* is the
+    # normalization the parsed nodes went through.
+    def initialize(@program : Program, @filename : String | VirtualFile, @text : String?,
+                   pragmas : Hash(Int32, Array(Lexer::LocPragma))?, @normalize : ASTNode -> ASTNode)
       @list_of_pragmas = pragmas.try(&.to_a) || [] of {Int32, Array(Lexer::LocPragma)}
     end
 
-    def record(a_def : Def, start : Lexer::LocationState) : Nil
-      @list_of_recorded << {a_def, start}
+    def record(a_def : Def, start : Lexer::LocationState, type_nest : Int32) : Nil
+      @list_of_recorded << {a_def, start, type_nest}
     end
 
     # Gives each def that was parsed (and normalized) its source. A def
-    # whose parameters the normalizer renamed is left without one.
+    # whose parameters the parser or the normalizer renamed is left
+    # without one.
     def attach_sources : Nil
-      @list_of_recorded.each do |(a_def, start)|
+      @list_of_recorded.each do |(a_def, start, type_nest)|
         next if a_def.args.any?(&.name.starts_with?("__"))
-        a_def.lazy_body = Source.new(self, start)
+        a_def.lazy_body = Source.new(self, start, type_nest)
       end
-      @list_of_recorded = [] of {Def, Lexer::LocationState}
+      @list_of_recorded = [] of {Def, Lexer::LocationState, Int32}
+    end
+
+    private def source_text : String
+      filename = @filename
+      @text || (filename.is_a?(VirtualFile) ? filename.source : raise "BUG: no text to parse #{filename} again")
     end
 
     # Parses the body of *a_def* again from *start*.
-    def parse_body(a_def : Def, start : Lexer::LocationState) : ASTNode
+    def parse_body(a_def : Def, start : Lexer::LocationState, type_nest : Int32) : ASTNode
       @program.lazy_def_bodies_parsed_again += 1
-      parser = @program.new_parser(@virtual_file.source)
-      parser.filename = @virtual_file
+      parser = @program.new_parser(source_text)
+      parser.filename = @filename
       pragmas = Hash(Int32, Array(Lexer::LocPragma)).new
       @list_of_pragmas.each do |(position, list)|
         pragmas[position] = list if position > start.pos
       end
       parser.macro_expansion_pragmas = pragmas
-      parser.type_nest = 1 if @inside_type
+      parser.type_nest = type_nest
       parser.wants_doc = false
       parser.restore_location_state(start)
       parser.next_token

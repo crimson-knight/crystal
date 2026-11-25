@@ -69,7 +69,7 @@ describe "Semantic: lazy def bodies" do
     parsed_again = lazy_def.body
     kept = holder_def(kept_program, "beta").body
 
-    LazyMacroDefBodies.first_difference(kept, parsed_again).should be_nil
+    ReparsableDefBodies.first_difference(kept, parsed_again).should be_nil
     parsed_again.location.to_s.should eq(kept.location.to_s)
     parsed_again.end_location.to_s.should eq(kept.end_location.to_s)
   end
@@ -94,5 +94,39 @@ describe "Semantic: lazy def bodies" do
       Holder.new.alpha_body_text
       ))
     node.type.to_s.should eq("String")
+  end
+
+  it "lets the bodies of the defs of a required file go and parses them again" do
+    with_tempfile("lazy_def_bodies") do |directory|
+      Dir.mkdir_p(directory)
+      File.write(File.join(directory, "holder.cr"), <<-CRYSTAL)
+        class Holder
+          def alpha(value : Int32)
+            first = value
+            second = first
+            second
+          end
+
+          def beta
+            "b"
+          end
+        end
+        CRYSTAL
+
+      parser = Parser.new(%(require "./holder"\nHolder.new.alpha(1)))
+      parser.filename = File.join(directory, "main.cr")
+      Program.lazy_def_bodies_default_setting = true
+      begin
+        program = Program.new
+        node = program.semantic(program.normalize(parser.parse))
+        node.type.should eq(program.int32)
+        program.lazy_def_bodies_parsed_again.should be > 0
+        holder_def(program, "beta").lazy_body?.should be_true
+        holder_def(program, "beta").body.should be_a(StringLiteral)
+        holder_def(program, "beta").body.location.try(&.filename).should eq(File.join(directory, "holder.cr"))
+      ensure
+        Program.lazy_def_bodies_default_setting = nil
+      end
+    end
   end
 end
