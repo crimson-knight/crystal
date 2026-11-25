@@ -248,6 +248,11 @@ class Crystal::CodeGenVisitor
           end
         end
         plan.close(current)
+        if ENV["CRYSTAL_MAIN_PARTS_DEBUG"]?
+          list_of_texts = plan.list_of_groups.map { |group| "#{group.outlined? ? "P" : "i"}#{group.list_of_indexes.size}/#{group.node_count}" }
+          list_of_blockers = list_of_scans.compact_map(&.blocker).uniq
+          STDERR.puts "main parts plan: #{statements.size} statements, #{total} nodes: #{list_of_texts.join(" ")} #{list_of_blockers}"
+        end
         plan.list_of_groups.any?(&.outlined?) ? plan : nil
       end
 
