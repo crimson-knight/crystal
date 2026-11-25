@@ -837,6 +837,7 @@ module Crystal::InferReuse
       end
 
       list_of_callers.each(&.retarget(old_typed_def, typed_def))
+      program.infer_reuse_replaced_def_ids << old_typed_def.object_id
       program.infer_reuse_new_typed_defs.try &.<< typed_def
     end
 

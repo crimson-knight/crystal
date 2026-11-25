@@ -637,6 +637,7 @@ module Crystal
         stats = sharing.stats
         STDERR.printf("owner shapes: %d typed defs, %d groups, %d share another def's function, %d unshareable, %d pinned, %d bodies released, %d rounds, %.1f s\n",
           stats.typed_defs, stats.groups, stats.shared, stats.unshareable, stats.pinned, stats.released_bodies, stats.rounds, stats.seconds)
+        STDERR.printf("owner shapes: %d walks taken from the build server, %d walked\n", sharing.cached_walk_count, sharing.fresh_walk_count)
       end
       STDERR.printf("owner shapes: %d LLVM functions generated\n", @generated_fun_count)
       if sharing && (pattern = ENV["CRYSTAL_OWNER_SHAPES_DEBUG"]?.presence)
