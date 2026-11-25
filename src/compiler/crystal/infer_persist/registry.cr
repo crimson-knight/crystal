@@ -20,6 +20,12 @@ module Crystal::InferPersist
   # * `write`: `write_fields(object.as(T))`.
   # * `allocate`: makes an empty object of class number *index*.
   # * `fill`: `fill_fields(object.as(T))` for class number *index*.
+  #
+  # A virtual type (an instance variable typed with a class that has
+  # subclasses, such as `Call#parent_visitor` in a compiler with the
+  # interpreter, whose `MultidispatchMainVisitor` inherits `MainVisitor`) is
+  # neither a class nor a struct to a macro and prints as the class itself:
+  # the walk takes the class.
   macro persistable_case(kind, index, object)
     {% roots = [Crystal::InferPersist::Roots] %}
     {% for sub in Crystal::ASTNode.all_subclasses %}{% roots << sub %}{% end %}
@@ -31,6 +37,9 @@ module Crystal::InferPersist
       {% next_pending = [] of TypeNode %}
       {% for t in pending %}
         {% name = t.stringify %}
+        {% if !t.union? && !t.class? && t < Reference %}
+          {% t = parse_type(name).resolve %}
+        {% end %}
         {% opaque = name.starts_with?("Proc(") || name.starts_with?("Pointer(") || name.starts_with?("LLVM::") ||
                     name.starts_with?("LibLLVM::") || name.starts_with?("Fiber") || name.starts_with?("Channel") ||
                     name.starts_with?("Sync::") || name.starts_with?("Atomic(") || name.starts_with?("Thread") ||

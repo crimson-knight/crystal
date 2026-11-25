@@ -110,12 +110,34 @@ module Crystal
     @[JSON::Field(emit_null: false)]
     getter file_dependencies : Hash(String, Array(String))? = nil
 
+# The glob requires of the previous compilation and the files each found:
+# a file added to or removed from a globbed folder changes the program
+# though no fingerprinted file changed. Nil in an old cache.
+@[JSON::Field(emit_null: false)]
+getter glob_requires : Array(Program::GlobRequire)? = nil
+
+# The programs the macros of the previous compilation ran (`run`), with
+# their arguments, the folder the compilation ran in, and when it began to
+# read the sources: a file such a program reads that changed since then
+# changes the program though no fingerprinted file changed. Nil in an old
+# cache.
+@[JSON::Field(emit_null: false)]
+getter macro_program_runs : Array(Program::MacroProgramRun)? = nil
+@[JSON::Field(emit_null: false)]
+getter working_directory : String? = nil
+@[JSON::Field(emit_null: false)]
+getter sources_checked_at_unix_ms : Int64? = nil
+
     def initialize(@compiler_version : String, @codegen_target : String,
                    @flags : Array(String), @prelude : String,
                    @file_fingerprints : Hash(String, FileFingerprint),
                    @file_signatures : Hash(String, FileTopLevelSignature)? = nil,
                    @allocation_hints : AllocationHints? = nil,
-                   @file_dependencies : Hash(String, Array(String))? = nil)
+                   @file_dependencies : Hash(String, Array(String))? = nil,
+                   @glob_requires : Array(Program::GlobRequire)? = nil,
+                   @macro_program_runs : Array(Program::MacroProgramRun)? = nil,
+                   @working_directory : String? = nil,
+                   @sources_checked_at_unix_ms : Int64? = nil)
     end
   end
 

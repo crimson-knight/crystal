@@ -72,6 +72,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     @program.infer_reuse_record.try &.add_require(filename, relative_to, filenames)
 
     if filenames
+      @program.record_glob_require(filename, relative_to, filenames)
       nodes = Array(ASTNode).new(filenames.size)
 
       @program.run_requires(node, filenames) do |filename|
@@ -415,11 +416,9 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
                Parser::ParseMode::Normal
              end
 
-    # We could do Set.new(@vars.keys) but that creates an intermediate array
-    local_vars = Set(String).new(initial_capacity: @vars.size)
-    @vars.each_key { |key| local_vars << key }
-
-    generated_nodes = @program.parse_macro_source(expanded_macro, macro_expansion_pragmas, the_macro, node, local_vars,
+    # The parser asks the variables in scope by name (see
+    # `Program#parse_macro_source`); it is done before they change.
+    generated_nodes = @program.parse_macro_source(expanded_macro, macro_expansion_pragmas, the_macro, node, @vars,
       current_def: @typed_def,
       inside_type: !current_type.is_a?(Program),
       inside_exp: @exp_nest > 0,

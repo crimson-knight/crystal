@@ -173,6 +173,15 @@ module Crystal
       gc_bytes(value.as(Void*)) + gc_bytes(value.@entries.as(Void*)) + gc_bytes(value.@indices.as(Void*))
     end
 
+    # The base counts in full for every map that shares it.
+    def owned_bytes(value : MetaVars::Layers) : Int64
+      base = value.base
+      bytes = gc_bytes(value.as(Void*)) + gc_bytes(base.as(Void*)) + owned_bytes(base.list_of_entries) + owned_bytes(base.@index_by_name)
+      value.@changed_by_name.try { |changed_by_name| bytes += owned_bytes(changed_by_name) }
+      value.@added_by_name.try { |added_by_name| bytes += owned_bytes(added_by_name) }
+      bytes
+    end
+
     def owned_bytes(value : MetaVars) : Int64
       @meta_vars_count += 1
       large = value.@large
