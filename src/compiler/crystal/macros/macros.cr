@@ -75,6 +75,10 @@ class Crystal::Program
   def parse_macro_source(generated_source, macro_expansion_pragmas, the_macro, node, vars, current_def = nil, inside_type = false, inside_exp = false, visibility : Visibility = :public, &)
     parser = @program.new_parser(generated_source, var_scopes: [vars.dup])
     virtual_file = VirtualFile.new(the_macro, generated_source, node.location, @program.macro_source_store)
+    # The bodies of the defs this expansion declares can be parsed again
+    # from its text once they are let go (see `lazy_def_bodies.cr`).
+    lazy_recorder = @program.lazy_def_bodies? && current_def.nil? ? LazyMacroDefBodies.new(@program, virtual_file, macro_expansion_pragmas, inside_type, ->(parsed : ASTNode) { normalize(parsed, inside_exp: inside_exp, current_def: nil) }) : nil
+    parser.def_body_recorder = lazy_recorder
     @program.virtual_files << virtual_file
     infer_reuse_record.try &.method_list_frames.attach(generated_source, virtual_file)
     VirtualFile.current_program_files = @program.virtual_files
@@ -86,7 +90,9 @@ class Crystal::Program
     parser.type_nest = 1 if inside_type
     parser.wants_doc = @program.wants_doc?
     generated_node = yield parser
-    normalize(generated_node, inside_exp: inside_exp, current_def: current_def)
+    normalized_node = normalize(generated_node, inside_exp: inside_exp, current_def: current_def)
+    lazy_recorder.try &.attach_sources
+    normalized_node
   end
 
   record MacroRunResult, stdout : String, stderr : String, status : Process::Status
