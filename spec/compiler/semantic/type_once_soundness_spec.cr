@@ -112,6 +112,15 @@ private def assert_type_once_error(code : String, *parts : String, inject_primit
   parts.each { |part| text.should contain(part), file: file, line: line }
 end
 
+# Types *code* with its `@[TypeOnce]` marks and without them, and expects the
+# last expression to have *expected* as its type both ways.
+private def assert_same_type_typed_once_and_per_receiver(code : String, expected : String, file = __FILE__, line = __LINE__) : Nil
+  typed_once = semantic(code).node.type.to_s
+  per_receiver = semantic(code.gsub("@[TypeOnce]\n", "")).node.type.to_s
+  per_receiver.should eq(expected), file: file, line: line
+  typed_once.should eq(per_receiver), file: file, line: line
+end
+
 describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
   describe "a macro called on the receiver" do
     it "compiles typed for each receiver" do
@@ -394,6 +403,83 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
 
         Post.build
         )
+    end
+
+    it "is an error for self inside a generic return type" do
+      assert_type_once_error returning_self.sub("def touch : self\n          self", "def touch : Array(self)\n          [self]"),
+        "@[TypeOnce] method 'Model#touch' can't declare its return type as 'Array(self)'",
+        "(this call's receiver is Post)"
+    end
+
+    it "accepts a call whose receiver is already the shared type, typed as it is for each receiver" do
+      assert_same_type_typed_once_and_per_receiver %(
+        class Model
+          @[TypeOnce]
+          def touch(other : Model) : self
+            self
+          end
+        end
+
+        class Post < Model
+        end
+
+        model : Model = Post.new
+        model.touch(Post.new)
+        ), "Model+"
+    end
+
+    # Grant's `Builder(Model)`: a model with a named scope gets a subclass of
+    # its builder, so the builder is `Builder(Post)+`.
+    it "accepts a method of a generic class called on the class and its subclasses, typed as it is for each receiver" do
+      assert_same_type_typed_once_and_per_receiver %(
+        class Model
+        end
+
+        class Post < Model
+        end
+
+        class Builder(M)
+          @[TypeOnce]
+          def where(record : Model) : self
+            self
+          end
+
+          @[TypeOnce]
+          def first? : self?
+            self
+          end
+        end
+
+        class PostScopes < Builder(Post)
+        end
+
+        builder : Builder(Post) = PostScopes.new
+        {builder.where(Post.new), builder.first?}
+        ), "Tuple(Builder(Post)+, (Builder(Post)+ | Nil))"
+    end
+
+    # Grant's class-level finders: a model with subclasses is `Model.class+`
+    # at the class level.
+    it "accepts a class method called on the class and its subclasses, typed as it is for each receiver" do
+      assert_same_type_typed_once_and_per_receiver %(
+        class Model
+          @[TypeOnce]
+          def self.build(template : Model) : self
+            new
+          end
+
+          @[TypeOnce]
+          def self.build_all(template : Model) : Array(self)
+            [new]
+          end
+        end
+
+        class Post < Model
+        end
+
+        model_class : Model.class = Post
+        {model_class.build(Post.new), model_class.build_all(Post.new)}
+        ), "Tuple(Model+, Array(Model+))"
     end
   end
 end
