@@ -1020,24 +1020,36 @@ class Crystal::CodeGenVisitor
 
   def codegen_primitive_class_with_type(type : VirtualType, value)
     type_id = type_id(value, type)
-    metaclass_fun_name = "~metaclass"
     record_ir_effect(IrSkip::TraceKind::Metaclass)
-    func = metaclass_fun_in_main
-    func = check_main_fun metaclass_fun_name, func
-    call func, [type_id] of LLVM::Value
+    call metaclass_fun, [type_id] of LLVM::Value
   end
 
+  METACLASS_FUN_NAME = "~metaclass"
+
   # The function that maps the type id of an object to the type id of its
-  # class, defined in the main module on first use.
-  def metaclass_fun_in_main : LLVMTypedFunction
-    metaclass_fun_name = "~metaclass"
-    typed_fun?(@main_mod, metaclass_fun_name) || create_metaclass_fun(metaclass_fun_name)
+  # class, in the module code is being generated into: one of the type
+  # tables (see `TypeTables`).
+  def metaclass_fun : LLVMTypedFunction
+    @type_table_requests.needs_metaclass = true unless type_tables_home
+    type_table_fun(METACLASS_FUN_NAME, LLVM::Type.function([llvm_context.int32], llvm_context.int32)) do
+      create_metaclass_fun(METACLASS_FUN_NAME)
+    end
+  end
+
+  # Makes sure the metaclass function is defined, without declaring it in
+  # the module code is being generated into. A replayed trace asks this way.
+  def request_metaclass_fun : Nil
+    if home = type_tables_home
+      in_module(home) { metaclass_fun }
+    else
+      @type_table_requests.needs_metaclass = true
+    end
   end
 
   def create_metaclass_fun(name)
     id_to_metaclass = @program.llvm_id.id_to_metaclass.to_a.sort_by! &.[0]
 
-    in_main do
+    in_module(type_tables_home || raise "BUG: #{name} is defined before the type tables are generated") do
       define_main_function(name, ([llvm_context.int32]), llvm_context.int32) do |func|
         set_internal_fun_debug_location(func, name)
 

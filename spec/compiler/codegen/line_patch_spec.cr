@@ -342,6 +342,22 @@ describe "Code gen: patching the lines of modules whose source only moved" do
       end
     end
 
+    it "keeps the main module's object when an edit elsewhere adds types" do
+      with_line_patch_program("line_patch_main_new_type") do |line_patch_program|
+        # A new class, and a tuple type the program had not used: new type
+        # ids, a new entry of `~metaclass` and of the class name map, all of
+        # them in the type tables module.
+        line_patch_program.edit("bystander.cr", "class Bystander\n",
+          "class Badge\n  def initialize(@n : Int32)\n  end\n\n  def n\n    @n\n  end\nend\n\nclass Bystander\n")
+        line_patch_program.edit("bystander.cr", "ARGV.size &+ 7",
+          "Badge.new(ARGV.size).n &+ {ARGV.size, 'b', 2.5_f32}[0] &+ 7")
+        stats, _ = line_patch_program.build
+
+        stats.main_module_outcome.should be_nil
+        line_patch_program.output.should eq(EXPECTED_OUTPUT)
+      end
+    end
+
     it "compiles the main module when a position of its code is on an edited line" do
       with_line_patch_program("line_patch_main_edited") do |line_patch_program|
         line_patch_program.edit("program.cr", "puts Bystander.new.answer", "\nputs Bystander.new.answer &+ 1")
