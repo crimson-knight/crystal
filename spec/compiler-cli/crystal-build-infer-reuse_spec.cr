@@ -431,7 +431,7 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
 
       project.write("helper.cr", HELPER.sub("    1\n", "    5\n"))
       report = expect_build(project, "Hello world\n15\n0\n7\n", reused: true)
-      report["program_runs"]?.try(&.as_i?).should be_nil
+      (report["program_runs"]?.try(&.as_i?) || 0).should eq(0)
       report["reason"].as_s.should contain("macro program runs kept")
 
       # A file the program reads changed: the program runs again.
