@@ -6,6 +6,7 @@ require "./incremental_cache"
 require "./c_allocator"
 require "./codegen/cached_object_record"
 require "./tools/require_graph_discoverer"
+require "./missing_library_hint"
 {% if flag?(:msvc) %}
   require "./loader"
 {% end %}
@@ -2378,11 +2379,13 @@ module Crystal
 
     protected def run_linker(linker_name, command, args)
       print_command(command, args) if verbose?
+      missing_library_hint = MissingLibraryHint.new
 
       begin
         Process.run(command, args, shell: true,
           input: Process::Redirect::Close, output: Process::Redirect::Inherit, error: Process::Redirect::Pipe) do |process|
           process.error.each_line(chomp: false) do |line|
+            missing_library_hint.read(line)
             hint_string = colorize("(this usually means you need to install the development package for lib\\1)").yellow.bold
             line = line.gsub(/cannot find -l(\S+)\b/, "cannot find -l\\1 #{hint_string}")
             line = line.gsub(/unable to find library -l(\S+)\b/, "unable to find library -l\\1 #{hint_string}")
@@ -2406,6 +2409,7 @@ module Crystal
           # abnormal exit
           exit_code = 1
         end
+        STDERR << colorize(missing_library_hint.to_s).yellow.bold if missing_library_hint.any_known_library_missing?
         raise CompilerError.new("execution of command failed with exit status #{status}: #{command}", status: exit_code)
       end
     end
