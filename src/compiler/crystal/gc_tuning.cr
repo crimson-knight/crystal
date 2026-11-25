@@ -96,22 +96,30 @@ module Crystal
 
     # How much a code generation child of the build server allocates, at
     # least, between two collections (see `enter_build_server_child`).
-    BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED = 1_000_000_000_u64
+    BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED = 500_000_000_u64
 
-    # Lets the collector of a code generation child of the build server
-    # (`InferReuse`) collect less often. The child starts with the typed
-    # program of the server (4.4 GB of live data in an Amber app of 300
-    # resources). With the compiler's divisor it collects after each 440 MB
-    # or so it allocates, and each collection marks the whole inherited heap:
-    # four of them took 1.6 s of the code generation of a one-method edit.
+    # Sets how often the collector of a code generation child of the build
+    # server (`InferReuse`) collects. The child starts with the typed program
+    # of the server (4.4 GB of live data in an Amber app of 300 resources).
     #
-    # The child collects once it has allocated
-    # `BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED`, and from then on keeps the
-    # compiler's divisor. A free space divisor of 1 or 2 (what the child had
-    # before) saved the same time on an edit, but in the first build, whose
-    # child generates the code of the whole program, it let the heap grow
-    # from 4.5 to 7.8 GB, 2.7 GB more than the compiler's divisor. A floor
-    # bounds that growth to about the floor, whatever the child generates.
+    # A free space divisor of 1 (#64) let the child collect less while it
+    # generated the code of an edit, but in the first build, whose child
+    # generates the code of the whole program, it let the heap grow from 4.5
+    # to 7.8 GB (2.7 GB more than the compiler's divisor); 2 and 3 did the
+    # same (two collections in either case). Measured on amber300
+    # (notes/rebuild-round3.md), the child now keeps the compiler's divisor
+    # and collects after `BUILD_SERVER_CHILD_MIN_BYTES_ALLOCATED` at least:
+    #
+    # | Child setting | First build peak | Body edit peak | Collections in an edit |
+    # |---|---|---|---|
+    # | divisor 1 | 9.7 GB | 9.4 GB | 1 |
+    # | compiler's divisor (10) | 9.2 GB | 8.6 GB | 2 |
+    # | floor of 1 GB | 8.9 GB | 8.7 GB | 2 |
+    # | floor of 500 MB | 8.7 GB | 8.7 GB | 2 |
+    #
+    # (The first-build peaks of the floors also leave out the owner shape walk,
+    # see `Holder#walk_owner_shapes`.) An edit saves one collection at most with
+    # a lower divisor, a fraction of a second, so the floor is set for memory.
     #
     # For measuring: `CRYSTAL_GC_CHILD_MIN_BYTES_ALLOCATED=N` sets the floor
     # (0 keeps the collector's), and `CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR=N` sets
