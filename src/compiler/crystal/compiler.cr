@@ -503,6 +503,7 @@ module Crystal
             # stays with the build server. A later build may come back here
             # with an edit re-typed in a copy of this program.
             node = InferReuse::Holder.new(handoff).after_semantic(self, program, node, record)
+            GCTuning.enter_build_server_child
             if @incremental && !@no_cache
               @current_cached_data = IncrementalCache.load(
                 CacheDir.instance.directory_for(source), Config.version, @codegen_target.to_s, @flags, @prelude
