@@ -571,10 +571,10 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
         report = expect_build(project, "/c,/a,/b\n", reused: true)
         report["reason"].as_s.should contain("top-level code of 1 files typed again")
 
-        # A definition in the file types the whole program again.
-        project.write("routes.cr", routes + "def helper_route : String\n  \"/d\"\nend\n")
+        # A constant in the file types the whole program again.
+        project.write("routes.cr", "EXTRA = \"/e\"\n" + routes)
         report = expect_build(project, "/a,/b\n", reused: false)
-        report["reason"].as_s.should contain("cannot be typed alone")
+        report["reason"].as_s.should contain("assigns EXTRA")
       ensure
         project.stop_servers
       end
