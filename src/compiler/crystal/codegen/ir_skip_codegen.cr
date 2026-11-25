@@ -184,7 +184,7 @@ class Crystal::CodeGenVisitor
   # the function must be generated; the module is then no candidate any
   # more, and the functions it matched before were generated.
   private def skip_ir_generation_of(module_info : ModuleInfo, mangled_name : String, target_def : Def,
-                                    self_type : Type) : LLVMTypedFunction?
+                                    self_type : Type) : FunSignature?
     return nil unless plan = module_info.ir_skip_plan
     return nil if plan.invalidated?
     return nil unless session = ir_skip_session
@@ -225,9 +225,9 @@ class Crystal::CodeGenVisitor
 
   # Declares the function named *mangled_name* among the function
   # signatures, without a body: what a module that calls it declares it from.
-  private def declare_fun_signature_only(mangled_name : String, target_def : Def, self_type : Type) : LLVMTypedFunction
+  private def declare_fun_signature_only(mangled_name : String, target_def : Def, self_type : Type) : FunSignature
     signatures = fun_signatures
-    if existing_signature = typed_fun?(signatures, mangled_name)
+    if existing_signature = known_fun_signature?(mangled_name)
       return existing_signature
     end
 
@@ -250,7 +250,7 @@ class Crystal::CodeGenVisitor
       @llvm_typer = signatures.typer
 
       codegen_fun_signature(mangled_name, target_def, self_type, false, false)
-      signature = LLVMTypedFunction.new(context.fun_type, context.fun)
+      signature = record_signature_of_scratch_fun(mangled_name, LLVMTypedFunction.new(context.fun_type, context.fun))
 
       @llvm_mod = old_llvm_mod
       @module_info = old_module_info

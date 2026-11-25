@@ -433,10 +433,35 @@ module Crystal
     # return its free pages (see `return_freed_ir_memory_to_os`).
     @ir_bytes_freed_since_relief = 0_i64
 
-    # A module that only holds declarations: one for each function of a
-    # module part on disk. A module that calls such a function declares it
-    # from here. It is never compiled, and only exists once a module was
-    # spilled.
+    # The signature of a function that is not in a module in memory: its type
+    # (in the context of `#fun_signatures`) and the attributes of its
+    # parameters, which is what `#declare_fun` copies into a module that
+    # calls it. The parameter attributes are `nil` when there are none.
+    record FunSignature, type : LLVM::Type, list_of_param_attributes : Array(LLVM::Attribute)?
+
+    # The signature of each function of a module part on disk, and of each
+    # deferred function, by `.fun_signature_key` of its name. A module that
+    # calls such a function declares it from here.
+    #
+    # These used to be declarations in an LLVM module: 154,546 of them took
+    # 75 MB of the C allocator in a program of 300 Grant models, outside the
+    # limit on IR in memory, and their names another copy in the GC heap. A
+    # record is a type that LLVM shares between functions of one signature,
+    # and at most one array; the key is two hashes of the name.
+    @fun_signature_by_key = Hash({UInt64, UInt64}, FunSignature).new
+
+    # Two independent 64-bit hashes of *mangled_name*. Two names that differ
+    # get the same key with a probability of about 2^-128 per pair.
+    def self.fun_signature_key(mangled_name : String) : {UInt64, UInt64}
+      fnv = 0xcbf29ce484222325_u64
+      mangled_name.each_byte { |byte| fnv = (fnv ^ byte) &* 0x100000001b3_u64 }
+      {mangled_name.hash, fnv}
+    end
+
+    # The module whose context holds the types of the recorded signatures.
+    # Signatures are generated into it (`declare_deferred_fun`), recorded and
+    # taken out again, so it holds no functions. It is never compiled, and
+    # only exists once a signature was recorded.
     @fun_signatures : ModuleInfo?
 
     private def fun_signatures : ModuleInfo
@@ -450,21 +475,37 @@ module Crystal
       end
     end
 
-    # The declaration recorded for the function named *mangled_name*, if any.
-    private def known_fun_signature?(mangled_name : String) : LLVMTypedFunction?
-      return nil unless signatures = @fun_signatures
-
-      typed_fun?(signatures, mangled_name)
+    # The signature recorded for the function named *mangled_name*, if any.
+    private def known_fun_signature?(mangled_name : String) : FunSignature?
+      @fun_signature_by_key[CodeGenVisitor.fun_signature_key(mangled_name)]?
     end
 
     # Records the signature of *func*, a function of a module part that is
-    # about to be spilled.
-    private def record_fun_signature(mangled_name : String, func : LLVMTypedFunction) : Nil
-      signatures = fun_signatures
-      return if typed_fun?(signatures, mangled_name)
+    # about to be spilled, or one generated into `#fun_signatures` for that.
+    private def record_fun_signature(mangled_name : String, func : LLVMTypedFunction) : FunSignature
+      key = CodeGenVisitor.fun_signature_key(mangled_name)
+      if existing = @fun_signature_by_key[key]?
+        return existing
+      end
 
-      declare_fun(mangled_name, func, signatures)
+      type = fun_signatures.typer.copy_type(func.type)
+      list_of_param_attributes = nil
+      param_count = func.func.params.size
+      param_count.times do |index|
+        attributes = func.func.attributes(index + 1)
+        next if attributes.value == 0
+        list_of_param_attributes ||= Array.new(param_count, LLVM::Attribute::None)
+        list_of_param_attributes[index] = attributes
+      end
+      signature = FunSignature.new(type, list_of_param_attributes)
+      @fun_signature_by_key[key] = signature
       @module_spill.try &.record_signature
+      signature
+    end
+
+    # How many function signatures are recorded.
+    def recorded_fun_signature_count : Int32
+      @fun_signature_by_key.size
     end
 
     # The module that `@llvm_mod` or `@main_mod` is.
