@@ -138,6 +138,11 @@ module Crystal
       @shared_copy_by_def_id[typed_def.object_id]?
     end
 
+    # Whether any typed copy has let its body go.
+    def shares_any? : Bool
+      !verify? && !@shared_copy_by_def_id.empty?
+    end
+
     def each_shared_copy(& : SharedCopy ->) : Nil
       return if verify?
       @list_of_shared_copies.each do |shared_copy|

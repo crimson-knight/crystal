@@ -314,8 +314,12 @@ module Crystal
       @abi = ABI.from(@program.target_machine)
       # Before owner shapes, which can release typed bodies the analysis reads.
       @dispatch_prune = @program.dispatch_prune || @program.analyze_dispatch_prune(@node)
-      if @program.share_owner_shapes?
-        sharing = OwnerShapeSharing.new(@program).tap(&.analyze(@node))
+      # Copies that let their bodies go during type inference need the
+      # analysis to reach their representatives' functions.
+      if @program.share_owner_shapes? || @program.shape_bodies.try(&.shares_any?)
+        sharing = OwnerShapeSharing.new(@program)
+        sharing.semantic_shares_only = !@program.share_owner_shapes?
+        sharing.analyze(@node)
         @owner_shape_sharing = sharing
         @dispatch_prune.try &.keep_shared_representatives(sharing)
       end

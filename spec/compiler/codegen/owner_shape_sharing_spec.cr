@@ -254,8 +254,10 @@ describe "Code gen: owner shape sharing" do
       first_box.total &+ second_box.total &+ old.count &+ older.count
       )
     sharing = analyze_shapes(code)
-    function_owner(sharing, "Box(Second)", "total").should eq("Box(First)")
-    function_owner(sharing, "Box(Second)", "swap").should eq("Box(First)")
+    # Either copy can stand for the pair: with `CRYSTAL_SHAPE_BODIES=1` the
+    # one typed first does.
+    function_owner(sharing, "Box(Second)", "total").should eq(function_owner(sharing, "Box(First)", "total"))
+    function_owner(sharing, "Box(Second)", "swap").should eq(function_owner(sharing, "Box(First)", "swap"))
     run(code).to_i.should eq(28 + 206 + 2 + 1)
   end
 

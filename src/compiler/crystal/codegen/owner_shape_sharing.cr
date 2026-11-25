@@ -78,6 +78,11 @@ module Crystal
     # representatives (see `ShapeBodies`).
     @list_of_semantic_shares = [] of {Shape, Def}
 
+    # Set when owner shape sharing is off (`CRYSTAL_SHARE_OWNER_SHAPES=0`):
+    # only the copies that let their bodies go during type inference share
+    # a function.
+    property? semantic_shares_only = false
+
     def initialize(@program : Program)
     end
 
@@ -358,6 +363,11 @@ module Crystal
         @stats.shared += 1
       end
       @stats.groups = groups
+
+      if semantic_shares_only?
+        @representatives.clear
+        @stats.shared = 0
+      end
 
       # A copy that let its body go calls the function its representative
       # calls, whatever group the walk put it in.
