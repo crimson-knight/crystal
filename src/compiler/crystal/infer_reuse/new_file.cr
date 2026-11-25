@@ -163,12 +163,14 @@ module Crystal::InferReuse
         (program.types[name]? || refuse("declares #{name}, which the top-level phase did not make")).as(Type)
       end
 
-      typed_node = program.visit_main(node, cleanup: true)
-      splice(main_node, FileNode.new(typed_node, @filename), list_of_found_files)
+      # Typed as a file node, as the require would have: its top-level
+      # variables belong to the file, and the node gets its type.
+      typed_file_node = program.visit_main(FileNode.new(node, @filename), cleanup: true)
+      splice(main_node, typed_file_node, list_of_found_files)
       list_of_types
     end
 
-    private def splice(main_node : ASTNode, file_node : FileNode, list_of_found_files : Array(String)) : Nil
+    private def splice(main_node : ASTNode, file_node : ASTNode, list_of_found_files : Array(String)) : Nil
       index = list_of_found_files.index(@filename) || refuse("is not among the files its require finds")
       neighbor, offset = if index > 0
                            {list_of_found_files[index - 1], 1}
