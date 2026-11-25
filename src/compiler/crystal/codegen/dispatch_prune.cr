@@ -220,7 +220,7 @@ module Crystal
       # arguments at each call instead (see `call_arguments_live?`).
       private def def_live?(a_def : Def) : Bool
         return false unless owner_live?(a_def)
-        return true if a_def.type_once?
+        return true if a_def.type_once? || a_def.receiver_free?
         return true if @reached_defs.includes?(a_def.object_id)
 
         a_def.args.all? do |arg|
@@ -249,7 +249,7 @@ module Crystal
       # once for several owners (`@[TypeOnce]`), which runs with receivers
       # of other types.
       private def owner_live?(a_def : Def) : Bool
-        return true if a_def.type_once?
+        return true if a_def.type_once? || a_def.receiver_free?
         owner = a_def.owner?
         return true unless owner
         return true unless owner.is_a?(VirtualType) || prunable?(owner)
@@ -316,7 +316,7 @@ module Crystal
       # the call is a `super`, and each argument that is not autocast) can
       # hold a created type.
       private def branch_live?(call : Call, a_def : Def) : Bool
-        return true if a_def.type_once?
+        return true if a_def.type_once? || a_def.receiver_free?
         if call.super?
           # The target of a `super` runs with a receiver of a subclass, so
           # its owner says nothing about the receiver: it never gets a stub.
