@@ -30,6 +30,40 @@ module Crystal
 
     property macro_expansion_pragmas : Hash(Int32, Array(LocPragma))? = nil
 
+    # Where in the source the current token starts.
+    getter token_start_pos = 0
+
+    # The location the lexer would give the next token, with the location a
+    # `#<loc:push>` pragma saved: everything a lexer needs to continue from
+    # a token start as if it had read the source up to there.
+    record LocationState,
+      pos : Int32,
+      filename : String | VirtualFile | Nil,
+      line_number : Int32,
+      column_number : Int32,
+      stacked : Bool,
+      stacked_filename : String | VirtualFile | Nil,
+      stacked_line_number : Int32,
+      stacked_column_number : Int32
+
+    # The state at the start of the current token.
+    def token_start_location_state : LocationState
+      LocationState.new(@token_start_pos, @token.filename, @token.line_number, @token.column_number,
+        @stacked, @stacked_filename, @stacked_line_number, @stacked_column_number)
+    end
+
+    # Continues lexing from *state* (see `#token_start_location_state`).
+    def restore_location_state(state : LocationState) : Nil
+      self.current_pos = state.pos
+      @filename = state.filename
+      @line_number = state.line_number
+      @column_number = state.column_number
+      @stacked = state.stacked
+      @stacked_filename = state.stacked_filename
+      @stacked_line_number = state.stacked_line_number
+      @stacked_column_number = state.stacked_column_number
+    end
+
     alias LocPragma = LocSetPragma | LocPushPragma | LocPopPragma
 
     record LocSetPragma,
@@ -130,6 +164,7 @@ module Crystal
       end
 
       start = current_pos
+      @token_start_pos = start
 
       # Fix location by `macro_expansion_pragmas`.
       if me_pragmas = macro_expansion_pragmas

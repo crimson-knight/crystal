@@ -636,6 +636,10 @@ class Crystal::Call
           end
         end
 
+        # The typed copy is made: a macro-written body goes out of memory
+        # again until another instantiation needs it.
+        program.lazy_def_bodies_dropped_again += 1 if match.def.drop_body_again
+
         block_instance.ready = true if block_instance
       end
 

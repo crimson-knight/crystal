@@ -200,9 +200,9 @@ module Crystal
 
     def owned_bytes(value : SmallNodeList) : Int64
       case allocation = value.census_allocation
-      when Array(ASTNode) then owned_bytes(allocation)
+      when Array(ASTNode)          then owned_bytes(allocation)
       when SmallNodeList::NodePair then gc_bytes(allocation.as(Void*))
-      else 0_i64
+      else                              0_i64
       end
     end
 
@@ -666,7 +666,13 @@ module Crystal
         content = mix(mix(content, class_id), type_id)
         content_without_owner = mix(mix(content_without_owner, class_id), erased.includes?(type_id) ? 1_u64 : type_id)
         collector.children.clear
-        current.accept_children(collector)
+        if current.is_a?(Def) && current.lazy_body?
+          # A body out of memory is not parsed again for the count.
+          current.args.each { |arg| collector.children << arg }
+          current.return_type.try { |return_type| collector.children << return_type }
+        else
+          current.accept_children(collector)
+        end
         stack.concat(collector.children)
         if current.is_a?(ExpandableNode)
           current.expanded.try { |expanded| stack << expanded }
@@ -794,7 +800,12 @@ module Crystal
         next unless @seen.add?(current.object_id)
         count_node(current)
         collector.children.clear
-        current.accept_children(collector)
+        if current.is_a?(Def) && current.lazy_body?
+          current.args.each { |arg| collector.children << arg }
+          current.return_type.try { |return_type| collector.children << return_type }
+        else
+          current.accept_children(collector)
+        end
         stack.concat(collector.children)
         if current.is_a?(ExpandableNode)
           current.expanded.try { |expanded| stack << expanded }

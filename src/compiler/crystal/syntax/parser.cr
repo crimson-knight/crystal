@@ -3347,8 +3347,18 @@ module Crystal
       result
     end
 
+    # Told about every def with a body this parser reads, with where the
+    # def starts, when the caller can read the source again later (see
+    # `LazyDefBody`).
+    property def_body_recorder : DefBodyRecorder?
+
+    abstract class DefBodyRecorder
+      abstract def record(a_def : Def, start : Lexer::LocationState, type_nest : Int32) : Nil
+    end
+
     def parse_def(is_abstract = false, is_macro_def = false, doc = nil)
       doc ||= @token.doc
+      def_start = @def_body_recorder && !is_abstract ? token_start_location_state : nil
 
       prepare_parse_def
       a_def = with_isolated_var_scope do
@@ -3368,6 +3378,9 @@ module Crystal
       @assigns_special_var = false
       @block_arg_name = nil
       @is_macro_def = false
+      if def_start && (recorder = @def_body_recorder)
+        recorder.record(a_def, def_start, @type_nest)
+      end
       a_def
     end
 
