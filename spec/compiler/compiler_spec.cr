@@ -95,11 +95,13 @@ describe "Compiler" do
   end
 end
 
+# The asyncify flags of a wasm32 build with fibers; `_start` stays uninstrumented.
+private ASYNCIFY_FLAGS = "--asyncify --pass-arg=asyncify-removelist@_start --pass-arg=asyncify-imports@env.crystal_asyncify_switch"
+
 describe "Crystal::Compiler.wasm_spill_and_asyncify_flags" do
   it "spills pointers before asyncify in a build with fibers and a collector" do
-    flags = Crystal::Compiler.wasm_spill_and_asyncify_flags(skip_fibers: false, needs_pointer_spills: true)
-    flags.should start_with("--spill-pointers --asyncify ")
-    flags.should contain("--pass-arg=asyncify-removelist@_start")
+    Crystal::Compiler.wasm_spill_and_asyncify_flags(skip_fibers: false, needs_pointer_spills: true)
+      .should eq("--spill-pointers #{ASYNCIFY_FLAGS}")
   end
 
   it "spills pointers without fibers" do
@@ -109,7 +111,7 @@ describe "Crystal::Compiler.wasm_spill_and_asyncify_flags" do
 
   it "runs only asyncify with -Dgc_none" do
     Crystal::Compiler.wasm_spill_and_asyncify_flags(skip_fibers: false, needs_pointer_spills: false)
-      .should start_with("--asyncify ")
+      .should eq(ASYNCIFY_FLAGS)
   end
 
   it "runs neither without fibers and with -Dgc_none" do
