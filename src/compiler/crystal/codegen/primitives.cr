@@ -1046,31 +1046,32 @@ class Crystal::CodeGenVisitor
     end
   end
 
+  # The metaclass function reads the class's type id from a table indexed
+  # by the object's type id. A switch with a case per type, which LLVM's
+  # optimizer turns into the same table, took it seconds to do so for a
+  # program of ten thousand types (`SimplifyCFGPass`), and its object was
+  # compiled again whenever a type was added.
   def create_metaclass_fun(name)
-    id_to_metaclass = @program.llvm_id.id_to_metaclass.to_a.sort_by! &.[0]
+    id_limit = @program.llvm_id.id_limit
 
     in_module(type_tables_home || raise "BUG: #{name} is defined before the type tables are generated") do
+      # An id that is no type's (possible with ids kept from an earlier
+      # build) maps to 0; no value ever carries such an id.
+      list_of_metaclass_ids = Array(LLVM::Value).new(id_limit, int32(0))
+      @program.llvm_id.id_to_metaclass.each do |type_id, metaclass_id|
+        list_of_metaclass_ids[type_id] = int32(metaclass_id)
+      end
+      table_type = llvm_context.int32.array(id_limit)
+      table = @llvm_mod.globals.add(table_type, "#{name}:table")
+      table.linkage = LLVM::Linkage::Private
+      table.initializer = llvm_context.int32.const_array(list_of_metaclass_ids)
+      table.global_constant = true
+
       define_main_function(name, ([llvm_context.int32]), llvm_context.int32) do |func|
         set_internal_fun_debug_location(func, name)
 
-        arg = func.params.first
-
-        current_block = insert_block
-
-        cases = {} of LLVM::Value => LLVM::BasicBlock
-        id_to_metaclass.each do |(type_id, metaclass_id)|
-          block = new_block "type_#{type_id}"
-          cases[int32(type_id)] = block
-          position_at_end block
-          ret int32(metaclass_id)
-        end
-
-        otherwise = new_block "otherwise"
-        position_at_end otherwise
-        unreachable
-
-        position_at_end current_block
-        @builder.switch arg, otherwise, cases
+        type_id = func.params.first
+        ret load(llvm_context.int32, gep(table_type, table, int32(0), type_id))
       end
     end
   end
