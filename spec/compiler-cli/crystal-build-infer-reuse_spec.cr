@@ -643,21 +643,29 @@ describe "`crystal build --incremental` with the build server (CRYSTAL_INFER_REU
       begin
         Dir.mkdir_p(File.join(directory, "models"))
         project.write("models/person.cr", "class Person\n  def name : String\n    \"Ada\"\n  end\nend\n")
+        # The macro runs when the method is typed, after every type is
+        # declared, so a new PersonBadge changes what it writes.
         main = <<-CRYSTAL
           require "./models/**"
 
-          {% if @top_level.has_constant?("PersonBadge") %}
-            puts "badge"
-          {% end %}
+          def badge_note : String
+            {% if @top_level.has_constant?("PersonBadge") %}
+              "badge"
+            {% else %}
+              "none"
+            {% end %}
+          end
 
+          puts badge_note
           puts Person.new.name
 
           CRYSTAL
         project.write("main.cr", main)
-        expect_build(project, "Ada\n", reused: false)
+        expect_build(project, "none\nAda\n", reused: false)
 
         project.write("models/person_badge.cr", "struct PersonBadge\n  def text : String\n    \"badge\"\n  end\nend\n")
-        report = expect_build(project, "badge\nAda\n", reused: false)
+        project.write("main.cr", main.sub("puts Person.new.name", "puts Person.new.name.upcase"))
+        report = expect_build(project, "badge\nADA\n", reused: false)
         report["reason"].as_s.should contain("which a macro asked")
       ensure
         project.stop_servers
