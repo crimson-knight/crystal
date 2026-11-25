@@ -753,7 +753,7 @@ module Crystal
 
           emit_vars_debug_info(vars) if @debug.variables?
         end
-        accept node.node
+        accept_scope_body node.node, file_module.vars?, file_module, [] of String
         @last = llvm_nil
       end
 
@@ -2068,7 +2068,7 @@ module Crystal
           set_ensure_exception_handler(block)
 
           request_value(@needs_value) do
-            accept block.body
+            accept_scope_body block.body, block.vars, block, block.args.map(&.name)
           end
         end
 
