@@ -40,14 +40,15 @@ private def holder_def(program : Program, name : String) : Def
 end
 
 describe "Semantic: lazy def bodies" do
-  it "lets the bodies of macro-written methods go and parses a called one again" do
+  it "lets the bodies of macro-written methods go, parses a called one again and lets it go once typed" do
     program, node = lazy_semantic(MACRO_METHODS + %(
       Holder.new.alpha(1)
       ))
     node.type.should eq(program.int32)
     program.lazy_def_bodies_dropped.should be > 0
     program.lazy_def_bodies_parsed_again.should be > 0
-    holder_def(program, "alpha").lazy_body?.should be_false
+    program.lazy_def_bodies_dropped_again.should be > 0
+    holder_def(program, "alpha").lazy_body?.should be_true
     holder_def(program, "beta").lazy_body?.should be_true
     holder_def(program, "never_called").lazy_body?.should be_true
   end

@@ -1590,7 +1590,9 @@ module Crystal
     # a typed-once caller gives (see `type_once_soundness.cr`).
     rare_property macro_for_shared_self : String?
 
-    # Set while the body is not in memory: reading `#body` parses it again.
+    # Where the body can be parsed again from: set while the body is out of
+    # memory, and kept once it is parsed again so the body can be let go
+    # again (`#drop_body_again`). Assigning `#body` forgets it.
     rare_property lazy_body : LazyDefBody?
 
     flag_property? macro_def, 0
@@ -1632,11 +1634,19 @@ module Crystal
       @body = LAZY_BODY
     end
 
+    # Lets the body go again if it can be parsed again, and returns
+    # whether it did.
+    def drop_body_again : Bool
+      return false if lazy_body?
+      return false unless source = lazy_body
+
+      drop_body(source)
+      true
+    end
+
     private def materialize_lazy_body : ASTNode
       source = lazy_body || raise "BUG: def #{@name} has no body"
-      body = source.body_for(self)
-      self.lazy_body = nil
-      @body = body
+      @body = source.body_for(self)
     end
 
     def accept_children(visitor)
