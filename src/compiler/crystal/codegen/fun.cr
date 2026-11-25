@@ -223,6 +223,15 @@ class Crystal::CodeGenVisitor
     end
   end
 
+  # A deferred function that is still waiting when IR generation ends is
+  # declared by its callers and defined nowhere, which only the linker
+  # would report, as an undefined symbol.
+  def check_no_deferred_funs_left : Nil
+    if mangled_name = @deferred_fun_names.first?
+      raise "BUG: #{mangled_name} was deferred and never generated"
+    end
+  end
+
   # Declares *func* in the module code is being generated into, unless that
   # module has it already. Replaying a trace (see `IrSkip`) can generate
   # code into the current module late, and that code may have declared the
