@@ -129,9 +129,26 @@ exception the first time it is used. The error names the way out:
 
 ```console
 $ crystal build app.cr
-Error: invalid regex for the Mica regex engine: lookahead (at 1) is not supported; build with -Duse_pcre2 to run this pattern on PCRE2, or see doc/regex_mica.md for rewrites
+Error: invalid regex for the Mica regex engine: lookahead (at 1) is not supported. Build with -Duse_pcre2 to run this pattern on PCRE2. See doc/regex_mica.md for rewrites.
 $ crystal build -Duse_pcre2 app.cr
 ```
+
+### When a shard's pattern fails
+
+When the literal sits in an installed shard (its file is under
+`lib/<shard>/`), the error names the shard and the file inside it, and
+gives both ways forward:
+
+```console
+$ crystal build src/blog.cr
+Error: invalid regex for the Mica regex engine: lookahead (at 49) is not supported. The pattern is in the shard 'grant' (lib/grant/src/grant/query/joins.cr). Upgrade grant to a release built for Mica (update its pin in shard.yml, then run shards update grant), or build with -Duse_pcre2 to run this pattern on PCRE2. See doc/regex_mica.md for rewrites.
+```
+
+Upgrading is the lasting fix: a shard release built for Mica rewrites its
+patterns (Grant 0.28.2 and later build on Mica). Until that release
+exists, `-Duse_pcre2` builds the whole program on PCRE2. When the path
+holds several `lib/` segments (a shard installed inside another shard's
+checkout), the innermost one names the shard.
 
 Only literals the program reaches are checked: a literal in a method that
 is never called is never expanded.

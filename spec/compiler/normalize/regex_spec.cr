@@ -66,7 +66,7 @@ describe "Normalize: regex literal" do
     end
 
     it "rejects a literal the Mica engine leaves out and names -Duse_pcre2" do
-      expect_raises(Crystal::TypeException, "invalid regex for the Mica regex engine: lookahead (at 1) is not supported; build with -Duse_pcre2 to run this pattern on PCRE2") do
+      expect_raises(Crystal::TypeException, "invalid regex for the Mica regex engine: lookahead (at 1) is not supported. Build with -Duse_pcre2 to run this pattern on PCRE2. See doc/regex_mica.md for rewrites.") do
         assert_expand(Parser.parse(%q(/a(?=b)/))) { }
       end
       expect_raises(Crystal::TypeException, "invalid regex for the Mica regex engine: a backreference (at 3)") do
@@ -90,11 +90,31 @@ describe "Normalize: regex literal" do
       error = expect_raises(Crystal::TypeException) do
         assert_expand(Parser.parse(grant_raw_join_target)) { }
       end
-      error.message.should eq("invalid regex for the Mica regex engine: lookahead (at 49) is not supported; build with -Duse_pcre2 to run this pattern on PCRE2, or see doc/regex_mica.md for rewrites")
+      error.message.should eq("invalid regex for the Mica regex engine: lookahead (at 49) is not supported. Build with -Duse_pcre2 to run this pattern on PCRE2. See doc/regex_mica.md for rewrites.")
 
       assert_expand_regex_const grant_raw_join_target, <<-'CRYSTAL', flags: "use_pcre2"
       ::Regex.new("\\bJOIN\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s+(?:AS\\s+)?(?!ON\\b|USING\\b|INNER\\b|LEFT\\b|RIGHT\\b|FULL\\b|CROSS\\b|NATURAL\\b|JOIN\\b)([A-Za-z_][A-Za-z0-9_]*))?", ::Regex::Options.new(1))
       CRYSTAL
+    end
+
+    it "names the shard and the upgrade when Grant's RAW_JOIN_TARGET comes from lib/grant" do
+      grant_raw_join_target = %q(/\bJOIN\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+(?:AS\s+)?(?!ON\b|USING\b|INNER\b|LEFT\b|RIGHT\b|FULL\b|CROSS\b|NATURAL\b|JOIN\b)([A-Za-z_][A-Za-z0-9_]*))?/i)
+      from_nodes = parse(grant_raw_join_target, filename: "/apps/blog/lib/grant/src/grant/query/joins.cr")
+
+      error = expect_raises(Crystal::TypeException) do
+        assert_expand(from_nodes) { }
+      end
+      error.message.should eq("invalid regex for the Mica regex engine: lookahead (at 49) is not supported. " \
+                              "The pattern is in the shard 'grant' (lib/grant/src/grant/query/joins.cr). " \
+                              "Upgrade grant to a release built for Mica (update its pin in shard.yml, then run shards update grant), " \
+                              "or build with -Duse_pcre2 to run this pattern on PCRE2. See doc/regex_mica.md for rewrites.")
+    end
+
+    it "keeps the app's own literal free of shard advice" do
+      error = expect_raises(Crystal::TypeException) do
+        assert_expand(parse(%q(/a(?=b)/), filename: "/apps/blog/src/blog.cr")) { }
+      end
+      error.message.should eq("invalid regex for the Mica regex engine: lookahead (at 1) is not supported. Build with -Duse_pcre2 to run this pattern on PCRE2. See doc/regex_mica.md for rewrites.")
     end
 
     it "accepts -Duse_mica as the default" do
@@ -124,6 +144,52 @@ describe "Normalize: regex literal" do
       assert_expand_regex_const %q(/a(?=b)/), <<-'CRYSTAL', flags: "use_mica use_pcre2"
       ::Regex.new("a(?=b)", ::Regex::Options.new(0))
       CRYSTAL
+    end
+  end
+end
+
+describe Crystal::MicaRegexLiteral do
+  describe ".shard_file?" do
+    it "finds the shard in an absolute path" do
+      shard_file = Crystal::MicaRegexLiteral.shard_file?("/apps/blog/lib/grant/src/grant/query/joins.cr").should_not be_nil
+      shard_file.shard_name.should eq("grant")
+      shard_file.path.should eq("lib/grant/src/grant/query/joins.cr")
+    end
+
+    it "finds the shard in a relative path" do
+      shard_file = Crystal::MicaRegexLiteral.shard_file?("lib/grant/src/grant.cr").should_not be_nil
+      shard_file.shard_name.should eq("grant")
+      shard_file.path.should eq("lib/grant/src/grant.cr")
+    end
+
+    it "takes the innermost shard of a nested lib path" do
+      shard_file = Crystal::MicaRegexLiteral.shard_file?("/apps/blog/lib/amber/lib/grant/src/grant.cr").should_not be_nil
+      shard_file.shard_name.should eq("grant")
+      shard_file.path.should eq("lib/grant/src/grant.cr")
+    end
+
+    it "returns nil for the app's own file" do
+      Crystal::MicaRegexLiteral.shard_file?("/apps/blog/src/models/post.cr").should be_nil
+      Crystal::MicaRegexLiteral.shard_file?("/apps/blog/lib/tasks.cr").should be_nil
+    end
+
+    it "returns nil without a location" do
+      Crystal::MicaRegexLiteral.shard_file?(nil).should be_nil
+    end
+  end
+
+  describe ".error?" do
+    it "keeps a parse error's detail and adds the shard sentence for a shard file" do
+      Crystal::MicaRegexLiteral.error?("a{2,1}", Regex::CompileOptions::None, "/apps/blog/lib/tidy/src/tidy.cr").should eq(
+        "numbers out of order in {} quantifier at 5. " \
+        "The pattern is in the shard 'tidy' (lib/tidy/src/tidy.cr). " \
+        "Upgrade tidy to a release built for Mica (update its pin in shard.yml, then run shards update tidy), " \
+        "or build with -Duse_pcre2 to run this pattern on PCRE2. See doc/regex_mica.md for rewrites.")
+    end
+
+    it "keeps a parse error's detail alone for the app's own file" do
+      Crystal::MicaRegexLiteral.error?("a{2,1}", Regex::CompileOptions::None, "/apps/blog/src/blog.cr").should eq("numbers out of order in {} quantifier at 5")
+      Crystal::MicaRegexLiteral.error?("a{2,1}", Regex::CompileOptions::None).should eq("numbers out of order in {} quantifier at 5")
     end
   end
 end

@@ -325,8 +325,12 @@ module Crystal
         const_name = "$Regex:#{index}"
 
         if index == @regexes.size
-          if @program.uses_mica_regex_engine? && (mica_error = MicaRegexLiteral.error?(string, node.options))
-            node.raise "invalid regex for the Mica regex engine: #{mica_error}"
+          if @program.uses_mica_regex_engine?
+            location = node.location
+            literal_filename = location.original_filename if location
+            if mica_error = MicaRegexLiteral.error?(string, node.options, literal_filename)
+              node.raise "invalid regex for the Mica regex engine: #{mica_error}"
+            end
           end
 
           @regexes << key
