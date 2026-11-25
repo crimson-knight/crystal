@@ -93,6 +93,30 @@ module Crystal
       {% end %}
     end
 
+    # The divisor of a code generation child of the build server (see
+    # `enter_build_server_child`).
+    BUILD_SERVER_CHILD_FREE_SPACE_DIVISOR = 1_u64
+
+    # Lets the collector of a code generation child of the build server
+    # (`InferReuse`) grow its heap by as much as the heap it inherits before
+    # it collects. The child starts with the typed program of the server
+    # (4.4 GB of live data in an Amber app of 300 resources), and with the
+    # compiler's divisor it marked all of it about four times while it
+    # generated the code of a one-method edit (1.6 s), each time to find
+    # little more than what the child had allocated since. With this divisor
+    # it collects once its own allocations reach the size of that heap.
+    # `CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR=N` sets another one (0 keeps the
+    # compiler's), for measuring.
+    def self.enter_build_server_child : Nil
+      {% unless flag?(:gc_none) || flag?(:wasm32) %}
+        divisor = ENV["CRYSTAL_GC_CHILD_FREE_SPACE_DIVISOR"]?.try(&.to_u64?) || BUILD_SERVER_CHILD_FREE_SPACE_DIVISOR
+        return if divisor == 0
+
+        LibGC.set_free_space_divisor(LibGC::Word.new(divisor))
+        @@tight_divisor = divisor if @@tight_heap_bytes > 0 && @@tight_divisor > divisor
+      {% end %}
+    end
+
     class_property? collects_at_stages : Bool = false
     class_property? traces_stages : Bool = false
 
