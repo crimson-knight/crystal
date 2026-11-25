@@ -27,6 +27,8 @@ module Crystal::InferReuse
 
     @list_of_file_edits = [] of FileEdit
     @list_of_new_files = [] of NewFile
+    # What the require that found each new file finds now, by the new file.
+    @list_of_found_files_by_new_filename = {} of String => Array(String)
     # The index in the record of each require that finds new files, with what it finds now.
     @list_of_grown_requires = [] of {Int32, SourceRecord::RequireResult}
     @list_of_changed_defs = [] of FileEdit::ChangedDef
@@ -163,6 +165,7 @@ module Crystal::InferReuse
         list_of_added.each do |filename|
           next if @list_of_new_files.any? { |new_file| new_file.filename == filename }
           @list_of_new_files << NewFile.parse(program, filename)
+          @list_of_found_files_by_new_filename[filename] = list_of_found
         end
         @list_of_grown_requires << {index, SourceRecord::RequireResult.new(result.filename, result.relative_to, list_of_found)}
       end
@@ -316,7 +319,9 @@ module Crystal::InferReuse
         @kept.record.shift_lines(edit.filename, edit.line_shift)
       end
 
-      list_of_new_types = @list_of_new_files.flat_map(&.declare(program))
+      list_of_new_types = @list_of_new_files.flat_map do |new_file|
+        new_file.declare(program, @kept.node, @list_of_found_files_by_new_filename[new_file.filename])
+      end
 
       new_typed_defs = program.infer_reuse_new_typed_defs = [] of Def
 

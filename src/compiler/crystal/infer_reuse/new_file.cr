@@ -146,8 +146,11 @@ module Crystal::InferReuse
     end
 
     # Declares the new types and their methods in *program*, as the
-    # top-level phase would have. Returns the types.
-    def declare(program : Program) : Array(Type)
+    # top-level phase would have, and puts the typed file into *main_node*
+    # where its require would have: after the file the require found before
+    # it in *list_of_found_files* (or before the one after it). Returns the
+    # types.
+    def declare(program : Program, main_node : ASTNode, list_of_found_files : Array(String)) : Array(Type)
       node = program.normalize(@node)
       visitor = TopLevelVisitor.new(program)
       node.accept visitor
@@ -156,8 +159,47 @@ module Crystal::InferReuse
       unless program.has_flag?("no_restrictions_augmenter")
         node.accept RestrictionsAugmenter.new(program, visitor.new_expansions)
       end
-      @list_of_type_names.map do |name|
+      list_of_types = @list_of_type_names.map do |name|
         (program.types[name]? || refuse("declares #{name}, which the top-level phase did not make")).as(Type)
+      end
+
+      typed_node = program.visit_main(node, cleanup: true)
+      splice(main_node, FileNode.new(typed_node, @filename), list_of_found_files)
+      list_of_types
+    end
+
+    private def splice(main_node : ASTNode, file_node : FileNode, list_of_found_files : Array(String)) : Nil
+      index = list_of_found_files.index(@filename) || refuse("is not among the files its require finds")
+      neighbor, offset = if index > 0
+                           {list_of_found_files[index - 1], 1}
+                         else
+                           {list_of_found_files[index + 1]? || refuse("is the only file its require finds"), 0}
+                         end
+      found = NewFile.file_node_place(main_node, neighbor) || refuse("has no place in the program: #{neighbor} is not in it")
+      expressions, neighbor_index = found
+      expressions.expressions.insert(neighbor_index + offset, file_node)
+    end
+
+    # The expressions that hold the file node of *filename*, and its index
+    # there. File nodes sit in the expressions of the files that require them.
+    def self.file_node_place(node : ASTNode, filename : String) : {Expressions, Int32}?
+      case node
+      when Expressions
+        node.expressions.each_with_index do |child, index|
+          return {node, index} if child.is_a?(FileNode) && child.filename == filename
+        end
+        node.expressions.each do |child|
+          if found = file_node_place(child, filename)
+            return found
+          end
+        end
+        nil
+      when FileNode
+        file_node_place(node.node, filename)
+      when Require
+        node.expanded.try { |expanded| file_node_place(expanded, filename) }
+      else
+        nil
       end
     end
 
