@@ -132,7 +132,7 @@ private class MainPartsProgram
     compiler.incremental = true
     compiler.n_threads = 2
     ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
-    with_env("CRYSTAL_MAIN_PART_NODES", "200") do
+    with_env("CRYSTAL_MAIN_PART_NODES", "50") do
       with_env("CRYSTAL_MAIN_PARTS", parts ? nil : "0") do
         compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
       end

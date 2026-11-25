@@ -44,8 +44,12 @@ class Crystal::CodeGenVisitor
     # A body this many times the size of a part or larger is split.
     SPLIT_FACTOR = 2
 
-    # A run of statements smaller than this stays in the function it is in.
-    MINIMUM_PART_NODE_COUNT = 200
+    # A run of statements smaller than the size of a part divided by this
+    # stays in the function it is in.
+    MINIMUM_PART_DIVISOR = 8
+
+    # The smallest size of a part `CRYSTAL_MAIN_PART_NODES` can set.
+    SMALLEST_PART_NODE_COUNT = 50
 
     # A part ends after a statement with this probability per node of the
     # statement out of `PART_NODE_COUNT` (see `Plan`). Out of this many.
@@ -67,7 +71,7 @@ class Crystal::CodeGenVisitor
     end
 
     def self.part_node_count : Int32
-      ENV["CRYSTAL_MAIN_PART_NODES"]?.try(&.to_i?).try(&.clamp(MINIMUM_PART_NODE_COUNT..)) || DEFAULT_PART_NODE_COUNT
+      ENV["CRYSTAL_MAIN_PART_NODES"]?.try(&.to_i?).try(&.clamp(SMALLEST_PART_NODE_COUNT..)) || DEFAULT_PART_NODE_COUNT
     end
 
     # What one statement holds: its size, the variables it names outside
@@ -234,7 +238,7 @@ class Crystal::CodeGenVisitor
           outlinable = index != last_index && scan.blocker.nil?
           head = Head.new.tap { |visitor| statement.accept visitor }.digest
           if !outlinable || scan.node_count >= part_node_count
-            plan.close(current)
+            plan.close(current, part_node_count)
             current = nil
           end
           group = current ||= Group.new(head)
@@ -243,11 +247,11 @@ class Crystal::CodeGenVisitor
           group.node_count += scan.node_count
           group.outlined = outlinable
           if !outlinable || ends_part?(head, scan.node_count, group.node_count, part_node_count)
-            plan.close(group)
+            plan.close(group, part_node_count)
             current = nil
           end
         end
-        plan.close(current)
+        plan.close(current, part_node_count)
         if ENV["CRYSTAL_MAIN_PARTS_DEBUG"]?
           list_of_texts = plan.list_of_groups.map { |group| "#{group.outlined? ? "P" : "i"}#{group.list_of_indexes.size}/#{group.node_count}" }
           list_of_blockers = list_of_scans.compact_map(&.blocker).uniq
@@ -262,9 +266,9 @@ class Crystal::CodeGenVisitor
         head.first % BOUNDARY_SCALE < threshold
       end
 
-      def close(group : Group?) : Nil
+      def close(group : Group?, part_node_count : Int32) : Nil
         return unless group
-        group.outlined = false if group.outlined? && group.node_count < MINIMUM_PART_NODE_COUNT
+        group.outlined = false if group.outlined? && group.node_count < part_node_count // MINIMUM_PART_DIVISOR
         @list_of_groups << group
       end
     end
