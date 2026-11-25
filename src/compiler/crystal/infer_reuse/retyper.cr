@@ -26,6 +26,9 @@ module Crystal::InferReuse
     end
 
     @list_of_file_edits = [] of FileEdit
+    @list_of_new_files = [] of NewFile
+    # The index in the record of each require that finds new files, with what it finds now.
+    @list_of_grown_requires = [] of {Int32, SourceRecord::RequireResult}
     @list_of_changed_defs = [] of FileEdit::ChangedDef
     @added_def_count = 0
     @candidate_call_count = 0
@@ -94,6 +97,7 @@ module Crystal::InferReuse
         io << @list_of_changed_defs.size << " method bodies changed, " << @retyped_instance_count << " instances re-typed"
         io << ", " << @added_def_count << " methods added" if @added_def_count > 0
         io << ", " << @removed_def_count << " methods removed" if @removed_def_count > 0
+        io << ", " << @list_of_new_files.size << " new files" unless @list_of_new_files.empty?
         moved = @list_of_file_edits.count { |edit| !edit.line_shift.identity? }
         io << ", lines moved in " << moved << " files" if moved > 0
       end
@@ -140,16 +144,29 @@ module Crystal::InferReuse
     private def check_sources : Nil
       record = @kept.record
 
-      record.list_of_requires.each do |result|
+      record.list_of_requires.each_with_index do |result, index|
         found = begin
           program.find_in_path(result.filename, result.relative_to)
         rescue
           nil
         end
-        unless (found || [] of String) == result.list_of_found_files
-          raise Refusal.new("require \"#{result.filename}\" finds other files")
+        list_of_found = found || [] of String
+        next if list_of_found == result.list_of_found_files
+
+        # Files a glob finds besides the ones it found, in the same order:
+        # each may be a new file the kept program takes in (`NewFile`).
+        list_of_added = list_of_found - result.list_of_found_files
+        grown = !list_of_added.empty? && (list_of_found - list_of_added) == result.list_of_found_files &&
+                list_of_added.none? { |filename| record.text_by_filename.has_key?(filename) || program.requires.includes?(filename) }
+        raise Refusal.new("require \"#{result.filename}\" finds other files") unless grown
+
+        list_of_added.each do |filename|
+          next if @list_of_new_files.any? { |new_file| new_file.filename == filename }
+          @list_of_new_files << NewFile.parse(program, filename)
         end
+        @list_of_grown_requires << {index, SourceRecord::RequireResult.new(result.filename, result.relative_to, list_of_found)}
       end
+      @list_of_new_files.each(&.check_reads(program, record))
 
       record.env_value_by_name.each do |name, value|
         raise Refusal.new("a macro read environment variable #{name}, which changed") unless ENV[name]? == value
@@ -272,7 +289,7 @@ module Crystal::InferReuse
     end
 
     private def retype_changed_defs : Nil
-      return if @list_of_file_edits.empty?
+      return if @list_of_file_edits.empty? && @list_of_new_files.empty?
 
       def_by_location = program_defs_by_location(@list_of_file_edits.map(&.filename).to_set)
       types_before = program.after_inference_types.size
@@ -298,6 +315,8 @@ module Crystal::InferReuse
         edit.shift_program_lines
         @kept.record.shift_lines(edit.filename, edit.line_shift)
       end
+
+      list_of_new_types = @list_of_new_files.flat_map(&.declare(program))
 
       new_typed_defs = program.infer_reuse_new_typed_defs = [] of Def
 
@@ -333,6 +352,7 @@ module Crystal::InferReuse
       finish_new_types(types_before)
       fix_missing_types(new_typed_defs)
       @new_typed_def_count = new_typed_defs.size
+      check_new_types_stay_apart(list_of_new_types, new_typed_defs) unless list_of_new_types.empty?
       RecursiveStructChecker.new(program).run
 
       unless @kept.compiler.warnings.infos.empty?
@@ -342,6 +362,36 @@ module Crystal::InferReuse
       @list_of_file_edits.each do |edit|
         text = File.read(edit.filename)
         @kept.record.add_source(edit.filename, text)
+      end
+      @list_of_new_files.each do |new_file|
+        @kept.record.add_source(new_file.filename, new_file.text)
+        program.requires << new_file.filename
+      end
+      @list_of_grown_requires.each do |(index, result)|
+        @kept.record.list_of_requires[index] = result
+      end
+    end
+
+    # Refuses when a value of a new type may reach code typed without it:
+    # when a method typed in this build holds the virtual type of an
+    # ancestor of a new type (a new struct put in an `Array(Struct)`).
+    private def check_new_types_stay_apart(list_of_new_types : Array(Type), new_typed_defs : Array(Def)) : Nil
+      list_of_virtual_types = [] of Type
+      list_of_new_types.each do |new_type|
+        NewFile.list_of_ancestors(program, new_type.struct?).each do |ancestor|
+          if ancestor.is_a?(ClassType) && (virtual_type = ancestor.existing_virtual_type)
+            list_of_virtual_types << virtual_type
+          end
+        end
+      end
+      return if list_of_virtual_types.empty?
+
+      checker = VirtualTypeChecker.new(list_of_virtual_types)
+      new_typed_defs.each do |typed_def|
+        typed_def.body.accept checker
+        if found = checker.found
+          raise Refusal.new("method '#{typed_def.name}' holds #{found}, which a new type could reach")
+        end
       end
     end
 
@@ -860,6 +910,38 @@ module Crystal::InferReuse
     private def fix_missing_types(new_typed_defs : Array(Def)) : Nil
       fixer = FixMissingTypes.new(program, only: Set(Def).new.compare_by_identity.concat(new_typed_defs))
       new_typed_defs.each { |typed_def| fixer.fix_typed_def(typed_def) }
+    end
+  end
+
+  # Finds a node whose type is, or holds, one of the given virtual types.
+  class VirtualTypeChecker < Visitor
+    getter found : Type?
+
+    def initialize(@list_of_virtual_types : Array(Type))
+    end
+
+    def visit(node : ASTNode) : Bool
+      return false if @found
+      if (type = node.type?) && holds?(type, 3)
+        @found = type
+        return false
+      end
+      true
+    end
+
+    private def holds?(type : Type, depth : Int32) : Bool
+      return true if @list_of_virtual_types.any?(&.same?(type))
+      return false if depth == 0
+      case type
+      when UnionType
+        type.union_types.any? { |member| holds?(member, depth - 1) }
+      when GenericInstanceType
+        type.type_vars.each_value.any? do |type_var|
+          type_var.is_a?(Var) && (var_type = type_var.type?) && holds?(var_type, depth - 1)
+        end
+      else
+        false
+      end
     end
   end
 

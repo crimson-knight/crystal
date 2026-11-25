@@ -110,6 +110,15 @@ module Crystal::InferReuse
       @overrides_read_type_by_id[type.object_id] ||= type
     end
 
+    # Types a macro listed the subclasses, includers or constants of, or
+    # asked for a constant of, by object id: a new type in a new file can
+    # change what such a macro wrote (see `NewFile`).
+    getter type_list_read_type_by_id = {} of UInt64 => Type
+
+    def add_type_list_read(type : Type) : Nil
+      @type_list_read_type_by_id[type.object_id] ||= type
+    end
+
     def add_method_list_read(read : MethodListRead) : Nil
       expansion = @method_list_frames.current
       unless expansion
