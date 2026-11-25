@@ -297,6 +297,10 @@ module Crystal
             node.expanded.try { |expanded| add(expanded) }
           when ExpandableNode
             node.expanded.try { |expanded| add(expanded) }
+          when Arg
+            # Its restriction and default value are the source def's nodes,
+            # shared by every typed copy (`Def#share_signature_nodes_with`).
+            next
           end
           collector.children.clear
           node.accept_children(collector)
