@@ -172,6 +172,12 @@ module Crystal::InferReuse
 
       reason = "the server holds no typed program yet"
       if kept
+        # The child re-types in a copy of the server's heap, as the code
+        # generation child generates code in one. Typing the top-level code
+        # of a routes file alone allocates about 19 GB in an Amber app of 300
+        # resources; with the compiler's divisor that was 26 full
+        # collections of the 5 GB heap, 50 of the 54 s the re-typing took.
+        GCTuning.enter_build_server_child
         decision = Retyper.new(kept, request).run
         if decision.reused?
           return {kept, status_writer}
