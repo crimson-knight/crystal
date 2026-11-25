@@ -7,7 +7,13 @@ require "./compiler/crystal/macros"
 
 require "./*"
 require "./big/**"
-require "./compress/**"
+# Compress::Deflate has two backends (compress/deflate/lib_z and
+# compress/deflate/mica) that define the same classes; the entry files choose
+# one with `flag?(:use_libz)`, so the docs load them rather than a `**` glob.
+require "./compress/deflate"
+require "./compress/gzip"
+require "./compress/zlib"
+require "./compress/zip"
 require "./crypto/**"
 require "./crystal/syntax_highlighter/*"
 require "./digest/**"
