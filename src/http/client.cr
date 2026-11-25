@@ -60,6 +60,32 @@ require "./client/tls"
 #
 # WARNING: A single `HTTP::Client` instance is not safe for concurrent use by multiple fibers.
 #
+# ### Client certificates
+#
+# A server that asks for a client certificate (mutual TLS) gets the chain and
+# key set on the `TLSClientContext`. On Beryl, the default TLS stack, the
+# chain is a PEM file, leaf first, and the key a PEM private key (PKCS #8,
+# SEC 1 or PKCS #1); `certified_key=` takes both already loaded. A
+# `-Duse_openssl` build takes the same two setters on
+# `OpenSSL::SSL::Context::Client`.
+#
+# ```
+# require "http/client"
+#
+# context = HTTP::Client::TLSClientContext.new
+# context.ca_certificates = "/path/to/server-ca.pem" # the server's issuer
+# context.certificate_chain = "/path/to/client.pem"
+# context.private_key = "/path/to/client.key"
+#
+# client = HTTP::Client.new(URI.parse("https://api.example.com"), tls: context)
+# client.get("/").status_code # => 200
+# ```
+#
+# Without a certificate, a server that requires one ends the connection with
+# the certificate_required alert, raised on Beryl as a
+# `Crystal::Beryl::TLS::Error` whose `alert_description` is
+# `CertificateRequired`.
+#
 # ### Compression
 #
 # If `compress` isn't set to `false`, and no `Accept-Encoding` header is explicitly specified,

@@ -34,6 +34,10 @@ class HTTP::Client
     # context.ca_certificates = "/path/to/ca.pem"  # or trust one CA only
     # HTTP::Client.get("https://example.com", tls: context)
     #
+    # # A client certificate, for a server that asks for one (mutual TLS)
+    # context.certificate_chain = "/path/to/client.pem"
+    # context.private_key = "/path/to/client.key"
+    #
     # HTTP::Client.get("https://localhost:8443", tls: HTTP::Client::TLSClientContext.insecure) # no verification
     # ```
     alias TLSClientContext = Crystal::Beryl::TLS::Context::Client
