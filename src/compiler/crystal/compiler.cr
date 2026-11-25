@@ -2,6 +2,7 @@ require "option_parser"
 require "file_utils"
 require "colorize"
 require "crystal/digest/md5"
+require "crystal/digest/sha256"
 require "./incremental_cache"
 require "./c_allocator"
 require "./codegen/cached_object_record"
@@ -1180,10 +1181,25 @@ module Crystal
         # Note: asyncify_helper.wasm is merged AFTER the asyncify pass via
         # wasm-merge (see run_wasm_opt) to avoid name collisions.
 
+        # A WASI reactor (`-Dwithout_main`) has no `_start`: the host calls
+        # its `_initialize` once and then its exports.
+        link_flags += " --no-entry" if program.has_flag?("without_main")
+
         # NOTE: wasm-ld does not support --sysroot. WASI SDK sysroot library
         # paths are added via -L flags in lib_flags_wasm (link.cr).
 
-        {"wasm-ld", %(wasm-ld "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} -lc -lwasi-emulated-mman -lwasi-emulated-process-clocks #{program.lib_flags(@cross_compile)}), object_names}
+        # A cross-compilation prints the command for another machine, so it
+        # names the linker plainly. A local link runs the checked linker,
+        # and checks the Binaryen tools of the post-link step before it
+        # starts, so a wrong tool stops the build before anything is written.
+        if @cross_compile
+          wasm_ld = "wasm-ld"
+        else
+          wasm_ld = Process.quote_posix(wasm32_tool("wasm-ld"))
+          wasm32_tool("wasm-opt")
+          wasm32_tool("wasm-merge") unless program.has_flag?("frontend_no_fibers")
+        end
+        {"wasm-ld", %(#{wasm_ld} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} -lc -lwasi-emulated-mman -lwasi-emulated-process-clocks #{program.lib_flags(@cross_compile)}), object_names}
       elsif program.has_flag? "avr"
         link_flags = @link_flags || ""
         link_flags += " --target=avr-unknown-unknown -mmcu=#{@mcpu} -Wl,--gc-sections"
@@ -1420,7 +1436,9 @@ module Crystal
           # asyncify layer, so skip the --asyncify pass and the asyncify_helper
           # merge. This is a runtime check of the *target* program's flags, not
           # a macro flag on the compiler binary itself.
-          run_wasm_opt(output_filename, release?, program.has_flag?("frontend_no_fibers"))
+          run_wasm_opt(output_filename, @optimization_mode,
+            skip_fibers: program.has_flag?("frontend_no_fibers"),
+            needs_pointer_spills: !program.has_flag?("gc_none"))
         end
       end
 
@@ -2427,86 +2445,70 @@ module Crystal
       end
     end
 
-    private def run_wasm_opt(output_filename, optimize, skip_fibers = false)
+    # The post-link step of a wasm32 build. The order of the passes matters:
+    #
+    # 1. `--asyncify` instruments functions so fibers can unwind and rewind
+    #    the stack. It only understands legacy exception handling
+    #    (try/catch), so it runs on the freshly linked module.
+    #    `crystal_asyncify_switch` is declared an async import so its callers
+    #    save and restore their state around it.
+    # 2. `wasm-merge` adds asyncify_helper.wasm, whose `crystal_*` wrappers
+    #    call the `asyncify_*` functions the pass just created. It runs after
+    #    the pass so the helper's imports and the pass's definitions do not
+    #    collide.
+    # 3. `--translate-to-exnref` turns legacy exception handling into the
+    #    try_table/exnref form browsers run. It runs after asyncify.
+    # 4. `--spill-pointers` stores pointer-typed locals on the shadow stack at
+    #    every call, so Boehm's conservative scan sees them as roots.
+    # 5. `-O1` to `-O3`, `-Os` or `-Oz`, matching the compiler's optimization
+    #    mode, on the final module (none at `-O0`).
+    #
+    # Steps 1 and 2 are for fibers only: a program built with
+    # `-Dfrontend_no_fibers` never switches fibers, so they are skipped, and
+    # with them the asyncify instrumentation that slows every function down
+    # and grows the module by about half.
+    #
+    # Step 4 runs only without asyncify, whose interaction with it is
+    # unverified (emscripten/emscripten#18251), and only when there is a
+    # collector to scan the roots: with `-Dgc_none` it would spill pointers
+    # nobody reads.
+    private def run_wasm_opt(output_filename : String, optimization_mode : OptimizationMode,
+                             skip_fibers : Bool, needs_pointer_spills : Bool) : Nil
       quoted = Process.quote_posix(output_filename)
 
-      # WASM post-link pipeline order matters:
-      #
-      # 1. --asyncify: Instrument functions for stack unwinding/rewinding
-      #    (required for fiber context switching). Must run on legacy EH
-      #    format (try/catch) — does not support new try_table instructions.
-      #    crystal_asyncify_switch is declared as an async import so callers
-      #    get proper save/restore instrumentation.
-      #
-      # 2. wasm-merge: Merge asyncify_helper.wasm to provide crystal_* wrapper
-      #    functions. Must run after asyncify to avoid name collisions between
-      #    the helper's asyncify_* imports and the pass's generated definitions.
-      #
-      # 3. --translate-to-exnref: Convert legacy EH (try/catch) to new EH
-      #    format (try_table/exnref). Must run after asyncify.
-      #
-      # 4. --spill-pointers: Spill pointer-typed locals to C stack at every
-      #    call site for Boehm GC conservative stack scanning. Must run after
-      #    asyncify (which modifies function structure).
-      #
-      # 5. -Oz (release only): Size optimization pass.
-
-      # Steps 1+2 (asyncify + helper merge) are for fiber support only. The
-      # frontend-only build (-Dfrontend_no_fibers, C-4 fix) never switches
-      # fibers, so we skip them: the asyncify instrumentation is what inflates
-      # the VM call stack and traps in browsers. Step 3 (exnref) still runs.
       unless skip_fibers
-        # Step 1: Asyncify for fiber support
-        # - Remove _start from instrumentation (it serves as the asyncify boundary)
-        # - Mark crystal_asyncify_switch as an async import so callers get
-        #   save/restore instrumentation around calls to it
+        # _start is the asyncify boundary, so it stays uninstrumented.
         run_wasm_opt_pass(quoted,
           "--asyncify" \
           " --pass-arg=asyncify-removelist@_start" \
           " --pass-arg=asyncify-imports@env.crystal_asyncify_switch",
           "asyncify")
-
-        # Step 2: Merge asyncify helper module
-        # asyncify_helper.wasm provides crystal_* wrapper functions that call
-        # the asyncify_* functions created by the asyncify pass. wasm-merge
-        # resolves: main's crystal_* imports → helper's exports, and
-        # helper's asyncify_* imports → main's exports.
         run_wasm_merge(output_filename)
       end
 
-      # Step 3: Translate legacy EH to new EH format (browsers need exnref).
-      # Without asyncify this runs directly on the freshly-linked legacy-EH
-      # module, which is the correct order (asyncify, when present, must run
-      # before exnref translation).
       run_wasm_opt_pass(quoted, "--translate-to-exnref", "translate-to-exnref")
 
-      # Step 4: Spill pointers for GC.
-      # Boehm's conservative collector scans linear memory for roots but CANNOT
-      # see a pointer held only in a wasm local; --spill-pointers stores
-      # pointer-typed locals to the shadow (C) stack at every call site so they
-      # stay visible as GC roots (otherwise a still-live object reachable only
-      # from a local can be collected -> use-after-free). This ran
-      # unconditionally in Phase 2; Phase 3 disabled it *solely* because its
-      # interaction with the asyncify instrumentation was unverified
-      # ("Re-enable after verifying compatibility with asyncify").
-      #
-      # The frontend build (skip_fibers / -Dfrontend_no_fibers, C-4 fix) removes
-      # asyncify entirely, so that concern does not apply: re-enable the pass on
-      # that path. Order: AFTER --translate-to-exnref (spill on the final EH
-      # form) and BEFORE -Oz (so the optimizer trims the spill overhead). The
-      # fiber path stays unspilled until asyncify compatibility is verified.
-      if skip_fibers
+      if skip_fibers && needs_pointer_spills
         run_wasm_opt_pass(quoted, "--spill-pointers", "spill-pointers")
       end
 
-      if optimize
-        # Step 5: Size optimization in release mode
-        run_wasm_opt_pass(quoted, "-Oz", "optimization")
+      if level = Compiler.wasm_opt_level(optimization_mode)
+        run_wasm_opt_pass(quoted, level, "optimization")
       end
     end
 
+    # The `wasm-opt` optimization flag that matches *optimization_mode*, or
+    # `nil` at `-O0`. A speed level (`-O3`, which `--release` selects) keeps
+    # the speed Binaryen's size levels would give up: on the Box3D port,
+    # `wasm-opt -Oz` and `-O3` gave modules within 0.1% of each other
+    # gzipped, and `-Oz` code ran slower.
+    def self.wasm_opt_level(optimization_mode : OptimizationMode) : String?
+      return nil if optimization_mode.o0?
+
+      "-#{optimization_mode}"
+    end
+
     private def run_wasm_merge(output_filename)
-      # Find asyncify_helper.wasm in CRYSTAL_PATH
       helper_path = find_asyncify_helper
       unless helper_path
         raise CompilerError.new("asyncify_helper.wasm not found in CRYSTAL_PATH. " \
@@ -2515,12 +2517,13 @@ module Crystal
 
       quoted_output = Process.quote_posix(output_filename)
       quoted_helper = Process.quote_posix(helper_path)
+      wasm_merge = Process.quote_posix(wasm32_tool("wasm-merge"))
 
       # wasm-merge combines two modules:
       #   - main module (named "crystal_main" so helper's imports resolve)
       #   - helper module (named "env" so main's crystal_* imports resolve)
       # Remaining unresolved imports stay as imports in the output.
-      cmd = "wasm-merge #{quoted_output} crystal_main #{quoted_helper} env" \
+      cmd = "#{wasm_merge} #{quoted_output} crystal_main #{quoted_helper} env" \
             " -o #{quoted_output} --all-features"
       print_command(cmd, nil) if verbose?
       status = Process.run(cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
@@ -2540,12 +2543,49 @@ module Crystal
     end
 
     private def run_wasm_opt_pass(quoted_filename, pass_flag, pass_name)
-      cmd = "wasm-opt #{quoted_filename} -o #{quoted_filename} #{pass_flag} --all-features"
+      wasm_opt = Process.quote_posix(wasm32_tool("wasm-opt"))
+      cmd = "#{wasm_opt} #{quoted_filename} -o #{quoted_filename} #{pass_flag} --all-features"
       print_command(cmd, nil) if verbose?
       status = Process.run(cmd, shell: true, output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
       unless status.success?
         raise CompilerError.new("wasm-opt #{pass_name} pass failed with exit status #{status}: #{cmd}", :FAILURE)
       end
+    end
+
+    @list_of_checked_wasm32_tools = {} of String => String
+
+    # The path of the wasm32 build tool *name* (`wasm-ld`, `wasm-opt` or
+    # `wasm-merge`) on the `PATH`. When the environment variable
+    # `CRYSTAL_<NAME>_SHA256` (for example `CRYSTAL_WASM_OPT_SHA256`) holds a
+    # SHA-256, the tool's executable must have that hash or the build stops:
+    # that pins the exact binary a build runs. A tool is checked once per
+    # compilation.
+    private def wasm32_tool(name : String) : String
+      if checked_path = @list_of_checked_wasm32_tools[name]?
+        return checked_path
+      end
+
+      found_path = Process.find_executable(name)
+      unless found_path
+        raise CompilerError.new("`#{name}` was not found on the PATH; a wasm32 build needs LLD's wasm-ld and Binaryen's wasm-opt (see WASM_GUIDE.md)", :FAILURE)
+      end
+
+      variable_name = Compiler.wasm32_tool_hash_variable(name)
+      if expected_hash = ENV[variable_name]?.presence
+        real_path = File.realpath(found_path)
+        actual_hash = File.open(real_path, "rb") { |file| Crystal::Digest::SHA256.new.update(file).final.hexstring }
+        unless actual_hash == expected_hash.downcase
+          raise CompilerError.new("#{real_path} has SHA-256 #{actual_hash}, but #{variable_name} expects #{expected_hash}", :FAILURE)
+        end
+      end
+
+      @list_of_checked_wasm32_tools[name] = found_path
+    end
+
+    # The environment variable that pins the SHA-256 of the wasm32 build
+    # tool *name*: `CRYSTAL_WASM_OPT_SHA256` for `wasm-opt`.
+    def self.wasm32_tool_hash_variable(name : String) : String
+      "CRYSTAL_#{name.upcase.gsub('-', '_')}_SHA256"
     end
 
     private def linker_not_found(exc_class, linker_name)

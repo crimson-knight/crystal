@@ -34,9 +34,12 @@ class Crystal::CodeGenVisitor
   # The special constants ARGC_UNSAFE and ARGV_UNSAFE (and others) need to be initialized
   # as soon as the program starts, because we have access to argc and argv
   # in the main function.
+  # Only the constants the program reads: the others (such as `Crystal::PATH`
+  # and `Crystal::CACHE_DIR`, which hold paths of the machine that built the
+  # program) would otherwise stay in every unoptimized build.
   def initialize_predefined_constants
     @program.predefined_constants.each do |const|
-      initialize_no_init_flag_const(const)
+      initialize_no_init_flag_const(const) if const.used?
     end
   end
 

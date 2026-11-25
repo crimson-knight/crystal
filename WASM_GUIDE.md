@@ -128,7 +128,12 @@ naturally spills most values to the linear memory stack during compilation, so t
 conservative stack scan catches the majority of live pointers without special
 handling.
 
-**Why `--spill-pointers` is disabled**: Binaryen provides a `--spill-pointers`
+**When `--spill-pointers` runs**: in a build without fibers
+(`-Dfrontend_no_fibers`) that has a collector, the post-link step runs it, so
+every root is visible. The reasons below still keep it off for fiber builds;
+with `-Dgc_none` there is nothing to scan, so it is skipped.
+
+**Why `--spill-pointers` is disabled with fibers**: Binaryen provides a `--spill-pointers`
 pass that forces all pointer-typed WASM locals onto the linear memory stack,
 ensuring GC can find every root. Crystal has this pass disabled because:
 
@@ -335,8 +340,17 @@ Asyncify-instrumented WASM — fiber switching enabled
 Merged WASM — asyncify_helper.wasm combined with main module
     │
     ▼  wasm-opt --translate-to-exnref (Binaryen)
-Final WASM — uses modern try_table/exnref exception format
+WASM using the modern try_table/exnref exception format
+    │
+    ▼  wasm-opt --spill-pointers (only without fibers, and only with a collector)
+    │
+    ▼  wasm-opt -O1/-O2/-O3/-Os/-Oz (the compiler's optimization level; none at -O0)
+Final WASM
 ```
+
+Without fibers (`-Dfrontend_no_fibers`) the asyncify and wasm-merge steps are
+skipped. The last pass uses the same level as the compiler (`--release` is
+`-O3`), so a release module gets a final `wasm-opt -O3`.
 
 **Why legacy EH then translate?** Binaryen's Asyncify pass doesn't yet support
 the new `try_table`/`exnref` instructions. The workaround is: compile with
@@ -351,14 +365,22 @@ correct output that all modern runtimes support.
 | `-Dwithout_iconv` | Disable iconv (required, not available for WASM) |
 | `-Dwithout_openssl` | Disable OpenSSL (required, not available for WASM) |
 | `--release` | Enable optimizations (recommended, significantly reduces binary size) |
+| `--no-debug` | Leave out debug information; with it the module carries no absolute source paths |
+| `-Dfrontend_no_fibers` | No fibers: no asyncify pass, so every function runs faster and the module is about half the size |
+| `-Dgc_none` | No collector: memory is allocated with `malloc` and never freed |
+| `-Dwithout_main` | Build a WASI reactor (`_initialize` and exports) instead of a command (`_start`) |
+| `-Dlean_unreachable` | A left-out dispatch branch traps instead of printing an error |
 | `--error-trace` | Show full error traces in compiler errors |
+
+See [Lean release builds](#lean-release-builds) for when to use the last five.
 
 ### Binary Size
 
 A hello-world program compiles to roughly **1-6 MB** depending on optimization:
 
 - **Debug mode** (~6 MB): All functions asyncify-instrumented, no optimization
-- **Release mode** (~1-2 MB): `-Oz` applied by Binaryen, dead code eliminated
+- **Release mode** (~0.5-2 MB): `wasm-opt -O3` applied by Binaryen, dead code eliminated
+- **Lean release** (a few hundred KB): see [Lean release builds](#lean-release-builds)
 
 The main contributors to binary size are:
 
@@ -366,6 +388,116 @@ The main contributors to binary size are:
 - PCRE2 library (loaded via prelude for Regex)
 - Asyncify instrumentation overhead (~50% increase)
 - wasi-libc
+
+## Lean release builds
+
+A module that a page or another host calls, and that never switches fibers,
+can leave out the fiber layer, the collector and the debug information. That
+is how the Box3D physics port came in smaller and faster than box3d-wasm, the
+C engine compiled with Emscripten.
+
+### The recipe
+
+```bash
+crystal build app.cr -o app.wasm \
+  --target wasm32-wasi \
+  -Dwithout_mt -Dwithout_iconv -Dwithout_openssl -Dwithout_zlib \
+  -Dfrontend_no_fibers -Dgc_none \
+  --release --no-debug
+```
+
+| Part | What it does |
+|------|--------------|
+| `-Dfrontend_no_fibers` | Leaves out the fiber layer and the asyncify pass, which instruments every function. On the Box3D port this alone took a replay from 61.2 ms to 36.9 ms. |
+| `-Dgc_none` | No collector: allocation goes to `malloc`, nothing is ever freed, and libgc is not linked. Use it when the module allocates a bounded amount (a fixed world, buffers it reuses); a module that keeps allocating will run out of memory. |
+| `--release` | `-O3` and a single LLVM module, then a final `wasm-opt -O3` in the post-link step. |
+| `--no-debug` | No DWARF, and with it no absolute source paths in the module. |
+
+For the module in `spec/compiler-cli/fixtures/wasm32-lean-release.cr` the
+recipe gives 71 KB gzipped against 183 KB for a plain `--release` build. The
+spec in `spec/compiler-cli/crystal-build-wasm32_spec.cr` holds it under a
+recorded ceiling and checks it carries no path under `$HOME`.
+
+The recipe keeps exception handling: `raise` and `rescue` work, and an
+exception that is not rescued reaches the host as a WebAssembly exception.
+
+### Optional: `-Dwithout_main` for a WASI reactor
+
+A module whose host calls its exports, rather than running it once, is a WASI
+reactor. With `-Dwithout_main` on wasm32-wasi:
+
+- the module has no `_start`; the standard library defines `_initialize`,
+  which sets up the runtime and runs the program's top-level code;
+- the host calls `_initialize` once, then any exported `fun`;
+- the command exit path is left out: no `at_exit` handlers, no printing of an
+  unhandled exception and its backtrace, no flushing of `STDOUT` (call
+  `STDOUT.flush` in an export that prints);
+- it needs `-Dfrontend_no_fibers`, because only `_start` can switch fibers; a
+  reactor build without it stops with a compile error.
+
+```crystal
+module Counter
+  class_property total = 0
+end
+
+Counter.total = 100 # runs in _initialize
+
+fun counter_add(amount : Int32) : Int32
+  Counter.total += amount
+end
+```
+
+```js
+const { instance } = await WebAssembly.instantiate(bytes, { wasi_snapshot_preview1: wasi });
+instance.exports._initialize();
+instance.exports.counter_add(5); // => 105
+```
+
+On the Box3D port the reactor entry took the data section from 164 KB to 7 KB:
+the exit path pulled in backtrace printing and the table of type names.
+
+### Optional: `-Dlean_unreachable`
+
+The compiler leaves out the dispatch branches for types a program never
+creates. If such a type arrives after all (a compiler bug), the program
+normally prints an "Unreachable type" error with the type, the call and its
+source location. With `-Dlean_unreachable` the program traps there instead,
+and carries neither the message, the type names nor the locations. It only
+changes what that bug looks like; `-Dno_prune_dispatch` turns pruning off.
+
+### Pinning the tools
+
+The compiler runs `wasm-ld`, `wasm-opt` and, with fibers, `wasm-merge` from
+the `PATH`. Set the SHA-256 each must have, and the build stops before it
+links when one differs:
+
+```bash
+export CRYSTAL_WASM_LD_SHA256=$(shasum -a 256 "$(realpath "$(which wasm-ld)")" | cut -d' ' -f1)
+export CRYSTAL_WASM_OPT_SHA256=$(shasum -a 256 "$(realpath "$(which wasm-opt)")" | cut -d' ' -f1)
+export CRYSTAL_WASM_MERGE_SHA256=$(shasum -a 256 "$(realpath "$(which wasm-merge)")" | cut -d' ' -f1)
+```
+
+Record the values once, from the exact releases you install (for example
+Binaryen 126 and LLD 23.1.2 from Homebrew), and set them in CI from that
+record rather than computing them on each run. The hash covers the
+executable itself (after resolving symlinks), not the shared libraries it
+loads.
+
+### Source paths in the module
+
+A wasm32 module never decodes a backtrace, so with `--no-debug` it carries no
+absolute source paths:
+
+- the standard library does not register its files in the backtrace skip list
+  on wasm32;
+- the source locations the compiler writes into runtime messages (a failed
+  cast, an unreachable type) are relative to the `CRYSTAL_PATH` entry or the
+  working directory, for example `crystal/at_exit_handlers.cr:24:43`;
+- `Crystal::PATH`, `Crystal::CACHE_DIR` and the other predefined constants are
+  only emitted when the program reads them.
+
+`__FILE__` and `__DIR__` in your own code still expand to absolute paths.
+Check a build with `strings app.wasm | grep -c "$HOME"`, which should print 0.
 
 ## Troubleshooting
 

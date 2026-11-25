@@ -2,7 +2,12 @@
 // browser hosts do. It runs the module named by its first argument, sends the
 // module's stdout and stderr to its own, and exits with the module's status.
 //
-// Usage: deno run --allow-read wasi-host-no-args.mjs <program.wasm>
+// A WASI reactor (a module that exports `_initialize`, which
+// `-Dwithout_main` builds) is initialized instead, and then the export named
+// by the second argument is called with the remaining arguments as integers;
+// the host prints the module's exports and the call's result.
+//
+// Usage: deno run --allow-read wasi-host-no-args.mjs <program.wasm> [export [integer...]]
 const bytes = await Deno.readFile(Deno.args[0]);
 let memory;
 const view = () => new DataView(memory.buffer);
@@ -61,7 +66,15 @@ const imports = {
 const { instance } = await WebAssembly.instantiate(bytes, imports);
 memory = instance.exports.memory;
 try {
-  instance.exports._start();
+  if (instance.exports._initialize) {
+    const exportNames = WebAssembly.Module.exports(new WebAssembly.Module(bytes)).map((entry) => entry.name);
+    console.log(`exports _start: ${exportNames.includes("_start")}`);
+    instance.exports._initialize();
+    const [exportName, ...integers] = Deno.args.slice(1);
+    if (exportName) console.log(`${exportName}: ${instance.exports[exportName](...integers.map(Number))}`);
+  } else {
+    instance.exports._start();
+  }
 } catch (error) {
   if (error instanceof Exit) Deno.exit(error.code);
   console.error(`host: ${error}`);

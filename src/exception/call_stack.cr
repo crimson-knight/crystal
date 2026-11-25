@@ -19,7 +19,12 @@ struct Exception::CallStack
     @@skip << filename
   end
 
-  skip(__FILE__)
+  # The skip list only trims decoded backtraces, which wasm32 never decodes
+  # (see `Exception::CallStack#decode_backtrace`); leaving it out there keeps
+  # this file's absolute path out of every wasm module.
+  {% unless flag?(:wasm32) %}
+    skip(__FILE__)
+  {% end %}
 
   @@loaded = false
   @@lru_cache = Sync::Exclusive(Crystal::LRUCache(Void*, String?)).new(Crystal::LRUCache(Void*, String?).new(1024))

@@ -460,7 +460,7 @@ class Crystal::CodeGenVisitor
           # function only stops the program, and nothing its real body
           # calls is generated.
           @stubbed_fun_count += 1
-          codegen_unreachable_type(build_string_constant(target_def.owner.to_s), target_def.name, target_def.location)
+          codegen_unreachable_type(target_def.name, target_def.location) { build_string_constant(target_def.owner.to_s) }
         else
           accept target_def.body
         end

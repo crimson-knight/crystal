@@ -188,7 +188,13 @@ end
   end
 {% end %}
 
-{% unless flag?(:without_main) %}
+{% if flag?(:without_main) %}
+  {% if flag?(:wasi) %}
+    # A WASI module without `main` is a reactor: its host calls
+    # `_initialize`, then the exported funs.
+    require "./system/wasi/reactor"
+  {% end %}
+{% else %}
   {% if flag?(:interpreted) %}
     # the interpreter doesn't call Crystal.main(&)
     Crystal.init_runtime

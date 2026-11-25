@@ -269,6 +269,41 @@ describe "Code gen: dispatch pruning" do
     end
   end
 
+  it "traps with no message under -Dlean_unreachable when a left out type arrives" do
+    code = %(
+      require "prelude"
+      #{GREETERS}
+      list = [Plain.new, NeverMade.new] of Greeter
+      list.sum(&.greet)
+      )
+    with_forgotten_type("NeverMade") do
+      with_temp_executable("dispatch_prune_lean") do |executable|
+        compiler = create_spec_compiler
+        compiler.flags << "prune_dispatch"
+        compiler.flags << "lean_unreachable"
+        compiler.compile Crystal::Compiler::Source.new("lean.cr", code), executable
+        output = IO::Memory.new
+        status = Process.run(executable, output: output, error: output)
+        status.signal_exit?.should be_true
+        output.to_s.should_not contain("Unreachable type")
+      end
+    end
+  end
+
+  it "leaves the unreachable type reporter and its strings out under -Dlean_unreachable" do
+    code = %(
+      require "prelude"
+      #{GREETERS}
+      list = [Plain.new, NeverMade.new] of Greeter
+      list.sum(&.greet)
+      )
+    with_forgotten_type("NeverMade") do
+      names = generated_function_names(code, flags: "prune_dispatch lean_unreachable")
+      names.should_not contain("__crystal_raise_unreachable_type")
+      names.should contain("llvm.trap")
+    end
+  end
+
   it "stops at a branch check mode keeps, when a left out type takes it" do
     code = %(
       require "prelude"

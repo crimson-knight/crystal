@@ -34,6 +34,39 @@ private def missing_wasm32_run_tools : String?
   return "deno is not on PATH" unless Process.find_executable("deno")
 end
 
+# What linking a wasm32 module and running Binaryen's post-link step need on
+# this machine, or nil when all of it is present.
+private def missing_wasm32_link_tools : String?
+  return "CRYSTAL_SPEC_WASM32_LIBS is not set" unless WASM32_LIBRARY_PATH
+  return "wasm-ld is not on PATH" unless Process.find_executable("wasm-ld")
+  return "wasm-opt is not on PATH" unless Process.find_executable("wasm-opt")
+end
+
+# The flags of the lean wasm32 release recipe (WASM_GUIDE.md, "Lean release
+# builds"): no fibers, no collector, no debug information, `--release`.
+private LEAN_RELEASE_FLAGS = %w[--target wasm32-wasi -Dwithout_mt -Dwithout_iconv -Dwithout_openssl -Dwithout_zlib
+  -Dfrontend_no_fibers -Dgc_none --no-debug --release]
+
+# The gzipped size (`gzip -9`) the lean release build of
+# fixtures/wasm32-lean-release.cr must stay under. It measured 71,308 bytes
+# (209,438 bytes before gzip) on 2026-11-24 with LLVM 21.1.8 and Binaryen 126;
+# the default `--release` build of the same program, with fibers, Boehm GC
+# and debug information, is 182,550 bytes gzipped.
+private LEAN_RELEASE_GZIP_CEILING = 78_000
+
+# The runs of four or more printable ASCII characters in the file at *path*,
+# as `strings` lists them.
+private def printable_strings(path : String) : Array(String)
+  File.read(path).scrub.scan(/[ -~]{4,}/).map(&.[0])
+end
+
+# The size of the file at *path* compressed with `gzip -9`.
+private def gzip_size(path : String) : Int32
+  compressed = IO::Memory.new
+  Process.run("gzip", ["-9", "-c", path], output: compressed).should be_success
+  compressed.size
+end
+
 describe "`crystal build --target wasm32-wasi`" do
   it "accepts --mattr=+simd128 next to the target's own features and emits vector instructions" do
     with_tempfile("wasm32-simd") do |output_path|
@@ -123,6 +156,82 @@ describe "`crystal build --target wasm32-wasi`" do
         "top-level code ran",
       ])
       run.output.lines.first.should contain("INFO - logging works")
+    end
+  end
+  it "builds a lean release module with no home paths and under its size ceiling" do
+    if reason = missing_wasm32_link_tools
+      pending!("needs a wasm32 toolchain: #{reason}")
+    end
+    pending!("needs gzip on PATH") unless Process.find_executable("gzip")
+
+    with_tempfile("wasm32-lean-release.wasm") do |program_path|
+      build = Process.capture_result([crystal, "build", *LEAN_RELEASE_FLAGS, "-o", program_path,
+                                      fixture_path("wasm32-lean-release.cr")],
+        env: {"CRYSTAL_LIBRARY_PATH" => WASM32_LIBRARY_PATH})
+      build.should(be_success)
+
+      home = ENV["HOME"]
+      printable_strings(program_path).select(&.includes?(home)).should be_empty
+      gzip_size(program_path).should be < LEAN_RELEASE_GZIP_CEILING
+    end
+  end
+
+  it "keeps home paths out of an unoptimized build with --no-debug" do
+    if reason = missing_wasm32_link_tools
+      pending!("needs a wasm32 toolchain: #{reason}")
+    end
+
+    with_tempfile("wasm32-no-debug.wasm") do |program_path|
+      build = Process.capture_result(crystal, "build", "--target", "wasm32-wasi",
+        "-Dwithout_mt", "-Dwithout_iconv", "-Dwithout_openssl", "-Dwithout_zlib", "--no-debug",
+        "-o", program_path, fixture_path("wasm32-lean-release.cr"),
+        env: {"CRYSTAL_LIBRARY_PATH" => WASM32_LIBRARY_PATH})
+      build.should(be_success)
+
+      home = ENV["HOME"]
+      printable_strings(program_path).select(&.includes?(home)).should be_empty
+    end
+  end
+
+  it "builds a WASI reactor with -Dwithout_main whose exports run after _initialize" do
+    if reason = missing_wasm32_run_tools
+      pending!("needs a wasm32 toolchain and host: #{reason}")
+    end
+    pending!("wasm-opt is not on PATH") unless Process.find_executable("wasm-opt")
+
+    with_tempfile("wasm32-reactor.wasm") do |program_path|
+      build = Process.capture_result([crystal, "build", *LEAN_RELEASE_FLAGS, "-Dwithout_main", "-Dlean_unreachable",
+                                      "-o", program_path, fixture_path("wasm32-reactor.cr")],
+        env: {"CRYSTAL_LIBRARY_PATH" => WASM32_LIBRARY_PATH})
+      build.should(be_success)
+
+      run = Process.capture_result("deno", "run", "--allow-read",
+        fixture_path("wasi-host-no-args.mjs"), program_path, "reactor_add", "2", "3")
+      run.should(be_success)
+      run.output.lines.should eq(["exports _start: false", "reactor_add: 105"])
+    end
+  end
+
+  it "rejects a WASI reactor that keeps fibers" do
+    result = Process.capture_result(crystal, "build", "--no-codegen", "--target", "wasm32-wasi",
+      "-Dwithout_mt", "-Dwithout_iconv", "-Dwithout_openssl", "-Dwithout_zlib", "-Dwithout_main",
+      fixture_path("wasm32-reactor.cr"))
+    result.status.success?.should be_false
+    result.error.should contain("build it with -Dfrontend_no_fibers")
+  end
+
+  it "stops before linking when a wasm32 tool does not have its pinned SHA-256" do
+    if reason = missing_wasm32_link_tools
+      pending!("needs a wasm32 toolchain: #{reason}")
+    end
+
+    with_tempfile("wasm32-pinned.wasm") do |program_path|
+      build = Process.capture_result([crystal, "build", *LEAN_RELEASE_FLAGS, "-Dwithout_main", "-o", program_path,
+                                      fixture_path("wasm32-reactor.cr")],
+        env: {"CRYSTAL_LIBRARY_PATH" => WASM32_LIBRARY_PATH, "CRYSTAL_WASM_OPT_SHA256" => "0" * 64})
+      build.status.success?.should be_false
+      build.error.should contain("but CRYSTAL_WASM_OPT_SHA256 expects #{"0" * 64}")
+      File.exists?(program_path).should be_false
     end
   end
 end
