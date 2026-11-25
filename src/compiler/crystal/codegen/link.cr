@@ -107,23 +107,8 @@ module Crystal
 
       CrystalPath.expand_paths(paths)
 
-      # Add WASI SDK sysroot library path for wasm32 targets.
-      # Check both "wasm32-wasi" (WASI SDK <20) and "wasm32-wasip1" (WASI SDK 20+).
-      if wasi_sdk = ENV["WASI_SDK_PATH"]?
-        sysroot_base = File.join(wasi_sdk, "share", "wasi-sysroot", "lib")
-        sysroot_lib = File.join(sysroot_base, "wasm32-wasi")
-        sysroot_lib = File.join(sysroot_base, "wasm32-wasip1") unless Dir.exists?(sysroot_lib)
-        if Dir.exists?(sysroot_lib) && !paths.includes?(sysroot_lib)
-          paths << sysroot_lib
-        end
-      end
-
-      # Add CRYSTAL_WASM_LIBS path for additional WASM libraries
-      if wasm_libs = ENV["CRYSTAL_WASM_LIBS"]?
-        if Dir.exists?(wasm_libs) && !paths.includes?(wasm_libs)
-          paths << wasm_libs
-        end
-      end
+      # The WASI SDK sysroot and `CRYSTAL_WASM_LIBS` are added by `lib_flags_wasm`
+      # for wasm32 links only, so a native link never sees wasm32 archives.
 
       paths
     end
