@@ -104,38 +104,30 @@ module HTTP
         cl.port.should eq(80)
       end
 
-      {% if !flag?(:without_openssl) %}
-        it "detects HTTPS" do
-          cl = Client.new(URI.parse("https://example.com"))
-          cl.tls?.should be_truthy
-          cl.port.should eq(443)
-        end
+      it "detects HTTPS" do
+        cl = Client.new(URI.parse("https://example.com"))
+        cl.tls?.should be_truthy
+        cl.port.should eq(443)
+      end
 
-        it "keeps context" do
-          ctx = OpenSSL::SSL::Context::Client.new
-          cl = Client.new(URI.parse("https://example.com"), ctx)
-          cl.tls.should be(ctx)
-        end
+      it "keeps context" do
+        ctx = Client::TLSClientContext.new
+        cl = Client.new(URI.parse("https://example.com"), ctx)
+        cl.tls.should be(ctx)
+      end
 
-        it "doesn't take context for HTTP" do
-          ctx = OpenSSL::SSL::Context::Client.new
-          expect_raises(ArgumentError, "TLS context given") do
-            Client.new(URI.parse("http://example.com"), ctx)
-          end
+      it "doesn't take context for HTTP" do
+        ctx = Client::TLSClientContext.new
+        expect_raises(ArgumentError, "TLS context given") do
+          Client.new(URI.parse("http://example.com"), ctx)
         end
+      end
 
-        it "allows for specified ports" do
-          cl = Client.new(URI.parse("https://example.com:9999"))
-          cl.tls?.should be_truthy
-          cl.port.should eq(9999)
-        end
-      {% else %}
-        it "raises when trying to activate TLS" do
-          expect_raises(Exception, "TLS is disabled") do
-            Client.new "example.org", 443, tls: true
-          end
-        end
-      {% end %}
+      it "allows for specified ports" do
+        cl = Client.new(URI.parse("https://example.com:9999"))
+        cl.tls?.should be_truthy
+        cl.port.should eq(9999)
+      end
 
       it "raises error if not http schema" do
         expect_raises(ArgumentError, "Unsupported scheme: ssh") do

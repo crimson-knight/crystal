@@ -5,8 +5,9 @@ require "../server"
 #
 # `require "http/server"` alone links no OpenSSL. These methods, and the
 # `tls://` scheme of `HTTP::Server#bind`, are defined once the program
-# requires `openssl` (directly, or through `http/client`, `http/web_socket`
-# or `http`) or this file, in either order.
+# requires `openssl` (directly, or through `http`) or this file, in either
+# order. `http/client` and `http/web_socket` no longer bring it: their TLS is
+# Beryl's (OpenSSL's in a `-Duse_openssl` build).
 #
 # ```
 # require "http/server"

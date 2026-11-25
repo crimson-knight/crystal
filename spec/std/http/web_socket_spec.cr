@@ -5,6 +5,7 @@ require "http/server"
 require "random/secure"
 require "../../support/fibers"
 require "../../support/ssl"
+require "../../support/http_tls"
 require "../socket/spec_helper.cr"
 
 private def assert_text_packet(packet, size, final = false)
@@ -513,7 +514,7 @@ describe HTTP::WebSocket do
     it "negotiates over HTTPS correctly" do
       address_chan = Channel(Socket::IPAddress).new
 
-      server_context, client_context = ssl_context_pair
+      server_context, client_context = http_tls_context_pair
 
       f = spawn do
         http_ref = nil

@@ -66,7 +66,9 @@ describe "HTTP::Server TLS as an opt-in" do
     run_program("http_all", %(require "http"\n#{PROBE})).should eq "true true true"
   end
 
-  it "keeps HTTP::Client and the TLS listener for require \"http/web_socket\" with http/server", tags: %w[slow] do
+  # HTTP::Client speaks TLS through Beryl, so the WebSocket client no longer
+  # brings OpenSSL, and with it the OpenSSL listener, into the program.
+  it "keeps HTTP::Client, without OpenSSL, for require \"http/web_socket\" with http/server", tags: %w[slow] do
     output = run_program("web_socket_client", <<-CRYSTAL)
       require "http/server"
       require "http/web_socket"
@@ -75,6 +77,6 @@ describe "HTTP::Server TLS as an opt-in" do
       connect = ->(uri : String) { HTTP::WebSocket.new(uri) }
       print " ", connect.is_a?(Proc)
       CRYSTAL
-    output.should eq "true true true true"
+    output.should eq "false true false true"
   end
 end
