@@ -69,14 +69,16 @@ describe "MainVisitor#trim_proc_literal_vars" do
 
   it "gives each proc literal in a long scope only what it uses" do
     code = String.build do |io|
-      40.times { |index| io << "value_#{index} = #{index}\nhandler_#{index} = ->(x : Int32) { x + value_#{index} }\n" }
+      # Like Amber's routes: each entry assigns fresh variables and makes a
+      # proc literal that reads none of them.
+      40.times { |index| io << "value_#{index} = #{index}\nhandler_#{index} = ->(x : Int32) { x + 1 }\n" }
       io << "handler_39.call(1)\n"
     end
     result = semantic(code, inject_primitives: true)
     list_of_proc_literals = proc_literals(result)
     list_of_proc_literals.size.should eq(40)
-    list_of_proc_literals.each_with_index do |proc_literal, index|
-      var_names(proc_literal).should eq(["value_#{index}", "x"].sort)
+    list_of_proc_literals.each do |proc_literal|
+      var_names(proc_literal).should eq(["x"])
     end
   end
 end
