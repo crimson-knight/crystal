@@ -423,15 +423,12 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         class Post < Model
         end
 
-        class Holder
-          @model : Model = Post.new
-
-          def model : Model
-            @model
-          end
+        def flip : Bool
+          true
         end
 
-        Holder.new.model.touch(Post.new)
+        model = flip ? Model.new : Post.new
+        model.touch(Post.new)
         ), "Model+"
     end
 
@@ -460,15 +457,11 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         class PostScopes < Builder(Post)
         end
 
-        class Holder
-          @builder : Builder(Post) = PostScopes.new
-
-          def builder : Builder(Post)
-            @builder
-          end
+        def flip : Bool
+          true
         end
 
-        builder = Holder.new.builder
+        builder = flip ? Builder(Post).new : PostScopes.new
         {builder.where(Post.new), builder.first?}
         ), "Tuple(Builder(Post)+, Builder(Post)+)"
     end
@@ -495,15 +488,11 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         class Box(T)
         end
 
-        class Holder
-          @model_class : Model.class = Post
-
-          def model_class : Model.class
-            @model_class
-          end
+        def flip : Bool
+          true
         end
 
-        model_class = Holder.new.model_class
+        model_class = flip ? Model : Post
         {model_class.build(Post.new), model_class.build_box(Post.new)}
         ), "Tuple(Model+, Box(Model+))"
     end
