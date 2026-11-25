@@ -283,4 +283,117 @@ describe "Semantic: unsafe @[TypeOnce] and @[TypeBound]" do
         ), "@[TypeBound(M, Model)] on Builder(M) can't hold", inject_primitives: true
     end
   end
+  describe "a macro called by a plain method the typed-once method calls" do
+    saving = CALLBACKS.sub("    include Validating
+", "    include Validating
+
+    def save : Bool
+      valid?
+    end
+").sub("Post.new.valid?", "Post.new.save")
+
+    it "compiles typed for each receiver" do
+      assert_no_errors saving
+    end
+
+    it "is an error: the plain method is typed once with it and the macro expands for the declaring type" do
+      assert_type_once_error saving.sub("    def save : Bool", "    @[TypeOnce]
+    def save : Bool"),
+        "@[TypeOnce] method 'Model#save' can't call 'Validating#valid?'",
+        "so 'Validating#valid?' is typed once for them too, and it calls the macro 'before_validation'"
+    end
+
+    it "is an error through a chain of plain methods" do
+      chained = saving.sub("    def save : Bool
+      valid?
+    end
+", "    def save : Bool
+      check
+    end
+
+    def check : Bool
+      valid?
+    end
+")
+      assert_type_once_error chained.sub("    def save : Bool", "    @[TypeOnce]
+    def save : Bool"),
+        "@[TypeOnce] method 'Model#save' can't call 'Model#check'",
+        "'Validating#valid?', which calls the macro 'before_validation'"
+    end
+
+    it "accepts a plain method that calls no macro" do
+      assert_no_errors %(
+        module Naming
+          def label : String
+            "model"
+          end
+        end
+
+        class Model
+          include Naming
+
+          @[TypeOnce]
+          def title : String
+            label
+          end
+        end
+
+        class Post < Model
+        end
+
+        Post.new.title
+        )
+    end
+  end
+
+  describe "self as the declared return type" do
+    returning_self = %(
+      class Model
+        @[TypeOnce]
+        def touch : self
+          self
+        end
+      end
+
+      class Post < Model
+        def post_only : Int32
+          1
+        end
+      end
+
+      Post.new.touch
+      )
+
+    it "compiles typed for each receiver" do
+      assert_no_errors returning_self.sub("        @[TypeOnce]
+", "")
+    end
+
+    it "is an error for an instance method typed once for a class and its subclasses" do
+      assert_type_once_error returning_self,
+        "@[TypeOnce] method 'Model#touch' can't declare its return type as 'self'",
+        "so 'self' in the return type is Model+ for every caller"
+    end
+
+    it "is an error for a nilable self" do
+      assert_type_once_error returning_self.sub("def touch : self", "def touch : self?"),
+        "@[TypeOnce] method 'Model#touch' can't declare its return type"
+    end
+
+    it "accepts a class method, typed for each receiver" do
+      assert_no_errors %(
+        class Model
+          @[TypeOnce]
+          def self.build : self
+            new
+          end
+        end
+
+        class Post < Model
+        end
+
+        Post.build
+        )
+    end
+  end
 end
