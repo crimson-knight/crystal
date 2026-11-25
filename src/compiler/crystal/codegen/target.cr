@@ -256,6 +256,24 @@ class Crystal::Codegen::Target
     environment_parts.any? { |part| part == "eabi" || part == "eabihf" }
   end
 
+  # Joins two comma-separated LLVM feature lists (such as `--mattr` and the
+  # features a target always enables) into one list, so the last entry of one
+  # is never glued onto the first entry of the other. Empty entries are dropped.
+  def self.join_features(features : String, extra : String) : String
+    String.build do |io|
+      separator = false
+      {features, extra}.each do |list|
+        list.split(',') do |feature|
+          feature = feature.strip
+          next if feature.empty?
+          io << ',' if separator
+          io << feature
+          separator = true
+        end
+      end
+    end
+  end
+
   def to_target_machine(cpu = "", features = "", optimization_mode = Compiler::OptimizationMode::O0,
                         code_model = LLVM::CodeModel::Default) : LLVM::TargetMachine
     # Auto-detect host CPU when building for the same architecture and no
@@ -288,7 +306,7 @@ class Crystal::Codegen::Target
       # CPU is defined (it will most certainly enable a better FPU) or
       # features contains a floating-point definition.
       if cpu.empty? && !features.includes?("fp") && armhf?
-        features += "+vfp2"
+        features = Target.join_features(features, "+vfp2")
       end
     when "avr"
       LLVM.init_avr
@@ -299,7 +317,7 @@ class Crystal::Codegen::Target
       end
     when "wasm32"
       LLVM.init_webassembly
-      features += "+exception-handling,+bulk-memory,+mutable-globals,+sign-ext,+nontrapping-fptoint,+multivalue,+reference-types"
+      features = Target.join_features(features, "+exception-handling,+bulk-memory,+mutable-globals,+sign-ext,+nontrapping-fptoint,+multivalue,+reference-types")
       # Enable WASM exception handling in the LLVM backend.
       # -wasm-enable-eh: master switch for WASM exception handling
       # -wasm-use-legacy-eh=true: emit legacy try/catch format (not new try_table/exnref)

@@ -7,6 +7,12 @@ lib LibC
   fun __wasm_call_ctors
   fun __wasm_call_dtors
   fun __main_void : Int32
+
+  # Synthetic symbols wasm-ld defines around the shadow stack. With
+  # `--stack-first` the stack sits below the data segments and grows down
+  # from `__stack_high` toward `__stack_low`.
+  $__stack_low : UInt8
+  $__stack_high : UInt8
 end
 
 {% if flag?(:frontend_no_fibers) %}

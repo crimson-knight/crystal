@@ -25,4 +25,12 @@ describe Crystal::Codegen::Target do
     Target.new("x86_64-unknown-freebsd8.0").freebsd_version.should eq(8)
     Target.new("x86_64-unknown-freebsd11.0").freebsd_version.should eq(11)
   end
+
+  it "joins feature lists with a comma" do
+    Target.join_features("+simd128", "+exception-handling,+bulk-memory").should eq("+simd128,+exception-handling,+bulk-memory")
+    Target.join_features("", "+vfp2").should eq("+vfp2")
+    Target.join_features("+neon", "").should eq("+neon")
+    Target.join_features("+simd128,", "+bulk-memory").should eq("+simd128,+bulk-memory")
+    Target.join_features(" +a , ,+b", ",+c").should eq("+a,+b,+c")
+  end
 end

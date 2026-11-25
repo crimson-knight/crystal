@@ -141,7 +141,18 @@ class Crystal::CodeGenVisitor
     with_cloned_context do
       context.type = self_type
       codegen_fun_signature(mangled_name, target_def, self_type, false, false)
+      add_wasm_import_attributes(target_def) if @program.has_flag?("wasm32")
       LLVMTypedFunction.new(context.fun_type, context.fun)
+    end
+  end
+
+  # Tells wasm-ld which module and name the host provides the lib fun
+  # *target_def* under (`@[Link(wasm_import_module: "...")]`); without them
+  # the import falls back to the `env` module.
+  private def add_wasm_import_attributes(target_def : External) : Nil
+    if wasm_import_module = target_def.wasm_import_module
+      context.fun.add_target_dependent_attribute("wasm-import-name", target_def.real_name)
+      context.fun.add_target_dependent_attribute("wasm-import-module", wasm_import_module)
     end
   end
 
@@ -484,10 +495,7 @@ class Crystal::CodeGenVisitor
       end
 
       if @program.has_flag?("wasm32")
-        if target_def.is_a?(External) && (wasm_import_module = target_def.wasm_import_module)
-          context.fun.add_target_dependent_attribute("wasm-import-name", target_def.real_name)
-          context.fun.add_target_dependent_attribute("wasm-import-module", wasm_import_module)
-        end
+        add_wasm_import_attributes(target_def) if target_def.is_a?(External)
 
         if is_exported_fun
           context.fun.add_target_dependent_attribute("wasm-export-name", mangled_name)
