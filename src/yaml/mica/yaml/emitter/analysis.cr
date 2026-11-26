@@ -6,24 +6,33 @@ class YAML::Mica::YAML::Emitter
   # Returns true when *bytes* pass libyaml's `yaml_check_utf8`: every
   # sequence has a valid lead byte, its continuation bytes and no overlong
   # form. (Like libyaml, the check accepts encoded surrogates and 4-byte
-  # values above U+10FFFF.)
+  # values above U+10FFFF.) ASCII is skipped eight bytes at a time; only
+  # the multi-byte sequences are decoded.
   private def valid_utf8?(bytes : Bytes) : Bool
+    size = bytes.size
     index = 0
-    while index < bytes.size
-      octet = bytes[index]
-      width = char_width(bytes, index)
-      return false if width == 0
-      return false if index + width > bytes.size
-      value =
-        case width
-        when 1 then (octet & 0x7F).to_u32
-        when 2 then (octet & 0x1F).to_u32
-        when 3 then (octet & 0x0F).to_u32
-        else        (octet & 0x07).to_u32
-        end
+    while true
+      index = Core::ByteScan.skip_ascii(bytes, index, size)
+      return true if index == size
+      # skip_ascii returned index < size, and bytes[index] is not ASCII.
+      octet = bytes.unsafe_fetch(index)
+      if octet & 0xE0 == 0xC0
+        width = 2
+        value = (octet & 0x1F).to_u32
+      elsif octet & 0xF0 == 0xE0
+        width = 3
+        value = (octet & 0x0F).to_u32
+      elsif octet & 0xF8 == 0xF0
+        width = 4
+        value = (octet & 0x07).to_u32
+      else
+        return false
+      end
+      return false if index + width > size
       offset = 1
       while offset < width
-        continuation = bytes[index + offset]
+        # index + offset < index + width <= size.
+        continuation = bytes.unsafe_fetch(index + offset)
         return false unless continuation & 0xC0 == 0x80
         value = (value << 6) + (continuation & 0x3F)
         offset += 1
@@ -33,13 +42,16 @@ class YAML::Mica::YAML::Emitter
       return false if width == 4 && value < 0x10000
       index += width
     end
-    true
   end
 
   # Returns the byte at *index*, or NUL past the end: libyaml keeps a NUL
   # after every string and its character tests read up to two bytes ahead.
+  @[AlwaysInline]
   private def byte_at(bytes : Bytes, index : Int32) : UInt8
-    index < bytes.size ? bytes[index] : 0_u8
+    return 0_u8 if index >= bytes.size
+    return bytes[index] if index < 0
+    # 0 <= index < bytes.size.
+    bytes.unsafe_fetch(index)
   end
 
   # Returns the length in bytes of the character whose lead byte is at
@@ -59,18 +71,31 @@ class YAML::Mica::YAML::Emitter
     end
   end
 
-  # Returns true for a printable ASCII character that is neither a space
-  # nor an indicator `analyze_scalar` looks for after the first character
-  # (`,`, `?`, `[`, `]`, `{`, `}`, `:` and `#`).
-  @[AlwaysInline]
-  private def inert?(octet : UInt8) : Bool
-    return false unless 0x21_u8 <= octet <= 0x7E_u8
-    case octet
-    when 0x2C_u8, 0x3F_u8, 0x5B_u8, 0x5D_u8, 0x7B_u8, 0x7D_u8, 0x3A_u8, 0x23_u8
-      false
-    else
-      true
+  # Classes of an ASCII byte for `analyze_scalar`, one bit each.
+  #
+  # LF or a character from 0x20 through 0x7E (what `printable?` accepts).
+  private SCALAR_PRINTABLE = 0x01_u8
+  # A space, a tab, CR, LF or NUL (`blank_or_break_or_end?`).
+  private SCALAR_WHITESPACE = 0x02_u8
+  # A space, or a printable character that is not an indicator
+  # `analyze_scalar` looks for after the first character (`,`, `?`, `[`,
+  # `]`, `{`, `}`, `:` and `#`): a run of these changes only the "previous
+  # character" flags.
+  private SCALAR_RUN = 0x04_u8
+
+  # One entry per byte value; non-ASCII bytes have no class bits.
+  private SCALAR_CLASSES = begin
+    table = StaticArray(UInt8, 256).new(0_u8)
+    128.times do |octet|
+      classes = 0_u8
+      classes |= SCALAR_PRINTABLE if octet == 0x0A || 0x20 <= octet <= 0x7E
+      classes |= SCALAR_WHITESPACE if {0x00, 0x09, 0x0A, 0x0D, 0x20}.includes?(octet)
+      if 0x20 <= octet <= 0x7E && !",?[]{}:#".includes?(octet.chr)
+        classes |= SCALAR_RUN
+      end
+      table[octet] = classes
     end
+    table
   end
 
   # Returns true for an ASCII letter, a digit, `_` or `-`.
@@ -85,8 +110,7 @@ class YAML::Mica::YAML::Emitter
   # U+FEFF. Characters above U+FFFF count as not printable, as in libyaml.
   private def printable?(bytes : Bytes, index : Int32) : Bool
     octet = byte_at(bytes, index)
-    return true if octet == 0x0A_u8
-    return true if 0x20_u8 <= octet <= 0x7E_u8
+    return octet == 0x0A_u8 || 0x20_u8 <= octet <= 0x7E_u8 if octet < 0x80_u8
     return byte_at(bytes, index + 1) >= 0xA0_u8 if octet == 0xC2_u8
     return true if 0xC2_u8 < octet < 0xED_u8
     return byte_at(bytes, index + 1) < 0xA0_u8 if octet == 0xED_u8
@@ -105,20 +129,29 @@ class YAML::Mica::YAML::Emitter
       byte_at(bytes, index + 2) == 0xBF_u8
   end
 
+  @[AlwaysInline]
   private def space?(bytes : Bytes, index : Int32) : Bool
     byte_at(bytes, index) == 0x20_u8
   end
 
   # Returns true for a space or a tab.
+  @[AlwaysInline]
   private def blank?(bytes : Bytes, index : Int32) : Bool
     octet = byte_at(bytes, index)
     octet == 0x20_u8 || octet == 0x09_u8
   end
 
   # Returns true for CR, LF, NEL (U+0085), LS (U+2028) and PS (U+2029).
+  @[AlwaysInline]
   private def line_break?(bytes : Bytes, index : Int32) : Bool
     octet = byte_at(bytes, index)
-    return true if octet == 0x0D_u8 || octet == 0x0A_u8
+    return octet == 0x0D_u8 || octet == 0x0A_u8 if octet < 0x80_u8
+    multi_byte_line_break?(bytes, index, octet)
+  end
+
+  # Returns true for NEL, LS and PS, given the lead byte *octet* of the
+  # character at *index*, which is not ASCII.
+  private def multi_byte_line_break?(bytes : Bytes, index : Int32, octet : UInt8) : Bool
     return byte_at(bytes, index + 1) == 0x85_u8 if octet == 0xC2_u8
     return false unless octet == 0xE2_u8 && byte_at(bytes, index + 1) == 0x80_u8
     third = byte_at(bytes, index + 2)
@@ -127,8 +160,13 @@ class YAML::Mica::YAML::Emitter
 
   # Returns true for a space, a tab, a line break, NUL or the end of the
   # string.
+  @[AlwaysInline]
   private def blank_or_break_or_end?(bytes : Bytes, index : Int32) : Bool
-    blank?(bytes, index) || line_break?(bytes, index) || byte_at(bytes, index) == 0_u8
+    octet = byte_at(bytes, index)
+    # Bits 0x00, 0x09, 0x0A, 0x0D and 0x20 of the mask: NUL, tab, LF, CR
+    # and space.
+    return octet <= 0x20_u8 && (0x1_0000_2601_u64 >> octet) & 1 != 0 if octet < 0x80_u8
+    multi_byte_line_break?(bytes, index, octet)
   end
 
   # Checks the event at the head of the queue and records its anchor, tag
@@ -223,27 +261,72 @@ class YAML::Mica::YAML::Emitter
     end
 
     preceded_by_whitespace = true
+    # Only the first character reads this; a `:` later in the value looks
+    # at the character after it where it stands.
     followed_by_whitespace = blank_or_break_or_end?(value, char_width(value, 0))
 
+    class_table = SCALAR_CLASSES.to_unsafe
+    size = value.size
     index = 0
-    while index < value.size
-      octet = value[index]
-      if index > 0 && inert?(octet)
-        # A run of characters that change nothing but the "previous
-        # character" flags: skip to its end, then look ahead once for the
-        # character that follows, as the general path does at every step.
-        previous_space = false
-        previous_break = false
-        preceded_by_whitespace = false
-        index += 1
-        while index < value.size && inert?(value.unsafe_fetch(index))
+    while index < size
+      # index < size.
+      octet = value.unsafe_fetch(index)
+      if index > 0 && octet < 0x80
+        # An ASCII character after the first: one table lookup decides it.
+        # octet < 0x80 < 256, inside the table.
+        octet_classes = class_table[octet]
+        if octet_classes & SCALAR_RUN != 0
+          # A run of spaces and characters that are not indicators: inside
+          # it only the first character can follow a break and only the
+          # last can end the value, so skip to its end and set the flags
+          # from those two.
+          break_space = true if previous_break && octet == 0x20_u8
           index += 1
+          # index < size before each read; every byte is below 256.
+          while index < size && class_table[value.unsafe_fetch(index)] & SCALAR_RUN != 0
+            index += 1
+          end
+          # The run holds at least the byte at the old index, so index - 1
+          # is inside it.
+          previous_space = value.unsafe_fetch(index - 1) == 0x20_u8
+          previous_break = false
+          preceded_by_whitespace = previous_space
+          trailing_space = true if previous_space && index == size
+          next
         end
-        if index < value.size
-          followed_by_whitespace = blank_or_break_or_end?(value, index + char_width(value, index))
+
+        case octet
+        when ','.ord, '?'.ord, '['.ord, ']'.ord, '{'.ord, '}'.ord
+          flow_indicators = true
+        when ':'.ord
+          flow_indicators = true
+          block_indicators = true if blank_or_break_or_end?(value, index + 1)
+        when '#'.ord
+          if preceded_by_whitespace
+            flow_indicators = true
+            block_indicators = true
+          end
         end
+
+        special_characters = true if octet_classes & SCALAR_PRINTABLE == 0
+
+        if octet == 0x0A_u8 || octet == 0x0D_u8
+          line_breaks = true
+          trailing_break = true if index + 1 == size
+          space_break = true if previous_space
+          previous_space = false
+          previous_break = true
+        else
+          previous_space = false
+          previous_break = false
+        end
+
+        preceded_by_whitespace = octet_classes & SCALAR_WHITESPACE != 0
+        index += 1
         next
       end
+
+      # The first character, and every character that is not ASCII.
       if index == 0
         case octet
         when '#'.ord, ','.ord, '['.ord, ']'.ord, '{'.ord, '}'.ord, '&'.ord, '*'.ord, '!'.ord, '|'.ord, '>'.ord, '\''.ord, '"'.ord, '%'.ord, '@'.ord, '`'.ord
@@ -258,19 +341,6 @@ class YAML::Mica::YAML::Emitter
             block_indicators = true
           end
         end
-      else
-        case octet
-        when ','.ord, '?'.ord, '['.ord, ']'.ord, '{'.ord, '}'.ord
-          flow_indicators = true
-        when ':'.ord
-          flow_indicators = true
-          block_indicators = true if followed_by_whitespace
-        when '#'.ord
-          if preceded_by_whitespace
-            flow_indicators = true
-            block_indicators = true
-          end
-        end
       end
 
       special_characters = true unless printable?(value, index)
@@ -281,13 +351,13 @@ class YAML::Mica::YAML::Emitter
 
       if octet == 0x20_u8
         leading_space = true if index == 0
-        trailing_space = true if index + width == value.size
+        trailing_space = true if index + width == size
         break_space = true if previous_break
         previous_space = true
         previous_break = false
       elsif is_break
         leading_break = true if index == 0
-        trailing_break = true if index + width == value.size
+        trailing_break = true if index + width == size
         space_break = true if previous_space
         previous_space = false
         previous_break = true
@@ -298,9 +368,6 @@ class YAML::Mica::YAML::Emitter
 
       preceded_by_whitespace = blank_or_break_or_end?(value, index)
       index += width
-      if index < value.size
-        followed_by_whitespace = blank_or_break_or_end?(value, index + char_width(value, index))
-      end
     end
 
     @scalar_multiline = line_breaks

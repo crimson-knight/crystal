@@ -254,11 +254,18 @@ class YAML::Mica::YAML::Emitter
   private def emit(event : Event) : Nil
     @events.push(event)
     until need_more_events?
-      head = @events[0]
-      analyze_event(head)
-      run_state(head)
+      analyze_event(@events[0])
+      run_state(@events[0].kind)
       @events.shift
     end
+  end
+
+  # Returns the event being written: the head of the queue. The state
+  # methods take only its kind and read the few other fields they need
+  # from here, so the event is not copied through every call.
+  @[AlwaysInline]
+  private def head_event : Event
+    @events[0]
   end
 
   # Returns true while the event at the head of the queue has to wait: a
@@ -304,32 +311,32 @@ class YAML::Mica::YAML::Emitter
     end
   end
 
-  private def run_state(event : Event) : Nil
+  private def run_state(kind : EventKind) : Nil
     case @state
-    in .stream_start?               then emit_stream_start(event)
-    in .first_document_start?       then emit_document_start(event, true)
-    in .document_start?             then emit_document_start(event, false)
-    in .document_content?           then emit_document_content(event)
-    in .document_end?               then emit_document_end(event)
-    in .flow_sequence_first_item?   then emit_flow_sequence_item(event, true)
-    in .flow_sequence_item?         then emit_flow_sequence_item(event, false)
-    in .flow_mapping_first_key?     then emit_flow_mapping_key(event, true)
-    in .flow_mapping_key?           then emit_flow_mapping_key(event, false)
-    in .flow_mapping_simple_value?  then emit_flow_mapping_value(event, true)
-    in .flow_mapping_value?         then emit_flow_mapping_value(event, false)
-    in .block_sequence_first_item?  then emit_block_sequence_item(event, true)
-    in .block_sequence_item?        then emit_block_sequence_item(event, false)
-    in .block_mapping_first_key?    then emit_block_mapping_key(event, true)
-    in .block_mapping_key?          then emit_block_mapping_key(event, false)
-    in .block_mapping_simple_value? then emit_block_mapping_value(event, true)
-    in .block_mapping_value?        then emit_block_mapping_value(event, false)
+    in .stream_start?               then emit_stream_start(kind)
+    in .first_document_start?       then emit_document_start(kind, true)
+    in .document_start?             then emit_document_start(kind, false)
+    in .document_content?           then emit_document_content(kind)
+    in .document_end?               then emit_document_end(kind)
+    in .flow_sequence_first_item?   then emit_flow_sequence_item(kind, true)
+    in .flow_sequence_item?         then emit_flow_sequence_item(kind, false)
+    in .flow_mapping_first_key?     then emit_flow_mapping_key(kind, true)
+    in .flow_mapping_key?           then emit_flow_mapping_key(kind, false)
+    in .flow_mapping_simple_value?  then emit_flow_mapping_value(kind, true)
+    in .flow_mapping_value?         then emit_flow_mapping_value(kind, false)
+    in .block_sequence_first_item?  then emit_block_sequence_item(kind, true)
+    in .block_sequence_item?        then emit_block_sequence_item(kind, false)
+    in .block_mapping_first_key?    then emit_block_mapping_key(kind, true)
+    in .block_mapping_key?          then emit_block_mapping_key(kind, false)
+    in .block_mapping_simple_value? then emit_block_mapping_value(kind, true)
+    in .block_mapping_value?        then emit_block_mapping_value(kind, false)
     in .end?                        then fail("expected nothing after STREAM-END")
     end
   end
 
-  private def emit_stream_start(event : Event) : Nil
+  private def emit_stream_start(kind : EventKind) : Nil
     @open_ended = 0
-    fail("expected STREAM-START") unless event.kind.stream_start?
+    fail("expected STREAM-START") unless kind.stream_start?
     @indent = -1
     @column = 0
     @whitespace = true
@@ -337,10 +344,10 @@ class YAML::Mica::YAML::Emitter
     @state = State::FirstDocumentStart
   end
 
-  private def emit_document_start(event : Event, first : Bool) : Nil
-    if event.kind.document_start?
+  private def emit_document_start(kind : EventKind, first : Bool) : Nil
+    if kind.document_start?
       @has_tag_directives = true
-      implicit = event.implicit && first
+      implicit = head_event.implicit && first
       @open_ended = 0
       implicit = false if empty_document?
       unless implicit
@@ -349,7 +356,7 @@ class YAML::Mica::YAML::Emitter
       end
       @state = State::DocumentContent
       @open_ended = 0
-    elsif event.kind.stream_end?
+    elsif kind.stream_end?
       # A block scalar that keeps its trailing line breaks ended the last
       # document.
       if @open_ended == 2
@@ -364,15 +371,15 @@ class YAML::Mica::YAML::Emitter
     end
   end
 
-  private def emit_document_content(event : Event) : Nil
+  private def emit_document_content(kind : EventKind) : Nil
     @states.push(State::DocumentEnd)
-    emit_node(event, false, false)
+    emit_node(kind, false, false)
   end
 
-  private def emit_document_end(event : Event) : Nil
-    fail("expected DOCUMENT-END") unless event.kind.document_end?
+  private def emit_document_end(kind : EventKind) : Nil
+    fail("expected DOCUMENT-END") unless kind.document_end?
     write_indent
-    if !event.implicit
+    if !head_event.implicit
       write_indicator(DOCUMENT_END_INDICATOR, true, false, false)
       @open_ended = 0
       write_indent
@@ -384,14 +391,14 @@ class YAML::Mica::YAML::Emitter
     @has_tag_directives = false
   end
 
-  private def emit_flow_sequence_item(event : Event, first : Bool) : Nil
+  private def emit_flow_sequence_item(kind : EventKind, first : Bool) : Nil
     if first
       write_indicator(FLOW_SEQUENCE_START_INDICATOR, true, true, false)
       increase_indent(true, false)
       @flow_level += 1
     end
 
-    if event.kind.sequence_end?
+    if kind.sequence_end?
       @flow_level -= 1
       @indent = @indents.pop
       write_indicator(FLOW_SEQUENCE_END_INDICATOR, false, false, false)
@@ -402,17 +409,17 @@ class YAML::Mica::YAML::Emitter
     write_indicator(FLOW_ENTRY_INDICATOR, false, false, false) unless first
     write_indent if @column > BEST_WIDTH
     @states.push(State::FlowSequenceItem)
-    emit_node(event, false, false)
+    emit_node(kind, false, false)
   end
 
-  private def emit_flow_mapping_key(event : Event, first : Bool) : Nil
+  private def emit_flow_mapping_key(kind : EventKind, first : Bool) : Nil
     if first
       write_indicator(FLOW_MAPPING_START_INDICATOR, true, true, false)
       increase_indent(true, false)
       @flow_level += 1
     end
 
-    if event.kind.mapping_end?
+    if kind.mapping_end?
       @flow_level -= 1
       @indent = @indents.pop
       write_indicator(FLOW_MAPPING_END_INDICATOR, false, false, false)
@@ -425,15 +432,15 @@ class YAML::Mica::YAML::Emitter
 
     if simple_key?
       @states.push(State::FlowMappingSimpleValue)
-      emit_node(event, true, true)
+      emit_node(kind, true, true)
     else
       write_indicator(KEY_INDICATOR, true, false, false)
       @states.push(State::FlowMappingValue)
-      emit_node(event, true, false)
+      emit_node(kind, true, false)
     end
   end
 
-  private def emit_flow_mapping_value(event : Event, simple : Bool) : Nil
+  private def emit_flow_mapping_value(kind : EventKind, simple : Bool) : Nil
     if simple
       write_indicator(VALUE_INDICATOR, false, false, false)
     else
@@ -441,13 +448,13 @@ class YAML::Mica::YAML::Emitter
       write_indicator(VALUE_INDICATOR, true, false, false)
     end
     @states.push(State::FlowMappingKey)
-    emit_node(event, true, false)
+    emit_node(kind, true, false)
   end
 
-  private def emit_block_sequence_item(event : Event, first : Bool) : Nil
+  private def emit_block_sequence_item(kind : EventKind, first : Bool) : Nil
     increase_indent(false, @mapping_context && !@indention) if first
 
-    if event.kind.sequence_end?
+    if kind.sequence_end?
       @indent = @indents.pop
       @state = @states.pop
       return
@@ -456,13 +463,13 @@ class YAML::Mica::YAML::Emitter
     write_indent
     write_indicator(BLOCK_ENTRY_INDICATOR, true, false, true)
     @states.push(State::BlockSequenceItem)
-    emit_node(event, false, false)
+    emit_node(kind, false, false)
   end
 
-  private def emit_block_mapping_key(event : Event, first : Bool) : Nil
+  private def emit_block_mapping_key(kind : EventKind, first : Bool) : Nil
     increase_indent(false, false) if first
 
-    if event.kind.mapping_end?
+    if kind.mapping_end?
       @indent = @indents.pop
       @state = @states.pop
       return
@@ -472,15 +479,15 @@ class YAML::Mica::YAML::Emitter
 
     if simple_key?
       @states.push(State::BlockMappingSimpleValue)
-      emit_node(event, true, true)
+      emit_node(kind, true, true)
     else
       write_indicator(KEY_INDICATOR, true, false, true)
       @states.push(State::BlockMappingValue)
-      emit_node(event, true, false)
+      emit_node(kind, true, false)
     end
   end
 
-  private def emit_block_mapping_value(event : Event, simple : Bool) : Nil
+  private def emit_block_mapping_value(kind : EventKind, simple : Bool) : Nil
     if simple
       write_indicator(VALUE_INDICATOR, false, false, false)
     else
@@ -488,22 +495,21 @@ class YAML::Mica::YAML::Emitter
       write_indicator(VALUE_INDICATOR, true, false, true)
     end
     @states.push(State::BlockMappingKey)
-    emit_node(event, true, false)
+    emit_node(kind, true, false)
   end
 
-  private def emit_node(event : Event, mapping : Bool, simple_key : Bool) : Nil
+  private def emit_node(kind : EventKind, mapping : Bool, simple_key : Bool) : Nil
     @mapping_context = mapping
     @simple_key_context = simple_key
 
-    kind = event.kind
     if kind.alias?
       emit_alias
     elsif kind.scalar?
-      emit_scalar(event)
+      emit_scalar
     elsif kind.sequence_start?
-      emit_sequence_start(event)
+      emit_sequence_start
     elsif kind.mapping_start?
-      emit_mapping_start(event)
+      emit_mapping_start
     else
       fail("expected SCALAR, SEQUENCE-START, MAPPING-START, or ALIAS")
     end
@@ -515,8 +521,8 @@ class YAML::Mica::YAML::Emitter
     @state = @states.pop
   end
 
-  private def emit_scalar(event : Event) : Nil
-    select_scalar_style(event)
+  private def emit_scalar : Nil
+    select_scalar_style
     process_anchor
     process_tag
     increase_indent(true, false)
@@ -525,22 +531,22 @@ class YAML::Mica::YAML::Emitter
     @state = @states.pop
   end
 
-  private def emit_sequence_start(event : Event) : Nil
+  private def emit_sequence_start : Nil
     process_anchor
     process_tag
     @state =
-      if @flow_level > 0 || event.flow || empty_sequence?
+      if @flow_level > 0 || head_event.flow || empty_sequence?
         State::FlowSequenceFirstItem
       else
         State::BlockSequenceFirstItem
       end
   end
 
-  private def emit_mapping_start(event : Event) : Nil
+  private def emit_mapping_start : Nil
     process_anchor
     process_tag
     @state =
-      if @flow_level > 0 || event.flow || empty_mapping?
+      if @flow_level > 0 || head_event.flow || empty_mapping?
         State::FlowMappingFirstKey
       else
         State::BlockMappingFirstKey
@@ -595,7 +601,8 @@ class YAML::Mica::YAML::Emitter
     (handle ? handle.size : 0) + (suffix ? suffix.size : 0)
   end
 
-  private def select_scalar_style(event : Event) : Nil
+  private def select_scalar_style : Nil
+    event = head_event
     style = event.scalar_style
     no_tag = @tag_handle.nil? && @tag_suffix.nil?
 
