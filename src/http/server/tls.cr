@@ -7,7 +7,7 @@ require "../server"
 # `tls://` scheme of `HTTP::Server#bind`, are defined once the program
 # requires `openssl` (directly, or through `http`) or this file, in either
 # order. `http/client` and `http/web_socket` no longer bring it: their TLS is
-# Beryl's (OpenSSL's in a `-Duse_openssl` build).
+# Beryl's.
 #
 # ```
 # require "http/server"

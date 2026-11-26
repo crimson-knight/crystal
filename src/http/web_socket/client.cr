@@ -2,9 +2,8 @@ require "../client"
 require "./core"
 
 # Opening a WebSocket connection to a server, over TLS when the URI asks for
-# it. This needs `HTTP::Client` and its TLS (Beryl, or OpenSSL in a
-# `-Duse_openssl` build); `require "http/web_socket"` brings it in, the server
-# side (`HTTP::WebSocketHandler`) does not.
+# it. This needs `HTTP::Client` and its TLS (Beryl); `require "http/web_socket"`
+# brings it in, the server side (`HTTP::WebSocketHandler`) does not.
 class HTTP::WebSocket
   # Opens a new websocket using the information provided by the URI. This will also handle the handshake
   # and will raise an exception if the handshake did not complete successfully. This method will also raise
