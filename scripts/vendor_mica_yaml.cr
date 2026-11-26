@@ -22,8 +22,8 @@
 require "digest/sha256"
 require "file_utils"
 
-PINNED_COMMIT = "e915c12767a07c023989e715b1336e2d7b7f8760"
-PINNED_TREE   = "87ee07c14eade1d7b4ef8fd13541686af30e9884"
+PINNED_COMMIT = "10b15d29474a1162fd0ff76d2e565baa6b8f07ff"
+PINNED_TREE   = "8768615aed3507f0ac5174d958446746a4f26f12"
 
 # The parts of `Mica::Core` the YAML parser and emitter use, in require order.
 CORE_FILES = %w(position error excerpt work_budget utf8 byte_scan)

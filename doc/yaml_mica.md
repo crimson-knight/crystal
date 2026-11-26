@@ -97,9 +97,11 @@ same bytes.
   not valid UTF-8 at the call that passes it. libyaml fails the same way
   for scalars, but leaves an emitter that reports the earlier event again
   on later calls.
-- Speed: parsing is 1.6x to 1.8x as fast as on libyaml; `to_yaml` runs
-  from 0.86x (a 2.1 MB manifest) to 1.75x (a short lockfile) of libyaml's
-  speed (Mica's `docs/benchmarks.md`, "YAML").
+- Speed: over Mica's YAML benchmark corpus, `YAML::PullParser` is 1.89x,
+  `YAML.parse_all` 1.61x and `to_yaml` 1.62x as fast as on libyaml on macOS
+  arm64; on Linux (aarch64 and x86-64) they are 1.67x to 1.68x, 1.48x to
+  1.51x and 1.29x. `to_yaml` is faster than libyaml on every file of the
+  corpus (Mica's `docs/benchmarks.md`, "YAML").
 
 ## Updating the vendored copy
 

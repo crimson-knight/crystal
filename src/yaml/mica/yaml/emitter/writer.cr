@@ -30,51 +30,79 @@ class YAML::Mica::YAML::Emitter
   end
 
   # Makes room for one character, as libyaml's FLUSH does: the buffer is
-  # written out once fewer than six bytes are free.
+  # written out once fewer than six bytes are free. Afterwards at least six
+  # bytes are free (`@buffered + 5 < @buffer.size`), which lets the writers
+  # below store up to four bytes without a bound check.
+  @[AlwaysInline]
   private def reserve : Nil
-    return if @buffered + 5 < @buffer.size
-    if @buffer.size < BUFFER_SIZE
-      grown = Bytes.new(Math.min(@buffer.size * 2, BUFFER_SIZE))
-      @buffer[0, @buffered].copy_to(grown)
-      @buffer = grown
-      reserve
-    else
-      flush_buffer
+    make_room unless @buffered + 5 < @buffer.size
+  end
+
+  # The slow half of `reserve`: doubles the buffer while it is smaller than
+  # `BUFFER_SIZE`, and writes it out once it is full size.
+  @[NoInline]
+  private def make_room : Nil
+    while @buffered + 5 >= @buffer.size
+      if @buffer.size < BUFFER_SIZE
+        grown = Bytes.new(Math.min(@buffer.size * 2, BUFFER_SIZE))
+        @buffer[0, @buffered].copy_to(grown)
+        @buffer = grown
+      else
+        flush_buffer
+      end
     end
   end
 
+  # Returns how many one-byte characters `reserve` lets through before it
+  # next grows or writes out the buffer.
+  @[AlwaysInline]
+  private def room : Int32
+    @buffer.size - 5 - @buffered
+  end
+
   # Writes one byte and advances the column.
+  @[AlwaysInline]
   private def put(byte : UInt8) : Nil
     reserve
-    @buffer[@buffered] = byte
+    # reserve left six bytes free, so @buffered is inside the buffer.
+    @buffer.to_unsafe[@buffered] = byte
     @buffered += 1
     @column += 1
   end
 
   # Writes a line break and returns to column 0.
+  @[AlwaysInline]
   private def put_break : Nil
     reserve
-    @buffer[@buffered] = 0x0A_u8
+    # reserve left six bytes free, so @buffered is inside the buffer.
+    @buffer.to_unsafe[@buffered] = 0x0A_u8
     @buffered += 1
     @column = 0
   end
 
   # Copies the bytes of the character at *index* without touching the
   # column and returns the index after it.
+  @[AlwaysInline]
   private def copy_character(bytes : Bytes, index : Int32) : Int32
     reserve
-    width = char_width(bytes, index)
-    offset = 0
-    while offset < width
-      @buffer[@buffered + offset] = bytes[index + offset]
-      offset += 1
+    octet = bytes[index]
+    if octet < 0x80_u8
+      # reserve left six bytes free, so @buffered is inside the buffer.
+      @buffer.to_unsafe[@buffered] = octet
+      @buffered += 1
+      return index + 1
     end
+    width = char_width(bytes, index)
+    # The checked subslice proves the source bytes exist, and reserve left
+    # six bytes free for the at most four bytes of one character.
+    bytes[index, width].copy_to(@buffer.to_unsafe + @buffered, width)
     @buffered += width
     index + width
   end
 
   # Writes the character at *index* (one column wide) and returns the
   # index after it.
+  @[AlwaysInline]
   private def write_character(bytes : Bytes, index : Int32) : Int32
     index = copy_character(bytes, index)
     @column += 1
@@ -94,21 +122,14 @@ class YAML::Mica::YAML::Emitter
     end
   end
 
-  # Copies the run of printable ASCII characters other than a space and
-  # *stop* that starts at *index* (possibly empty), one column each, and
-  # returns the index after it. Equal to `write_character` once per
-  # character.
-  private def write_plain_run(bytes : Bytes, index : Int32, stop : UInt8 = 0_u8) : Int32
-    finish = index
-    while finish < bytes.size
-      octet = bytes.unsafe_fetch(finish)
-      break unless 0x21_u8 <= octet <= 0x7E_u8 && octet != stop
-      finish += 1
-    end
+  # Copies `bytes[index...finish]`, which holds only one-byte characters,
+  # one column each, and returns *finish*. The buffer grows or is written
+  # out at exactly the points `write_character` once per byte would reach.
+  private def write_ascii_run(bytes : Bytes, index : Int32, finish : Int32) : Int32
     while index < finish
       reserve
-      length = Math.min(@buffer.size - 5 - @buffered, finish - index)
-      bytes[index, length].copy_to(@buffer[@buffered, length])
+      length = Math.min(room, finish - index)
+      Core::ByteScan.copy_into(@buffer, @buffered, bytes[index, length])
       @buffered += length
       @column += length
       index += length
@@ -116,10 +137,70 @@ class YAML::Mica::YAML::Emitter
     finish
   end
 
+  # Writes *count* spaces, growing or writing out the buffer where `put`
+  # once per space would.
+  private def write_spaces(count : Int32) : Nil
+    while count > 0
+      reserve
+      length = Math.min(room, count)
+      @buffer[@buffered, length].fill(0x20_u8)
+      @buffered += length
+      @column += length
+      count -= length
+    end
+  end
+
+  # Returns the end of the run that starts at *index* and holds printable
+  # ASCII characters other than *stop* and *other_stop*. With *fold* set,
+  # a space ends the run once it would land past `BEST_WIDTH`, where the
+  # scalar writers may break the line; the run is measured from the
+  # current column.
+  private def text_run_end(bytes : Bytes, index : Int32, stop : UInt8, other_stop : UInt8,
+                           fold : Bool) : Int32
+    # The byte at `finish` lands in column `@column + finish - index`.
+    last_space = fold ? index + BEST_WIDTH - @column : bytes.size
+    finish = index
+    while finish < bytes.size
+      # finish < bytes.size, checked just above.
+      octet = bytes.unsafe_fetch(finish)
+      if octet == 0x20_u8
+        break if finish > last_space
+      else
+        break unless 0x21_u8 <= octet <= 0x7E_u8 && octet != stop && octet != other_stop
+      end
+      finish += 1
+    end
+    finish
+  end
+
+  # Returns the end of the run of ASCII characters other than CR and LF
+  # that starts at *index*: the rest of a block scalar's line up to its
+  # first non-ASCII character. With *fold* set, a space ends the run once
+  # it would land past `BEST_WIDTH`, as in `text_run_end`.
+  private def line_run_end(bytes : Bytes, index : Int32, fold : Bool) : Int32
+    last_space = fold ? index + BEST_WIDTH - @column : bytes.size
+    finish = index
+    while finish < bytes.size
+      # finish < bytes.size, checked just above.
+      octet = bytes.unsafe_fetch(finish)
+      break if octet >= 0x80_u8 || octet == 0x0A_u8 || octet == 0x0D_u8
+      break if octet == 0x20_u8 && finish > last_space
+      finish += 1
+    end
+    finish
+  end
+
+  # Writes *bytes* (an indicator, an anchor or a tag handle) one column per
+  # character.
   private def write_all(bytes : Bytes) : Nil
+    if bytes.size == 1 && bytes[0] < 0x80_u8
+      put(bytes[0])
+      return
+    end
     index = 0
     while index < bytes.size
-      index = write_character(bytes, index)
+      index = write_ascii_run(bytes, index, Core::ByteScan.skip_ascii(bytes, index, bytes.size))
+      index = write_character(bytes, index) if index < bytes.size
     end
   end
 
@@ -130,9 +211,7 @@ class YAML::Mica::YAML::Emitter
     if !@indention || @column > indent || (@column == indent && !@whitespace)
       put_break
     end
-    while @column < indent
-      put(0x20_u8)
-    end
+    write_spaces(indent - @column) if @column < indent
     @whitespace = true
     @indention = true
   end
@@ -217,9 +296,10 @@ class YAML::Mica::YAML::Emitter
       else
         write_indent if breaks
         index = write_character(value, index)
-        index = write_plain_run(value, index)
+        finish = text_run_end(value, index, 0_u8, 0_u8, allow_breaks)
+        spaces = finish > index && value[finish - 1] == 0x20_u8
+        index = write_ascii_run(value, index, finish)
         @indention = false
-        spaces = false
         breaks = false
       end
     end
@@ -254,9 +334,10 @@ class YAML::Mica::YAML::Emitter
         write_indent if breaks
         put(0x27_u8) if value[index] == 0x27_u8
         index = write_character(value, index)
-        index = write_plain_run(value, index, 0x27_u8)
+        finish = text_run_end(value, index, 0x27_u8, 0_u8, allow_breaks)
+        spaces = finish > index && value[finish - 1] == 0x20_u8
+        index = write_ascii_run(value, index, finish)
         @indention = false
-        spaces = false
         breaks = false
       end
     end
@@ -337,6 +418,13 @@ class YAML::Mica::YAML::Emitter
 
     index = 0
     while index < value.size
+      # A run that needs neither an escape nor a line break decision.
+      finish = text_run_end(value, index, 0x22_u8, 0x5C_u8, allow_breaks)
+      if finish > index
+        spaces = value[finish - 1] == 0x20_u8
+        index = write_ascii_run(value, index, finish)
+        next
+      end
       octet = value[index]
       if !printable?(value, index) || byte_order_mark?(value, index) || line_break?(value, index) ||
          octet == 0x22_u8 || octet == 0x5C_u8
@@ -422,6 +510,7 @@ class YAML::Mica::YAML::Emitter
       else
         write_indent if breaks
         index = write_character(value, index)
+        index = write_ascii_run(value, index, line_run_end(value, index, false))
         @indention = false
         breaks = false
       end
@@ -462,6 +551,7 @@ class YAML::Mica::YAML::Emitter
         else
           index = write_character(value, index)
         end
+        index = write_ascii_run(value, index, line_run_end(value, index, true))
         @indention = false
         breaks = false
       end

@@ -2,8 +2,8 @@
 
 # :nodoc:
 module YAML::Mica
-  VERSION = "0.2.0"
-  COMMIT  = "e915c12767a07c023989e715b1336e2d7b7f8760"
+  VERSION = "0.3.0"
+  COMMIT  = "10b15d29474a1162fd0ff76d2e565baa6b8f07ff"
 end
 
 # :nodoc:
