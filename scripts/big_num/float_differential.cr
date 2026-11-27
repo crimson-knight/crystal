@@ -189,9 +189,13 @@ module FloatDifferential
     end
   end
 
-  # Runs operation *name*; returns nil when both sides agree, else a
-  # description of the difference.
-  def self.run(name : String, source : G2Harness::OperandSource) : String?
+  # An operation whose operands GMP cannot take (a zero divisor, an
+  # exponent too large to hold as an integer, a NaN): not compared.
+  SKIPPED = :skipped
+
+  # Runs operation *name*; returns nil when both sides agree, `SKIPPED`, or
+  # a description of the difference.
+  def self.run(name : String, source : G2Harness::OperandSource) : String | Symbol | Nil
     bits = precision_bits(source)
     precision = Engine.limb_precision(bits)
     result = gmp_init(precision)
@@ -222,7 +226,7 @@ module FloatDifferential
         left = random_pair(source)
         right = source.chance(0.3) ? near(left, source) : random_pair(source)
       end
-      return nil if name == "div" && right.engine.zero?
+      return SKIPPED if name == "div" && right.engine.zero?
       up = left.gmp
       vp = right.gmp
       case name
@@ -245,11 +249,11 @@ module FloatDifferential
         value = 1_u64 if value == 0
         LibGMP.mpf_div_ui(rp, pointerof(up), value); ours = pair.engine.div_ui(value, precision)
       when "ui_div"
-        return nil if pair.engine.zero?
+        return SKIPPED if pair.engine.zero?
         LibGMP.mpf_ui_div(rp, value, pointerof(up)); ours = Engine.ui_div(value, pair.engine, precision)
       else
         value = source.chance(0.8) ? source.rand(0..300).to_u64 : source.rand(0..2_000_000).to_u64
-        return nil if value > 300 && precision > 20
+        return SKIPPED if value > 300 && precision > 20
         LibGMP.mpf_pow_ui(rp, pointerof(up), value); ours = pair.engine.pow_ui(value, precision)
       end
       check(result, ours, [describe(up), value.to_s])
@@ -284,7 +288,7 @@ module FloatDifferential
     when "set_q"
       numerator = source.operand
       denominator = source.chance(0.3) ? source.divisor_for(numerator) : source.operand
-      return nil if denominator.zero?
+      return SKIPPED if denominator.zero?
       rational = BigRational.new(BigInt.new(gmp_integer(numerator)), BigInt.new(gmp_integer(denominator)))
       LibGMP.mpf_set_q(rp, rational.to_unsafe)
       mpq = rational.to_unsafe.value
@@ -330,13 +334,13 @@ module FloatDifferential
         theirs = LibGMP.mpf_integer_p(pointerof(up)) != 0
         ours = pair.engine.integer?
       when "to_integer"
-        return nil if pair.engine.exponent > 4096
+        return SKIPPED if pair.engine.exponent > 4096
         LibGMP.init(out truncated)
         LibGMPFloatHarness.mpz_set_f(pointerof(truncated), pointerof(up))
         theirs = integer_from_mpz(truncated).to_s(16)
         ours = pair.engine.to_integer.to_s(16)
       else
-        return nil if pair.engine.exponent.abs > 4096
+        return SKIPPED if pair.engine.exponent.abs > 4096
         LibGMP.mpq_init(out exact)
         LibGMP.mpq_set_f(pointerof(exact), pointerof(up))
         theirs = "#{integer_from_mpz(exact._mp_num).to_s(16)}/#{integer_from_mpz(exact._mp_den).to_s(16)}"
@@ -360,7 +364,7 @@ module FloatDifferential
         operand = describe(vp)
       when "cmp_d"
         value = source.float
-        return nil if value.nan?
+        return SKIPPED if value.nan?
         theirs = LibGMP.mpf_cmp_d(pointerof(up), value)
         ours = left.engine.cmp_d(value)
         operand = value.unsafe_as(UInt64).to_s(16)
@@ -488,6 +492,7 @@ module FloatDifferential
     Engine.default_precision = 64
     counts = Hash(String, Int64).new(0_i64)
     differences = Hash(String, Int64).new(0_i64)
+    skipped = Hash(String, Int64).new(0_i64)
     shown = 0
     started = Time.instant
     start.upto(start + count - 1) do |index|
@@ -501,21 +506,23 @@ module FloatDifferential
       rescue error
         "raised #{error.class}: #{error.message} #{error.backtrace?.try(&.first(6).join(" | "))}"
       end
-      if message
+      if message == SKIPPED
+        skipped[name] += 1
+      elsif message
         differences[name] += 1
         if shown < max_shown
           shown += 1
-          STDOUT.puts "DIFF --seed #{seed} --start #{index} --count 1 #{name}: #{message[0, 2000]}"
+          STDOUT.puts "DIFF --seed #{seed} --start #{index} --count 1 #{name}: #{message.to_s[0, 2000]}"
         end
       end
     end
     elapsed = Time.instant - started
     STDOUT.puts "gmp #{String.new(LibGMPHarnessVersion.gmp_version)}, seed #{seed}, start #{start}, operations #{count}, seconds #{elapsed.total_seconds.round(1)}"
     names.sort.each do |name|
-      STDOUT.puts "#{name.ljust(14)} #{counts[name].to_s.rjust(9)} differences #{differences[name]}"
+      STDOUT.puts "#{name.ljust(14)} #{counts[name].to_s.rjust(9)} compared #{(counts[name] - skipped[name]).to_s.rjust(9)} differences #{differences[name]}"
     end
     total = differences.values.sum
-    STDOUT.puts "TOTAL operations #{counts.values.sum} differences #{total}"
+    STDOUT.puts "TOTAL operations #{counts.values.sum} compared #{counts.values.sum - skipped.values.sum} differences #{total}"
     total == 0 ? 0 : 1
   end
 end
