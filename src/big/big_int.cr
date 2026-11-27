@@ -135,6 +135,11 @@ struct BigInt < Int
   end
 
   def <=>(other : Float::Primitive) : Int32?
+    # GMP's `mpz_cmp_d`, which the GMP-backed `BigInt` has always returned,
+    # gives the signed limb count of `self` for a zero (or negative zero)
+    # double, so `(BigInt.new(2) ** 100) <=> 0.0 == 2`.
+    return signed_limb_count if other.zero?
+
     @value <=> other
   end
 
@@ -537,13 +542,18 @@ struct BigInt < Int
   # sign of *other* when they differ or `self` is zero, so the result is not
   # always -1, 0 or 1 (`(BigInt.new(2) ** 200) <=> 3 == 3`).
   private def compare_signed_limb(other : Int64) : Int32
-    own_size = @value.negative? ? -@value.size : @value.size
+    own_size = signed_limb_count
     other_size = other <=> 0
     if own_size == 0 || own_size != other_size
       own_size - other_size
     else
       @value <=> other
     end
+  end
+
+  # The limb count of `self`, negated when `self` is negative (GMP's `SIZ`).
+  private def signed_limb_count : Int32
+    @value.negative? ? -@value.size : @value.size
   end
 
   private def check_division_by_zero(value)

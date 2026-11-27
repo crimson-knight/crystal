@@ -120,6 +120,19 @@ describe "BigInt" do
     (big <=> 3.to_big_i).should eq(1)
   end
 
+  # `<=>` with a zero double returns what GMP's `mpz_cmp_d` gives, as the
+  # GMP-backed `BigInt` always has: the signed limb count.
+  it "compares with a zero float as mpz_cmp_d does" do
+    big = 2.to_big_i ** 100
+    (big <=> 0.0).should eq(2)
+    (-big <=> -0.0).should eq(-2)
+    (big <=> 0.0_f32).should eq(2)
+    (0.0 <=> big).should eq(-2)
+    (5.to_big_i <=> 0.0).should eq(1)
+    (0.to_big_i <=> 0.0).should eq(0)
+    (big <=> 0.5).should eq(1)
+  end
+
   it "compares against float" do
     1.to_big_i.should eq(1.0)
     1.to_big_i.should eq(1.0_f32)
