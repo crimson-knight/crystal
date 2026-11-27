@@ -10,8 +10,11 @@ module Crystal::BigNum
   # - x86-64: CPUID leaf 7 says whether the processor has BMI2 (`mulx`) and
   #   ADX (`adcx`/`adox`); with both, `add_n`, `sub_n`, `mul_1`, `addmul_1`
   #   and `submul_1` run bodies compiled for `+bmi2,+adx`.
-  # - AArch64 (Linux `AT_HWCAP`, macOS `sysctl`): the generic body, unrolled by
-  #   four, is the fastest measured; the features are read for the report.
+  # - AArch64 (Linux `AT_HWCAP`, macOS `sysctl`): `add_n` and `sub_n` run our
+  #   own assembly (one `adcs`/`sbcs` chain kept in the flags across the
+  #   loop, `limbs_aarch64.cr`), which every AArch64 processor runs; the other
+  #   kernels run the generic body, unrolled by four. The features are read
+  #   for the report.
   #
   # A program compiled with `-Dbignum_generic_kernels` runs the generic body of
   # every kernel, so a bench can compare both bodies on one host.
@@ -72,7 +75,7 @@ module Crystal::BigNum
 
       private def self.list_of_arm_features : Array(String)
         list_of_features = [] of String
-        list_of_features << "neon" if has_system_feature?("hw.optional.AdvSIMD")
+        list_of_features << "neon" if has_system_feature?("hw.optional.arm.AdvSIMD")
         list_of_features << "lse" if has_system_feature?("hw.optional.arm.FEAT_LSE")
         list_of_features << "sme" if has_system_feature?("hw.optional.arm.FEAT_SME")
         list_of_features
@@ -99,9 +102,10 @@ module Crystal::BigNum
     # Each kernel's name and the body it runs on this processor.
     def self.chosen_variants : Hash(String, String)
       variant = adx? ? "x86-64-bmi2-adx" : "generic"
+      carry_chain = {{ flag?(:aarch64) && !flag?(:bignum_generic_kernels) }} ? "aarch64-assembly" : variant
       {
-        "add_n"    => variant,
-        "sub_n"    => variant,
+        "add_n"    => carry_chain,
+        "sub_n"    => carry_chain,
         "mul_1"    => variant,
         "addmul_1" => variant,
         "submul_1" => variant,

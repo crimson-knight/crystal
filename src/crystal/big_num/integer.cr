@@ -287,33 +287,30 @@ module Crystal::BigNum
 
     private HASH_PRIME = (1_u64 << 61) - 1
 
-    # The magnitude modulo 2**61 - 1. Since 2**64 = 8 (mod 2**61 - 1), the
-    # limbs fold in four interleaved Horner chains (2**256 = 2**12), each
-    # kept below 2**62 by folding the bits above 61 back in.
+    # The magnitude modulo 2**61 - 1. Since 2**61 = 1 (mod 2**61 - 1), the
+    # magnitude cut into 61-bit pieces, least significant first, has the
+    # same residue as the sum of the pieces; the pieces are independent, so
+    # the sum runs at the processor's full width instead of one long chain.
     private def magnitude_modulo_hash_prime : UInt64
       count = size
       return Integer.fold_hash_prime(magnitude128) if count <= 2
       pointer = @limbs
-      chain0 = chain1 = chain2 = chain3 = 0_u64
-      index = count - 1
-      while index >= 3
-        chain3 = Integer.fold_hash_prime((chain3.to_u128 << 12) &+ pointer[index])
-        chain2 = Integer.fold_hash_prime((chain2.to_u128 << 12) &+ pointer[index - 1])
-        chain1 = Integer.fold_hash_prime((chain1.to_u128 << 12) &+ pointer[index - 2])
-        chain0 = Integer.fold_hash_prime((chain0.to_u128 << 12) &+ pointer[index - 3])
-        index -= 4
+      sum = 0_u128
+      position = 0
+      # Pieces whose window may reach into the limb above their first.
+      last_full = (count &- 1) &* LIMB_BITS
+      while position < last_full
+        index = position >> 6
+        window = ((pointer[index &+ 1].to_u128! << 64) | pointer[index]) >> (position & 63)
+        sum &+= window.to_u64! & HASH_PRIME
+        position &+= 61
       end
-      # The chains hold limbs index + 4, + 3, + 2 and + 1 (mod 4) of the
-      # remaining top; combine them with weights 8**3, 8**2, 8 and 1 counted
-      # from the lowest limb they cover, then finish the low limbs.
-      total = (chain3.to_u128 << 9) &+ (chain2.to_u128 << 6) &+ (chain1.to_u128 << 3) &+ chain0
-      residue = Integer.fold_hash_prime(total)
-      while index >= 0
-        residue = Integer.fold_hash_prime((residue.to_u128 << 3) &+ pointer[index])
-        index -= 1
+      top = pointer[count &- 1]
+      while position < count &* LIMB_BITS
+        sum &+= (top >> (position & 63)) & HASH_PRIME
+        position &+= 61
       end
-      residue = Integer.fold_hash_prime(residue.to_u128)
-      residue >= HASH_PRIME ? residue &- HASH_PRIME : residue
+      Integer.fold_hash_prime(sum)
     end
 
     # *value* (below 2**126) folded modulo 2**61 - 1 to below 2**62 (and
@@ -686,11 +683,11 @@ module Crystal::BigNum
 
     {% for operator in %w(* // % tdiv remainder) %}
       def {{ operator.id }}(other : Integer) : Integer
-        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ operator.id }} ({{ operator == "*" ? "G2b".id : "G2c".id }})")
+        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + operator + (operator == "*" ? " (G2b)" : " (G2c)") }})
       end
 
       def {{ operator.id }}(other : ::Int::Primitive) : Integer
-        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ operator.id }} ({{ operator == "*" ? "G2b".id : "G2c".id }})")
+        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + operator + (operator == "*" ? " (G2b)" : " (G2c)") }})
       end
     {% end %}
 
@@ -701,11 +698,11 @@ module Crystal::BigNum
 
     {% for name in %w(divmod tdivmod) %}
       def {{ name.id }}(other : Integer) : {Integer, Integer}
-        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ name.id }} (G2c)")
+        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2c)" }})
       end
 
       def {{ name.id }}(other : ::Int::Primitive) : {Integer, Integer}
-        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ name.id }} (G2c)")
+        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2c)" }})
       end
     {% end %}
 
@@ -723,11 +720,11 @@ module Crystal::BigNum
 
     {% for name in %w(gcd lcm) %}
       def {{ name.id }}(other : Integer) : Integer
-        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ name.id }} (G2e)")
+        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2e)" }})
       end
 
       def {{ name.id }}(other : ::Int::Primitive) : Integer
-        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ name.id }} (G2e)")
+        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2e)" }})
       end
     {% end %}
 

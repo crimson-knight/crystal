@@ -32,28 +32,36 @@ module Crystal::BigNum
     def self.add_n(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32) : Limb
       {% if flag?(:x86_64) %}
         return add_n_with_adx(rp, ap, bp, n) if ProcessorKernels.adx?
+      {% elsif flag?(:aarch64) && !flag?(:bignum_generic_kernels) %}
+        return add_n_with_assembly(rp, ap, bp, n)
       {% end %}
       generic_add_n(rp, ap, bp, n)
     end
 
-    # The portable body of `add_n`.
+    # The portable body of `add_n`, with *carry* (0 or 1) added at the bottom.
     @[AlwaysInline]
-    def self.generic_add_n(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32) : Limb
-      carry = Limb.zero
+    def self.generic_add_n(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32, carry : Limb = Limb.zero) : Limb
+      # The carry between limbs stays a `DoubleLimb` high half inside the
+      # unrolled group, and is masked to one bit where the loop closes, so
+      # LLVM can prove it is 0 or 1 and chain `adcs`/`adc`.
       index = 0
-      while index + 4 <= n
-        {% for k in 0..3 %}
-          sum{{k}} = ap[index + {{k}}].to_u128! &+ bp[index + {{k}}] &+ carry
-          rp[index + {{k}}] = sum{{k}}.to_u64!
-          carry = (sum{{k}} >> 64).to_u64!
-        {% end %}
-        index += 4
+      while index &+ 4 <= n
+        sum0 = ap[index].to_u128! &+ bp[index] &+ (carry & 1)
+        sum1 = ap[index &+ 1].to_u128! &+ bp[index &+ 1] &+ (sum0 >> 64)
+        sum2 = ap[index &+ 2].to_u128! &+ bp[index &+ 2] &+ (sum1 >> 64)
+        sum3 = ap[index &+ 3].to_u128! &+ bp[index &+ 3] &+ (sum2 >> 64)
+        rp[index] = sum0.to_u64!
+        rp[index &+ 1] = sum1.to_u64!
+        rp[index &+ 2] = sum2.to_u64!
+        rp[index &+ 3] = sum3.to_u64!
+        carry = (sum3 >> 64).to_u64!
+        index &+= 4
       end
       while index < n
-        sum = ap[index].to_u128! &+ bp[index] &+ carry
+        sum = ap[index].to_u128! &+ bp[index] &+ (carry & 1)
         rp[index] = sum.to_u64!
         carry = (sum >> 64).to_u64!
-        index += 1
+        index &+= 1
       end
       carry
     end
@@ -63,30 +71,38 @@ module Crystal::BigNum
     def self.sub_n(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32) : Limb
       {% if flag?(:x86_64) %}
         return sub_n_with_adx(rp, ap, bp, n) if ProcessorKernels.adx?
+      {% elsif flag?(:aarch64) && !flag?(:bignum_generic_kernels) %}
+        return sub_n_with_assembly(rp, ap, bp, n)
       {% end %}
       generic_sub_n(rp, ap, bp, n)
     end
 
-    # The portable body of `sub_n`.
+    # The portable body of `sub_n`, with *borrow* (0 or 1) taken at the bottom.
     @[AlwaysInline]
-    def self.generic_sub_n(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32) : Limb
-      borrow = Limb.zero
+    def self.generic_sub_n(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32, borrow : Limb = Limb.zero) : Limb
+      # a - b = a + ~b + 1 with the carry read as "no borrow": the same chain
+      # as `generic_add_n`, which LLVM lowers to `adcs`/`sbb`-free carries.
+      carry = Limb.new(1) &- borrow
       index = 0
-      while index + 4 <= n
-        {% for k in 0..3 %}
-          difference{{k}} = ap[index + {{k}}].to_u128! &- bp[index + {{k}}] &- borrow
-          rp[index + {{k}}] = difference{{k}}.to_u64!
-          borrow = (difference{{k}} >> 127).to_u64!
-        {% end %}
-        index += 4
+      while index &+ 4 <= n
+        sum0 = ap[index].to_u128! &+ ~bp[index] &+ (carry & 1)
+        sum1 = ap[index &+ 1].to_u128! &+ ~bp[index &+ 1] &+ (sum0 >> 64)
+        sum2 = ap[index &+ 2].to_u128! &+ ~bp[index &+ 2] &+ (sum1 >> 64)
+        sum3 = ap[index &+ 3].to_u128! &+ ~bp[index &+ 3] &+ (sum2 >> 64)
+        rp[index] = sum0.to_u64!
+        rp[index &+ 1] = sum1.to_u64!
+        rp[index &+ 2] = sum2.to_u64!
+        rp[index &+ 3] = sum3.to_u64!
+        carry = (sum3 >> 64).to_u64!
+        index &+= 4
       end
       while index < n
-        difference = ap[index].to_u128! &- bp[index] &- borrow
-        rp[index] = difference.to_u64!
-        borrow = (difference >> 127).to_u64!
-        index += 1
+        sum = ap[index].to_u128! &+ ~bp[index] &+ (carry & 1)
+        rp[index] = sum.to_u64!
+        carry = (sum >> 64).to_u64!
+        index &+= 1
       end
-      borrow
+      Limb.new(1) &- carry
     end
 
     # Adds the single limb *b* to the *n* limbs of *ap* into *rp* and returns
@@ -97,7 +113,7 @@ module Crystal::BigNum
       while index < n
         sum = ap[index] &+ carry
         rp[index] = sum
-        index += 1
+        index &+= 1
         if sum >= carry
           (rp + index).copy_from(ap + index, n - index) unless rp == ap
           return Limb.zero
@@ -116,7 +132,7 @@ module Crystal::BigNum
       while index < n
         limb = ap[index]
         rp[index] = limb &- borrow
-        index += 1
+        index &+= 1
         if limb >= borrow
           (rp + index).copy_from(ap + index, n - index) unless rp == ap
           return Limb.zero
@@ -154,19 +170,19 @@ module Crystal::BigNum
     def self.generic_mul_1(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, b : Limb) : Limb
       carry = Limb.zero
       index = 0
-      while index + 4 <= n
+      while index &+ 4 <= n
         {% for k in 0..3 %}
-          product{{k}} = ap[index + {{k}}].to_u128! &* b &+ carry
-          rp[index + {{k}}] = product{{k}}.to_u64!
+          product{{k}} = ap[index &+ {{k}}].to_u128! &* b &+ carry
+          rp[index &+ {{k}}] = product{{k}}.to_u64!
           carry = (product{{k}} >> 64).to_u64!
         {% end %}
-        index += 4
+        index &+= 4
       end
       while index < n
         product = ap[index].to_u128! &* b &+ carry
         rp[index] = product.to_u64!
         carry = (product >> 64).to_u64!
-        index += 1
+        index &+= 1
       end
       carry
     end
@@ -185,19 +201,19 @@ module Crystal::BigNum
     def self.generic_addmul_1(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, b : Limb) : Limb
       carry = Limb.zero
       index = 0
-      while index + 4 <= n
+      while index &+ 4 <= n
         {% for k in 0..3 %}
-          product{{k}} = ap[index + {{k}}].to_u128! &* b &+ rp[index + {{k}}] &+ carry
-          rp[index + {{k}}] = product{{k}}.to_u64!
+          product{{k}} = ap[index &+ {{k}}].to_u128! &* b &+ rp[index &+ {{k}}] &+ carry
+          rp[index &+ {{k}}] = product{{k}}.to_u64!
           carry = (product{{k}} >> 64).to_u64!
         {% end %}
-        index += 4
+        index &+= 4
       end
       while index < n
         product = ap[index].to_u128! &* b &+ rp[index] &+ carry
         rp[index] = product.to_u64!
         carry = (product >> 64).to_u64!
-        index += 1
+        index &+= 1
       end
       carry
     end
@@ -216,15 +232,15 @@ module Crystal::BigNum
     def self.generic_submul_1(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, b : Limb) : Limb
       carry = Limb.zero
       index = 0
-      while index + 4 <= n
+      while index &+ 4 <= n
         {% for k in 0..3 %}
-          product{{k}} = ap[index + {{k}}].to_u128! &* b &+ carry
+          product{{k}} = ap[index &+ {{k}}].to_u128! &* b &+ carry
           low{{k}} = product{{k}}.to_u64!
-          limb{{k}} = rp[index + {{k}}]
-          rp[index + {{k}}] = limb{{k}} &- low{{k}}
+          limb{{k}} = rp[index &+ {{k}}]
+          rp[index &+ {{k}}] = limb{{k}} &- low{{k}}
           carry = (product{{k}} >> 64).to_u64! &+ (limb{{k}} < low{{k}} ? 1_u64 : 0_u64)
         {% end %}
-        index += 4
+        index &+= 4
       end
       while index < n
         product = ap[index].to_u128! &* b &+ carry
@@ -232,7 +248,7 @@ module Crystal::BigNum
         limb = rp[index]
         rp[index] = limb &- low
         carry = (product >> 64).to_u64! &+ (limb < low ? 1_u64 : 0_u64)
-        index += 1
+        index &+= 1
       end
       carry
     end
@@ -243,24 +259,24 @@ module Crystal::BigNum
     def self.lshift(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, count : Int32) : Limb
       back = LIMB_BITS - count
       high = ap[n - 1]
-      out = high >> back
+      shifted_out = high >> back
       index = n - 1
       while index >= 4
         {% for k in 1..4 %}
-          low{{k}} = ap[index - {{k}}]
-          rp[index - {{k}} + 1] = (high << count) | (low{{k}} >> back)
+          low{{k}} = ap[index &- {{k}}]
+          rp[index &- {{k}} &+ 1] = (high << count) | (low{{k}} >> back)
           high = low{{k}}
         {% end %}
-        index -= 4
+        index &-= 4
       end
       while index > 0
-        low = ap[index - 1]
+        low = ap[index &- 1]
         rp[index] = (high << count) | (low >> back)
         high = low
-        index -= 1
+        index &-= 1
       end
       rp[0] = high << count
-      out
+      shifted_out
     end
 
     # Shifts the *n* limbs (`n >= 1`) of *ap* right by *count* bits
@@ -270,24 +286,24 @@ module Crystal::BigNum
     def self.rshift(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, count : Int32) : Limb
       back = LIMB_BITS - count
       low = ap[0]
-      out = low << back
+      shifted_out = low << back
       index = 0
-      while index + 5 <= n
+      while index &+ 5 <= n
         {% for k in 1..4 %}
-          high{{k}} = ap[index + {{k}}]
-          rp[index + {{k}} - 1] = (low >> count) | (high{{k}} << back)
+          high{{k}} = ap[index &+ {{k}}]
+          rp[index &+ {{k}} &- 1] = (low >> count) | (high{{k}} << back)
           low = high{{k}}
         {% end %}
-        index += 4
+        index &+= 4
       end
-      while index + 1 < n
-        high = ap[index + 1]
+      while index &+ 1 < n
+        high = ap[index &+ 1]
         rp[index] = (low >> count) | (high << back)
         low = high
-        index += 1
+        index &+= 1
       end
       rp[n - 1] = low >> count
-      out
+      shifted_out
     end
 
     # Compares the *n* limbs of *ap* and *bp* as unsigned numbers and returns
@@ -298,7 +314,7 @@ module Crystal::BigNum
         a = ap[index]
         b = bp[index]
         return a > b ? 1 : -1 if a != b
-        index -= 1
+        index &-= 1
       end
       0
     end
@@ -316,7 +332,7 @@ module Crystal::BigNum
       index = 0
       while index < n
         return false if ap[index] != 0
-        index += 1
+        index &+= 1
       end
       true
     end
@@ -325,16 +341,16 @@ module Crystal::BigNum
     def self.popcount(ap : Pointer(Limb), n : Int32) : UInt64
       total0 = total1 = total2 = total3 = 0_u64
       index = 0
-      while index + 4 <= n
+      while index &+ 4 <= n
         total0 &+= ap[index].popcount
-        total1 &+= ap[index + 1].popcount
-        total2 &+= ap[index + 2].popcount
-        total3 &+= ap[index + 3].popcount
-        index += 4
+        total1 &+= ap[index &+ 1].popcount
+        total2 &+= ap[index &+ 2].popcount
+        total3 &+= ap[index &+ 3].popcount
+        index &+= 4
       end
       while index < n
         total0 &+= ap[index].popcount
-        index += 1
+        index &+= 1
       end
       total0 &+ total1 &+ total2 &+ total3
     end
@@ -344,7 +360,7 @@ module Crystal::BigNum
     def self.trailing_zeros(ap : Pointer(Limb), n : Int32) : UInt64
       index = 0
       while ap[index] == 0
-        index += 1
+        index &+= 1
       end
       index.to_u64 * LIMB_BITS + ap[index].trailing_zeros_count
     end
@@ -352,16 +368,16 @@ module Crystal::BigNum
     # Writes the one's complement of the *n* limbs of *ap* into *rp*.
     def self.com(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32) : Nil
       index = 0
-      while index + 4 <= n
+      while index &+ 4 <= n
         rp[index] = ~ap[index]
-        rp[index + 1] = ~ap[index + 1]
-        rp[index + 2] = ~ap[index + 2]
-        rp[index + 3] = ~ap[index + 3]
-        index += 4
+        rp[index &+ 1] = ~ap[index &+ 1]
+        rp[index &+ 2] = ~ap[index &+ 2]
+        rp[index &+ 3] = ~ap[index &+ 3]
+        index &+= 4
       end
       while index < n
         rp[index] = ~ap[index]
-        index += 1
+        index &+= 1
       end
     end
 
@@ -376,19 +392,19 @@ module Crystal::BigNum
       # (`a`) and *bp* (`b`) into *rp*.
       def self.{{ name.id }}(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32) : Nil
         index = 0
-        while index + 4 <= n
+        while index &+ 4 <= n
           {% for k in 0..3 %}
-            a = ap[index + {{ k }}]
-            b = bp[index + {{ k }}]
-            rp[index + {{ k }}] = {{ expression.id }}
+            a = ap[index &+ {{ k }}]
+            b = bp[index &+ {{ k }}]
+            rp[index &+ {{ k }}] = {{ expression.id }}
           {% end %}
-          index += 4
+          index &+= 4
         end
         while index < n
           a = ap[index]
           b = bp[index]
           rp[index] = {{ expression.id }}
-          index += 1
+          index &+= 1
         end
       end
     {% end %}
