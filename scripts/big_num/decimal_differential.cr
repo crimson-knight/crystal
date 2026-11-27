@@ -27,7 +27,7 @@ module DecimalDifferential
   LIST_OF_OPERATIONS = %w(
     parse parse_forms parse_garbage to_s equal compare add sub mul
     round_ties_away round_modes trunc ceil_floor abs to_i64 to_f64
-    json_round_trip div new_int new_float
+    json_round_trip div new_int new_float pow round_base
   )
 
   LIST_OF_MODES = [
@@ -288,6 +288,18 @@ module DecimalDifferential
       when "new_int"
         value = operands.chance(0.5) ? operands.below(Int32::MAX).to_i64 * (operands.chance(0.5) ? 1 : -1) : Int64::MIN + operands.below(3)
         show(BigDecimal.new(value))
+      when "pow"
+        # small operands: a power of a 1,000-digit value is a million digits
+        number = BigDecimal.new(operands.text(operands.below(8), operands.below(8)))
+        exponent = operands.below(11) - 5
+        show(number ** exponent)
+      when "round_base"
+        # another base goes through `#/` and `#**` (negative digits divide)
+        number = decimal(operands)
+        digits = operands.below(9) - 4
+        base = [2, 3, 16][operands.below(3)]
+        mode = LIST_OF_MODES[operands.below(LIST_OF_MODES.size)]
+        "#{digits} #{base} #{mode} #{show(number.round(digits, base, mode: mode))}"
       when "new_float"
         value = decimal(operands).to_f64
         "#{value} #{show(BigDecimal.new(value))} #{show(BigDecimal.new(value.to_s))}"

@@ -516,8 +516,25 @@ struct BigDecimal < Number
   # BigDecimal.new(1234, 2) ** 2 # => 152.2756
   # ```
   def **(other : Int) : BigDecimal
-    return (to_big_r ** other).to_big_d if other < 0
+    return reciprocal_power(other.abs) if other < 0
     BigDecimal.new(@value ** other, @scale * other)
+  end
+
+  # `self ** -exponent`, the same value and scale as
+  # `(to_big_r ** -exponent).to_big_d`: the reduced fraction
+  # `10 ** scale / value` raised to *exponent*, divided at the default
+  # precision. It stays in `BigInt`, so no `BigRational` is built.
+  private def reciprocal_power(exponent : Int) : BigDecimal
+    raise DivisionByZeroError.new if zero?
+    ten_power = power_ten_to(@scale)
+    common = @value.gcd(ten_power)
+    numerator = (ten_power // common) ** exponent
+    denominator = (@value // common) ** exponent
+    if denominator < 0
+      numerator = -numerator
+      denominator = -denominator
+    end
+    numerator.to_big_d / denominator.to_big_d
   end
 
   # Rounds towards positive infinity.
