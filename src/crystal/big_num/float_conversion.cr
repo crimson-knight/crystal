@@ -72,29 +72,36 @@ module Crystal::BigNum
 
     # Compares the nonzero magnitude with that of a nonzero, non-NaN double
     # whose exponent field is *exponent* and whose fraction field is
-    # *fraction*.
+    # *fraction*. The top two limbs are read from the fields (no pointer to
+    # the inline limbs), so the comparison stays in registers.
     private def compare_magnitude(exponent : Int32, fraction : UInt64) : Int32
       return -1 if exponent == 0x7FF # an infinity
       return 1 if exponent < 1023    # below 1
       float_bits = exponent &- 1022  # the bit length of the double's integer part
-      count = size
-      top = limb_at(count &- 1)
+      signed_count = @size
+      count = signed_count < 0 ? 0 &- signed_count : signed_count
+      if count <= 2
+        top = count == 2 ? @high : @low
+        below = count == 2 ? @low : Limb.zero
+      else
+        top = @limbs[count &- 1]
+        below = @limbs[count &- 2]
+      end
       zeros = top.leading_zeros_count.to_i32
       own_bits = count &* LIMB_BITS &- zeros
       return own_bits > float_bits ? 1 : -1 if own_bits != float_bits
       # Equal bit lengths: compare the top 64 bits of each, aligned.
-      window = top << zeros
-      below = count > 1 ? limb_at(count &- 2) : Limb.zero
-      window |= below >> (LIMB_BITS &- zeros) if zeros > 0
+      window = top.unsafe_shl(zeros)
+      window |= below.unsafe_shr(LIMB_BITS &- zeros) if zeros > 0
       float_window = (fraction | 0x0010_0000_0000_0000_u64) << 11
       return window > float_window ? 1 : -1 if window != float_window
       # Up to 64 bits the windows held both values whole. Beyond, the
       # double is an integer with zeros below its window, so any one bit
       # left in the magnitude makes it the larger.
       return 0 if count == 1
-      below &= (Limb.new(1) << (LIMB_BITS &- zeros)) &- 1 if zeros > 0
+      below &= Limb::MAX.unsafe_shr(zeros)
       return 1 if below != 0
-      Limbs.zero?(limb_pointer, count &- 2) ? 0 : 1
+      count == 2 || Limbs.zero?(@limbs, count &- 2) ? 0 : 1
     end
 
     # :ditto:

@@ -98,12 +98,52 @@ module Crystal::BigNum
     # ---- Reciprocals ----
 
     # The 2/1 reciprocal of the normalized limb *d* (top bit set):
-    # `floor((B**2 - 1) / d) - B` with `B = 2**64`.
+    # `floor((B**2 - 1) / d) - B` with `B = 2**64`. On x86-64, where a
+    # 64-bit `div` takes tens of cycles, it comes from a table and three
+    # Newton steps (`invert_limb_by_newton`); elsewhere from two hardware
+    # divides (`invert_limb_by_division`), which Apple's and Linux arm64's
+    # processors finish sooner.
+    @[AlwaysInline]
     def self.invert_limb(d : Limb) : Limb
+      {% if flag?(:x86_64) && flag?(:bits64) %}
+        invert_limb_by_newton(d)
+      {% else %}
+        invert_limb_by_division(d)
+      {% end %}
+    end
+
+    # `invert_limb` with two hardware divides of a limb by a half limb.
+    def self.invert_limb_by_division(d : Limb) : Limb
       # (B**2 - 1) - B*d = (~d) * B + (B - 1), and ~d < d, so the quotient
       # fits a limb.
       div_2by1_plain(~d, Limb::MAX, d)[0]
     end
+
+    {% if flag?(:bits64) %}
+      # `floor((2**19 - 3 * 2**8) / d9)` for each 9-bit top `d9` of a
+      # normalized limb (256 to 511): the 11-bit seed of
+      # `invert_limb_by_newton`.
+      private RECIPROCAL_SEEDS = StaticArray[{% for top in 256..511 %} {{ 523_520 // top }}_u16, {% end %}]
+
+      # `invert_limb` with no division: an 11-bit seed from
+      # `RECIPROCAL_SEEDS`, two Newton steps to 13 and 34 bits, and a third
+      # with the 2**-64 adjustment that lands on the exact reciprocal
+      # (Möller and Granlund, "Improved division by invariant integers",
+      # IEEE Trans. Computers 60(2), 2011, algorithm 2).
+      def self.invert_limb_by_newton(d : Limb) : Limb
+        d0 = d & 1
+        d9 = d >> 55
+        d40 = (d >> 24) &+ 1
+        d63 = (d >> 1) &+ d0
+        v0 = RECIPROCAL_SEEDS.to_unsafe[d9 &- 256].to_u64!
+        v1 = (v0 << 11) &- ((v0 &* v0 &* d40) >> 40) &- 1
+        v2 = (v1 << 13) &+ ((v1.to_u128! &* ((Limb.new(1) << 60) &- v1 &* d40)) >> 47).to_u64!
+        e = (Limb.zero &- v2 &* d63) &+ ((v2 >> 1) & (Limb.zero &- d0))
+        v3 = (v2 << 31) &+ ((v2.to_u128! &* e) >> 65).to_u64!
+        product = v3.to_u128! &* d &+ d
+        v3 &- ((product >> LIMB_BITS).to_u64! &+ d)
+      end
+    {% end %}
 
     # The 3/2 reciprocal of the normalized two-limb divisor *d1*:*d0*:
     # `floor((B**3 - 1) / (d1 * B + d0)) - B` (Möller-Granlund, algorithm 6).
@@ -311,6 +351,7 @@ module Crystal::BigNum
     # remainder in the low *dn* limbs of *np*, and returns the top quotient
     # limb (0 or 1).
     def self.schoolbook_div_qr(qp : Pointer(Limb), np : Pointer(Limb), nn : Int32, dp : Pointer(Limb), dn : Int32, dinv : Limb) : Limb
+      return schoolbook_div_qr_by_four(qp, np, nn, dp, dinv) if dn == 4
       top = np + (nn - dn)
       qh = Limbs.cmp(top, dp, dn) >= 0 ? Limb.new(1) : Limb.zero
       Limbs.sub_n(top, top, dp, dn) if qh != 0
@@ -353,6 +394,81 @@ module Crystal::BigNum
       end
       np[dn - 1] = n1
       qh
+    end
+
+    # `schoolbook_div_qr` for a four-limb divisor (256 bits), with the
+    # divisor and the four-limb partial remainder in registers: each step
+    # reads one dividend limb and writes one quotient limb, and the
+    # remainder is stored once at the end.
+    def self.schoolbook_div_qr_by_four(qp : Pointer(Limb), np : Pointer(Limb), nn : Int32, dp : Pointer(Limb), dinv : Limb) : Limb
+      d0, d1, d2, d3 = dp[0], dp[1], dp[2], dp[3]
+      r0, r1, r2, r3 = np[nn - 4], np[nn - 3], np[nn - 2], np[nn - 1]
+      # The top quotient limb: 1 when the top four dividend limbs reach the
+      # divisor, which they then lose.
+      qh = Limb.zero
+      if r3 > d3 || (r3 == d3 && (r2 > d2 || (r2 == d2 && (r1 > d1 || (r1 == d1 && r0 >= d0)))))
+        qh = Limb.new(1)
+        r0, r1, r2, r3 = subtract_four(r0, r1, r2, r3, d0, d1, d2, d3)
+      end
+      index = nn - 4
+      while index > 0
+        index -= 1
+        # The window is r3:r2:r1:r0:u, below the divisor times B.
+        u = np[index]
+        if r3 == d3 && r2 == d2
+          # The quotient limb is B - 1 (see `schoolbook_div_qr`): the window
+          # less (B - 1) * d is r2:r1:r0:u - d * B + d, whose top limb cancels.
+          q = Limb::MAX
+          sum0 = u.to_u128! &+ d0
+          sum1 = r0.to_u128! &+ d1 &+ (sum0 >> 64)
+          sum2 = r1.to_u128! &+ d2 &+ (sum1 >> 64)
+          sum3 = r2.to_u128! &+ d3 &+ (sum2 >> 64)
+          # Less d * B: subtract d0..d2 from limbs 1..3.
+          r0, r1, r2, r3 = subtract_four(sum0.to_u64!, sum1.to_u64!, sum2.to_u64!, sum3.to_u64!, Limb.zero, d0, d1, d2)
+        else
+          q, remainder = div_3by2(r3, r2, r1, d3, d2, dinv)
+          n1 = (remainder >> LIMB_BITS).to_u64!
+          n0 = remainder.to_u64!
+          # r0:u less q * d1:d0, the borrow carried into n1:n0.
+          product0 = q.to_u128! &* d0
+          low0 = product0.to_u64!
+          t0 = u &- low0
+          carry = (product0 >> LIMB_BITS).to_u64! &+ (u < low0 ? 1_u64 : 0_u64)
+          product1 = q.to_u128! &* d1 &+ carry
+          low1 = product1.to_u64!
+          t1 = r0 &- low1
+          borrow = (product1 >> LIMB_BITS).to_u64! &+ (r0 < low1 ? 1_u64 : 0_u64)
+          borrow_out = n0 < borrow ? Limb.new(1) : Limb.zero
+          n0 &-= borrow
+          negative = n1 < borrow_out
+          n1 &-= borrow_out
+          if negative
+            # The estimate was one too large (Knuth's step D6): add the
+            # divisor back.
+            sum0 = t0.to_u128! &+ d0
+            sum1 = t1.to_u128! &+ d1 &+ (sum0 >> 64)
+            sum2 = n0.to_u128! &+ d2 &+ (sum1 >> 64)
+            t0 = sum0.to_u64!
+            t1 = sum1.to_u64!
+            n0 = sum2.to_u64!
+            n1 &+= d3 &+ (sum2 >> 64).to_u64!
+            q &-= 1
+          end
+          r0, r1, r2, r3 = t0, t1, n0, n1
+        end
+        qp[index] = q
+      end
+      np[0], np[1], np[2], np[3] = r0, r1, r2, r3
+      qh
+    end
+
+    # `a3:a2:a1:a0 - b3:b2:b1:b0` modulo B**4, in registers.
+    @[AlwaysInline]
+    private def self.subtract_four(a0 : Limb, a1 : Limb, a2 : Limb, a3 : Limb, b0 : Limb, b1 : Limb, b2 : Limb, b3 : Limb) : {Limb, Limb, Limb, Limb}
+      sum0 = a0.to_u128! &+ ~b0 &+ 1
+      sum1 = a1.to_u128! &+ ~b1 &+ (sum0 >> 64)
+      sum2 = a2.to_u128! &+ ~b2 &+ (sum1 >> 64)
+      {sum0.to_u64!, sum1.to_u64!, sum2.to_u64!, a3 &+ ~b3 &+ (sum2 >> 64).to_u64!}
     end
 
     # ---- The entry point ----

@@ -177,6 +177,9 @@ module Crystal::BigNum
           return Integer.from_magnitude(b &- a, other.negative?)
         end
       end
+      if size <= 4 && other.size <= 4
+        return Integer.add_signed_in_registers(limb_pointer, @size, other.limb_pointer, other.signed_size)
+      end
       Integer.add_signed(limb_pointer, @size, other.limb_pointer, other.signed_size)
     end
 
@@ -222,6 +225,61 @@ module Crystal::BigNum
           end
         end
       end
+    end
+
+    # The sum of the signed magnitudes at *ap* and *bp* (signed limb counts
+    # *a_size* and *b_size*, at most four limbs each and more than two in
+    # one of them), in registers: one carry chain (`adc` on x86-64,
+    # `adcs` on AArch64) and one heap buffer of exactly the result's limb
+    # count, or none when the result fits inline.
+    protected def self.add_signed_in_registers(ap : Pointer(Limb), a_size : Int32, bp : Pointer(Limb), b_size : Int32) : Integer
+      a0, a1, a2, a3 = up_to_four_limbs(ap, a_size.abs)
+      b0, b1, b2, b3 = up_to_four_limbs(bp, b_size.abs)
+      if (a_size < 0) == (b_size < 0)
+        sum0 = a0.to_u128! &+ b0
+        sum1 = a1.to_u128! &+ b1 &+ (sum0 >> 64)
+        sum2 = a2.to_u128! &+ b2 &+ (sum1 >> 64)
+        sum3 = a3.to_u128! &+ b3 &+ (sum2 >> 64)
+        carry = (sum3 >> 64).to_u64!
+        # One operand is at least 2**128, so the sum has three limbs or more.
+        count = carry != 0 ? 5 : (sum3.to_u64! != 0 ? 4 : 3)
+        heap = Limbs.allocate(count)
+        heap[0] = sum0.to_u64!
+        heap[1] = sum1.to_u64!
+        heap[2] = sum2.to_u64!
+        heap[3] = sum3.to_u64! if count >= 4
+        heap[4] = carry if count == 5
+        return new(a_size < 0 ? -count : count, Limb.zero, Limb.zero, heap)
+      end
+      # |a| - |b| as |a| + ~|b| + 1; no carry out means |b| > |a|, and the
+      # two's complement of the result (through the mask) is |b| - |a|.
+      sum0 = a0.to_u128! &+ ~b0 &+ 1
+      sum1 = a1.to_u128! &+ ~b1 &+ (sum0 >> 64)
+      sum2 = a2.to_u128! &+ ~b2 &+ (sum1 >> 64)
+      sum3 = a3.to_u128! &+ ~b3 &+ (sum2 >> 64)
+      b_larger = (sum3 >> 64).to_u64! == 0
+      mask = b_larger ? Limb::MAX : Limb.zero
+      difference0 = (sum0.to_u64! ^ mask).to_u128! &+ (mask & 1)
+      difference1 = (sum1.to_u64! ^ mask).to_u128! &+ (difference0 >> 64)
+      difference2 = (sum2.to_u64! ^ mask).to_u128! &+ (difference1 >> 64)
+      limb3 = (sum3.to_u64! ^ mask) &+ (difference2 >> 64).to_u64!
+      limb2 = difference2.to_u64!
+      negative = b_larger ? b_size < 0 : a_size < 0
+      if limb3 == 0 && limb2 == 0
+        return from_magnitude((difference1 << 64) | difference0.to_u64!, negative)
+      end
+      from_three_or_four_limbs(difference0.to_u64!, difference1.to_u64!, limb2, limb3, negative)
+    end
+
+    # The *count* limbs (at most four) at *pointer*, zero above *count*.
+    @[AlwaysInline]
+    private def self.up_to_four_limbs(pointer : Pointer(Limb), count : Int32) : {Limb, Limb, Limb, Limb}
+      {
+        count > 0 ? pointer[0] : Limb.zero,
+        count > 1 ? pointer[1] : Limb.zero,
+        count > 2 ? pointer[2] : Limb.zero,
+        count > 3 ? pointer[3] : Limb.zero,
+      }
     end
 
     def - : Integer

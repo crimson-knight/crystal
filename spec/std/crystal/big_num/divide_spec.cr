@@ -115,6 +115,20 @@ require "spec"
       end
     end
 
+    it "gives the same 2/1 reciprocal from the Newton steps as from the hardware divides" do
+      random = Random::PCG32.new(23)
+      list_of_divisors = [1_u64 << 63, (1_u64 << 63) + 1, UInt64::MAX, UInt64::MAX - 1]
+      # Every 16-bit top (so every table seed) with low parts at the
+      # boundaries of d40 and d63, then random divisors.
+      (0_u64...(1_u64 << 16)).step(7) do |top|
+        base = (1_u64 << 63) | (top << 47)
+        [0_u64, 1_u64, (1_u64 << 24) - 1, 1_u64 << 24, (1_u64 << 47) - 1].each { |low| list_of_divisors << (base | low) }
+      end
+      200_000.times { list_of_divisors << (random.rand(UInt64) | (1_u64 << 63)) }
+      mismatches = list_of_divisors.count { |d| Divide.invert_limb_by_newton(d) != Divide.invert_limb_by_division(d) }
+      mismatches.should eq(0)
+    end
+
     it "divides by one limb (divrem_1 and mod_1), normalized and not" do
       random = Random::PCG32.new(11)
       [1_u64, 3_u64, 10_u64 ** 19, 1_u64 << 63, (1_u64 << 63) + 1, UInt64::MAX, 0x1234_5678_u64].each do |d|
@@ -161,6 +175,26 @@ require "spec"
         dividend[-1] = divisor[-1]
         dividend[-2] = divisor[-2]
         check_all_variants(big(integer(dividend)), big(integer(divisor)))
+      end
+    end
+
+    it "matches GMP for four-limb divisors in registers (add-back and B - 1 shapes)" do
+      random = Random::PCG32.new(29)
+      20_000.times do |round|
+        divisor = random_limbs(random, 4)
+        divisor[-1] = (1_u64 << 63) | random.rand(3).to_u64 if round % 3 == 0
+        divisor[-2] = UInt64::MAX - random.rand(2).to_u64 if round % 5 == 0
+        dividend = random_limbs(random, 4 + random.rand(9))
+        if round % 2 == 0 && dividend.size > 5
+          # Top limbs equal to the divisor's, at the top and one limb down.
+          offset = 1 + random.rand(2)
+          dividend[-offset] = divisor[-1]
+          dividend[-offset - 1] = divisor[-2]
+        end
+        a = big(integer(dividend))
+        b = big(integer(divisor))
+        q, r = integer(dividend).tdivmod(integer(divisor))
+        {big(q), big(r)}.should eq(a.unsafe_truncated_divmod(b))
       end
     end
 

@@ -813,22 +813,36 @@ module Crystal::BigNum
       root
     end
 
-    # The square root of the 128-bit *x*, rounded down: a double-precision
-    # estimate raised above the root, then one Newton step from above
-    # (`(s + x / s) / 2`), which lands on the root or one above.
+    # The square root of the 128-bit *x*, rounded down, with no hardware
+    # division (see `sqrt_rem_128`).
     def self.isqrt_128(x : DoubleLimb) : Limb
       return isqrt_limb(x.to_u64!) if (x >> LIMB_BITS) == 0
-      # The estimate is within 2**12 of the root; the margin puts it above.
-      # (A root of 2**64 or more would not convert to a limb.)
-      approximate = Math.sqrt(x.to_f64) + 16_384.0
-      estimate = approximate < 18_446_744_073_709_551_616.0 ? approximate.to_u64! : Limb::MAX
-      quotient = Divide.div_128_by_64(x, estimate)[0]
-      # Near 2**128 the step can reach 2**64, one above any limb.
-      root = Math.min((estimate.to_u128! &+ quotient) >> 1, DoubleLimb.new(Limb::MAX)).to_u64!
-      while root.to_u128! &* root > x
-        root &-= 1
+      sqrt_rem_128(x)[0]
+    end
+
+    # The root `s` and remainder `r` (`0 <= r <= 2 * s`) of the 128-bit *x*
+    # (`x >= 2**64`), and the double-precision reciprocal of the root's
+    # estimate. The estimate (the double-precision square root) is within
+    # 2**13 of the root; one Newton correction from its exact remainder
+    # (`r / 2s`, in double precision) leaves it within one, and a step or
+    # two finishes it.
+    @[AlwaysInline]
+    private def self.sqrt_rem_128(x : DoubleLimb) : {Limb, DoubleLimb, Float64}
+      root_estimate = Math.min(Math.sqrt((x >> LIMB_BITS).to_u64!.to_f64 * TWO_TO_64 + x.to_u64!.to_f64), BELOW_TWO_TO_64)
+      inverse = 1.0 / root_estimate
+      s0 = root_estimate.to_u64!
+      r = (x &- s0.to_u128! &* s0).to_i128!
+      s = s0.to_i128! &+ (signed_to_f64(r) * 0.5 * inverse).to_i64!
+      r = x.to_i128! &- s &* s
+      while r < 0
+        s &-= 1
+        r &+= (s << 1) &+ 1
       end
-      root
+      while r > (s << 1)
+        r &-= (s << 1) &+ 1
+        s &+= 1
+      end
+      {s.to_u64!, r.to_u128!, inverse}
     end
 
     # 2**64 as a double, and the largest double below it.
@@ -864,25 +878,8 @@ module Crystal::BigNum
       a1 = (a1 << shift) | ((a0 >> 1) >> back)
       a0 <<= shift
 
-      # s1, r1: the estimate is within 2**13 of the root; one Newton
-      # correction (r / 2s, from the exact remainder) leaves it within one.
-      top = (a3.to_u128! << LIMB_BITS) | a2
-      root_estimate = Math.min(Math.sqrt(a3.to_f64 * TWO_TO_64 + a2.to_f64), BELOW_TWO_TO_64)
-      inverse = 1.0 / root_estimate
-      s0 = root_estimate.to_u64!
-      r = (top &- s0.to_u128! &* s0).to_i128!
-      s = s0.to_i128! &+ (signed_to_f64(r) * 0.5 * inverse).to_i64!
-      r = top.to_i128! &- s &* s
-      while r < 0
-        s &-= 1
-        r &+= (s << 1) &+ 1
-      end
-      while r > (s << 1)
-        r &-= (s << 1) &+ 1
-        s &+= 1
-      end
-      s1 = s.to_u64!
-      r1 = r.to_u128!
+      # s1, r1: the root and remainder of the top two limbs.
+      s1, r1, inverse = sqrt_rem_128((a3.to_u128! << LIMB_BITS) | a2)
 
       # q = (r1 * B + a1) / (2 * s1) as ((r1 * B + a1) / 2) / s1: r1 <= 2 * s1,
       # so the halved numerator fits 128 bits and q is at most B.
