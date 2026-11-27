@@ -51,10 +51,10 @@ module Crystal
         debian_package: "libevent-dev",
         way_without_it: "Build without -Devloop=libevent to use the default event loop, which needs no C library."),
       "gmp" => KnownLibrary.new(
-        reason: %(the program requires "big" (BigInt, BigFloat, BigRational, BigDecimal)),
+        reason: "the program was built with -Duse_gmp (BigInt, BigFloat, BigRational and BigDecimal on GMP)",
         homebrew_formula: "gmp",
         debian_package: "libgmp-dev",
-        way_without_it: %(A program that leaves out require "big" needs no GMP.)),
+        way_without_it: "Build without -Duse_gmp to run the big numbers on pure Crystal, which needs no C library."),
       "ssl" => KnownLibrary.new(
         reason: %(the program uses TLS or OpenSSL (require "openssl", an HTTPS client or server)),
         homebrew_formula: "openssl@3",

@@ -11,8 +11,11 @@ end
 struct BigDecimal < Number
 end
 
-# The engine: every big type runs on the pure-Crystal `Crystal::BigNum` by
-# default, or on GMP under `-Duse_gmp` (`src/big/gmp/`).
+# The engine: `BigInt`, `BigFloat`, `BigRational` and `BigDecimal` run on the
+# pure-Crystal `Crystal::BigNum` by default, and nothing links libgmp; see
+# `doc/big_num.md`. The compiler flag `-Duse_gmp` selects GMP instead
+# (`src/big/gmp/`, links `libgmp`). The flag is kept for one release, so
+# programs can compare the two engines before it goes away.
 {% if flag?(:use_gmp) %}
   require "./big/lib_gmp"
   require "./big/gmp/big_int"
