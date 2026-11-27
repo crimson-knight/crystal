@@ -1,14 +1,33 @@
-require "spec"
+# The engine is 64-bit only; 32-bit targets run the big types on GMP.
+require "crystal/big_num/availability"
+{% skip_file unless Crystal::BigNum::TARGET_SUPPORTED %}
 
-# GMP's `BigInt` is the oracle in these examples, and only `-Duse_gmp` keeps
-# `BigInt` on GMP; the default build puts it on the engine under test.
+require "spec"
+require "crystal/big_num"
+
+# The examples above the `-Duse_gmp` guard check the engine against itself and
+# run in every build. Below the guard GMP's `BigInt` is the oracle, and only
+# `-Duse_gmp` keeps `BigInt` on GMP; the default build puts it on the engine
+# under test.
+
+private alias Integer = Crystal::BigNum::Integer
+private alias Limb = Crystal::BigNum::Limb
+
+describe Crystal::BigNum::NumberTheory do
+  describe ".factorial" do
+    it "raises as BigInt#factorial does" do
+      expect_raises(ArgumentError, "Factorial not defined for negative values") { Integer.factorial(-1) }
+      expect_raises(ArgumentError, "Factorial not supported for numbers bigger than #{UInt64::MAX}") do
+        Integer.factorial(UInt64::MAX.to_u128 + 1)
+      end
+    end
+  end
+end
+
 {% if flag?(:use_gmp) %}
   require "big"
-  require "crystal/big_num"
 
   # GMP (through the GMP-backed `BigInt` and `LibGMP`) is the oracle throughout.
-  private alias Integer = Crystal::BigNum::Integer
-  private alias Limb = Crystal::BigNum::Limb
 
   private def integer(value : BigInt) : Integer
     limbs = [] of Limb
@@ -106,13 +125,6 @@ require "spec"
         Integer.factorial(57).should eq(Integer.factorial(57))
         big(Integer.factorial(57_u64)).should eq(BigInt.new(57).factorial)
         big(Integer.factorial(58_u8)).should eq(BigInt.new(58).factorial)
-      end
-
-      it "raises as BigInt#factorial does" do
-        expect_raises(ArgumentError, "Factorial not defined for negative values") { Integer.factorial(-1) }
-        expect_raises(ArgumentError, "Factorial not supported for numbers bigger than #{UInt64::MAX}") do
-          Integer.factorial(UInt64::MAX.to_u128 + 1)
-        end
       end
     end
 

@@ -4,6 +4,7 @@
 # * libmpir
 #
 # See https://crystal-lang.org/reference/man/required_libraries.html#big-numbers
+
 {% if flag?(:win32) && !flag?(:gnu) %}
   @[Link("mpir")]
   {% if compare_versions(Crystal::VERSION, "1.11.0-dev") >= 0 %}
@@ -282,8 +283,9 @@ lib LibGMP
   fun set_memory_functions = __gmp_set_memory_functions(malloc : SizeT -> Void*, realloc : Void*, SizeT, SizeT -> Void*, free : Void*, SizeT ->)
 end
 
-# `src/big.cr` requires this file only under `-Duse_gmp`; route GMP's
-# allocations to the GC.
+# Route GMP's allocations to the GC. `src/big.cr` requires this file only
+# when GMP runs the big types (`-Duse_gmp`, and every 32-bit target); a program
+# that requires `big/lib_gmp` itself opts into GMP the same way.
 LibGMP.set_memory_functions(
   ->(size) { GC.malloc(size) },
   ->(ptr, old_size, new_size) { GC.realloc(ptr, new_size) },

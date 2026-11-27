@@ -1,17 +1,186 @@
-require "spec"
+# The engine is 64-bit only; 32-bit targets run the big types on GMP.
+require "crystal/big_num/availability"
+{% skip_file unless Crystal::BigNum::TARGET_SUPPORTED %}
 
-# GMP's `BigInt` is the oracle in these examples, and only `-Duse_gmp` keeps
-# `BigInt` on GMP; the default build puts it on the engine under test.
+require "spec"
+require "crystal/big_num"
+
+# The examples above the `-Duse_gmp` guard check the engine against itself and
+# run in every build. Below the guard GMP's `BigInt` is the oracle, and only
+# `-Duse_gmp` keeps `BigInt` on GMP; the default build puts it on the engine
+# under test.
+
+private alias Integer = Crystal::BigNum::Integer
+private alias Limb = Crystal::BigNum::Limb
+
+private def limbs_of(value : Integer) : Array(Limb)
+  value.limbs.to_a
+end
+
+describe Crystal::BigNum::Integer do
+  describe ".new" do
+    it "keeps zero unsigned with no limbs" do
+      Integer.new(0).zero?.should be_true
+      Integer.new(0).negative?.should be_false
+      Integer.new(0).size.should eq(0)
+      Integer.new(0).limbs.size.should eq(0)
+      Integer.from_limbs(Slice[0_u64, 0_u64], true).zero?.should be_true
+      Integer.from_limbs(Slice[0_u64, 0_u64], true).negative?.should be_false
+    end
+
+    it "holds Int128 and UInt128 values in two limbs" do
+      limbs_of(Integer.new(UInt128::MAX)).should eq([Limb::MAX, Limb::MAX])
+      limbs_of(Integer.new(Int128::MIN)).should eq([0_u64, 1_u64 << 63])
+      Integer.new(Int128::MIN).negative?.should be_true
+    end
+  end
+
+  describe ".from_limbs" do
+    it "copies and drops high zero limbs" do
+      source = Slice[1_u64, 2_u64, 3_u64, 0_u64, 0_u64]
+      value = Integer.from_limbs(source, true)
+      source[0] = 9_u64
+      limbs_of(value).should eq([1_u64, 2_u64, 3_u64])
+      value.size.should eq(3)
+      value.negative?.should be_true
+      Integer.from_limbs(Slice[5_u64, 0_u64, 0_u64], false).should eq(Integer.new(5))
+    end
+
+    it "gives a read-only view of the limbs" do
+      expect_raises(Exception, /read-only/) { Integer.new(1).limbs[0] = 2_u64 }
+      expect_raises(Exception, /read-only/) { (Integer.new(1) << 300).limbs[0] = 2_u64 }
+    end
+  end
+
+  describe "#+ and #-" do
+    it "carries out of the inline limbs into a third" do
+      sum = Integer.new(UInt128::MAX) + Integer.new(1)
+      limbs_of(sum).should eq([0_u64, 0_u64, 1_u64])
+      (sum - 1).should eq(Integer.new(UInt128::MAX))
+      (-sum + 1).should eq(-Integer.new(UInt128::MAX))
+    end
+
+    it "cancels to zero across signs" do
+      a = Integer.new(1) << 500
+      (a - a).zero?.should be_true
+      (a + -a).negative?.should be_false
+    end
+  end
+
+  describe "#<=> and #==" do
+    it "orders by sign, then size, then limbs" do
+      values = [-(Integer.new(1) << 300), Integer.new(Int128::MIN), Integer.new(-1), Integer.new(0), Integer.new(1), Integer.new(UInt64::MAX), Integer.new(1) << 64, Integer.new(1) << 300]
+      values.each_with_index do |a, i|
+        values.each_with_index do |b, j|
+          (a <=> b).should eq(i <=> j)
+          (a == b).should eq(i == j)
+        end
+      end
+      (Integer.new(3) <=> 4).should eq(-1)
+      (Integer.new(-3) == -3).should be_true
+    end
+  end
+
+  describe "bit operations" do
+    it "presents the two's complement of negative values, as GMP" do
+      (Integer.new(-12) & Integer.new(10)).should eq(Integer.new(-12 & 10))
+      (Integer.new(-12) | Integer.new(10)).should eq(Integer.new(-12 | 10))
+      (Integer.new(-12) ^ Integer.new(-10)).should eq(Integer.new(-12 ^ -10))
+      (~Integer.new(0)).should eq(Integer.new(-1))
+      (~Integer.new(-1)).should eq(Integer.new(0))
+      Integer.new(-6).bit(0).should eq(0)
+      Integer.new(-6).bit(1).should eq(1)
+      Integer.new(-6).bit(2).should eq(0)
+      Integer.new(-6).bit(1000).should eq(1)
+      Integer.new(6).bit(-1).should eq(0)
+    end
+
+    it "counts bits with GMP's rules for zero and negatives" do
+      Integer.new(-5).popcount.should eq(UInt64::MAX)
+      Integer.new(0).trailing_zeros_count.should eq(UInt64::MAX)
+      Integer.new(-40).trailing_zeros_count.should eq(3)
+      Integer.new(0).bit_length.should eq(1)
+      Integer.new(-6).bit_length.should eq(3)
+      (Integer.new(1) << 4096).bit_length.should eq(4097)
+    end
+  end
+
+  describe "shifts" do
+    it "rounds a negative right shift toward minus infinity" do
+      (Integer.new(-7) >> 1).should eq(Integer.new(-4))
+      (Integer.new(-8) >> 1).should eq(Integer.new(-4))
+      (Integer.new(-1) >> 10_000).should eq(Integer.new(-1))
+      (Integer.new(7) >> 10_000).should eq(Integer.new(0))
+      (-((Integer.new(1) << 300) + 1) >> 300).should eq(Integer.new(-2))
+      (-(Integer.new(1) << 300) >> 300).should eq(Integer.new(-1))
+      # Rounding away from zero carries out of every shifted-in limb.
+      all_ones = (Integer.new(1) << 256) - Integer.new(1)
+      ((-all_ones) >> 64).should eq(-(Integer.new(1) << 192))
+      ((-all_ones) >> 1).should eq(-(Integer.new(1) << 255))
+      ((-(all_ones << 3)) >> 3).should eq(-all_ones)
+    end
+
+    it "shifts left across limbs and back" do
+      value = Integer.new(0x1234_5678_9abc_def0_u64)
+      {1, 63, 64, 65, 127, 128, 129, 1000}.each do |count|
+        ((value << count) >> count).should eq(value)
+        ((-value << count) >> count).should eq(-value)
+      end
+      (value << -4).should eq(value >> 4)
+    end
+
+    # A negative count reverses the shift, as `Int#<<` and `Int#>>` do. (The
+    # `-Duse_gmp` build hands GMP the count as unsigned and crashes; see the
+    # intended differences in the G2 README.)
+    it "takes a negative count as a shift the other way, down to Int64::MIN" do
+      value = (Integer.new(1) << 200) + 5
+      {1, 63, 64, 65, 200, 201, 10_000}.each do |count|
+        (value << -count).should eq(value >> count)
+        (-value << -count).should eq(-value >> count)
+        (value >> -count).should eq(value << count)
+      end
+      (Integer.new(5) << Int64::MIN).should eq(Integer.zero)
+      (Integer.new(-5) << Int64::MIN).should eq(Integer.new(-1))
+      (value << Int64::MIN).should eq(Integer.zero)
+      (Integer.zero << Int64::MIN).should eq(Integer.zero)
+      (Integer.new(5) << Int128::MIN).should eq(Integer.zero)
+      (Integer.new(5) << Int8::MIN).should eq(Integer.zero)
+      expect_raises(OverflowError) { Integer.new(5) >> Int64::MIN }
+    end
+  end
+
+  describe "inline limbs" do
+    # `limb_pointer` hands the kernels `pointerof(@low)` as a two-limb run, so
+    # `@high` must sit directly after `@low`.
+    it "keeps @high directly after @low" do
+      (offsetof(Integer, @high) - offsetof(Integer, @low)).should eq(sizeof(Limb))
+    end
+  end
+
+  describe "conversions" do
+    it "converts in range and gives nil out of range" do
+      Integer.new(Int64::MIN).to_i64?.should eq(Int64::MIN)
+      (Integer.new(Int64::MIN) - 1).to_i64?.should be_nil
+      Integer.new(UInt64::MAX).to_u64?.should eq(UInt64::MAX)
+      Integer.new(-1).to_u64?.should be_nil
+      (Integer.new(UInt64::MAX) + 1).to_u64?.should be_nil
+      Integer.new(Int128::MIN).to_i128?.should eq(Int128::MIN)
+      Integer.new(UInt128::MAX).to_u128?.should eq(UInt128::MAX)
+      (Integer.new(UInt128::MAX) + 1).to_u128?.should be_nil
+    end
+
+    it "wraps the two's complement, as BigInt#to_u64!" do
+      Integer.new(-1).to_u64!.should eq(UInt64::MAX)
+      Integer.new(-3).to_i64!.should eq(-3_i64)
+      (-(Integer.new(1) << 64) - 5).to_i64!.should eq(-5_i64)
+      (Integer.new(-1) << 70).to_u64!.should eq(0_u64)
+      Integer.new(-1).to_i128!.should eq(-1_i128)
+    end
+  end
+end
+
 {% if flag?(:use_gmp) %}
   require "big"
-  require "crystal/big_num"
-
-  private alias Integer = Crystal::BigNum::Integer
-  private alias Limb = Crystal::BigNum::Limb
-
-  private def limbs_of(value : Integer) : Array(Limb)
-    value.limbs.to_a
-  end
 
   describe Crystal::BigNum::Integer do
     describe ".new" do
@@ -25,67 +194,6 @@ require "spec"
             integer.to_i128!.should eq(value.to_i128!)
           end
         {% end %}
-      end
-
-      it "keeps zero unsigned with no limbs" do
-        Integer.new(0).zero?.should be_true
-        Integer.new(0).negative?.should be_false
-        Integer.new(0).size.should eq(0)
-        Integer.new(0).limbs.size.should eq(0)
-        Integer.from_limbs(Slice[0_u64, 0_u64], true).zero?.should be_true
-        Integer.from_limbs(Slice[0_u64, 0_u64], true).negative?.should be_false
-      end
-
-      it "holds Int128 and UInt128 values in two limbs" do
-        limbs_of(Integer.new(UInt128::MAX)).should eq([Limb::MAX, Limb::MAX])
-        limbs_of(Integer.new(Int128::MIN)).should eq([0_u64, 1_u64 << 63])
-        Integer.new(Int128::MIN).negative?.should be_true
-      end
-    end
-
-    describe ".from_limbs" do
-      it "copies and drops high zero limbs" do
-        source = Slice[1_u64, 2_u64, 3_u64, 0_u64, 0_u64]
-        value = Integer.from_limbs(source, true)
-        source[0] = 9_u64
-        limbs_of(value).should eq([1_u64, 2_u64, 3_u64])
-        value.size.should eq(3)
-        value.negative?.should be_true
-        Integer.from_limbs(Slice[5_u64, 0_u64, 0_u64], false).should eq(Integer.new(5))
-      end
-
-      it "gives a read-only view of the limbs" do
-        expect_raises(Exception, /read-only/) { Integer.new(1).limbs[0] = 2_u64 }
-        expect_raises(Exception, /read-only/) { (Integer.new(1) << 300).limbs[0] = 2_u64 }
-      end
-    end
-
-    describe "#+ and #-" do
-      it "carries out of the inline limbs into a third" do
-        sum = Integer.new(UInt128::MAX) + Integer.new(1)
-        limbs_of(sum).should eq([0_u64, 0_u64, 1_u64])
-        (sum - 1).should eq(Integer.new(UInt128::MAX))
-        (-sum + 1).should eq(-Integer.new(UInt128::MAX))
-      end
-
-      it "cancels to zero across signs" do
-        a = Integer.new(1) << 500
-        (a - a).zero?.should be_true
-        (a + -a).negative?.should be_false
-      end
-    end
-
-    describe "#<=> and #==" do
-      it "orders by sign, then size, then limbs" do
-        values = [-(Integer.new(1) << 300), Integer.new(Int128::MIN), Integer.new(-1), Integer.new(0), Integer.new(1), Integer.new(UInt64::MAX), Integer.new(1) << 64, Integer.new(1) << 300]
-        values.each_with_index do |a, i|
-          values.each_with_index do |b, j|
-            (a <=> b).should eq(i <=> j)
-            (a == b).should eq(i == j)
-          end
-        end
-        (Integer.new(3) <=> 4).should eq(-1)
-        (Integer.new(-3) == -3).should be_true
       end
     end
 
@@ -101,71 +209,6 @@ require "spec"
         ours.hash.should eq(big.hash)
         (-ours).hash.should eq((-big).hash)
         ours.hash_reduce.should eq(Crystal::Hasher.reduce_num(big))
-      end
-    end
-
-    describe "bit operations" do
-      it "presents the two's complement of negative values, as GMP" do
-        (Integer.new(-12) & Integer.new(10)).should eq(Integer.new(-12 & 10))
-        (Integer.new(-12) | Integer.new(10)).should eq(Integer.new(-12 | 10))
-        (Integer.new(-12) ^ Integer.new(-10)).should eq(Integer.new(-12 ^ -10))
-        (~Integer.new(0)).should eq(Integer.new(-1))
-        (~Integer.new(-1)).should eq(Integer.new(0))
-        Integer.new(-6).bit(0).should eq(0)
-        Integer.new(-6).bit(1).should eq(1)
-        Integer.new(-6).bit(2).should eq(0)
-        Integer.new(-6).bit(1000).should eq(1)
-        Integer.new(6).bit(-1).should eq(0)
-      end
-
-      it "counts bits with GMP's rules for zero and negatives" do
-        Integer.new(-5).popcount.should eq(UInt64::MAX)
-        Integer.new(0).trailing_zeros_count.should eq(UInt64::MAX)
-        Integer.new(-40).trailing_zeros_count.should eq(3)
-        Integer.new(0).bit_length.should eq(1)
-        Integer.new(-6).bit_length.should eq(3)
-        (Integer.new(1) << 4096).bit_length.should eq(4097)
-      end
-    end
-
-    describe "shifts" do
-      it "rounds a negative right shift toward minus infinity" do
-        (Integer.new(-7) >> 1).should eq(Integer.new(-4))
-        (Integer.new(-8) >> 1).should eq(Integer.new(-4))
-        (Integer.new(-1) >> 10_000).should eq(Integer.new(-1))
-        (Integer.new(7) >> 10_000).should eq(Integer.new(0))
-        (-((Integer.new(1) << 300) + 1) >> 300).should eq(Integer.new(-2))
-        (-(Integer.new(1) << 300) >> 300).should eq(Integer.new(-1))
-      end
-
-      it "shifts left across limbs and back" do
-        value = Integer.new(0x1234_5678_9abc_def0_u64)
-        {1, 63, 64, 65, 127, 128, 129, 1000}.each do |count|
-          ((value << count) >> count).should eq(value)
-          ((-value << count) >> count).should eq(-value)
-        end
-        (value << -4).should eq(value >> 4)
-      end
-    end
-
-    describe "conversions" do
-      it "converts in range and gives nil out of range" do
-        Integer.new(Int64::MIN).to_i64?.should eq(Int64::MIN)
-        (Integer.new(Int64::MIN) - 1).to_i64?.should be_nil
-        Integer.new(UInt64::MAX).to_u64?.should eq(UInt64::MAX)
-        Integer.new(-1).to_u64?.should be_nil
-        (Integer.new(UInt64::MAX) + 1).to_u64?.should be_nil
-        Integer.new(Int128::MIN).to_i128?.should eq(Int128::MIN)
-        Integer.new(UInt128::MAX).to_u128?.should eq(UInt128::MAX)
-        (Integer.new(UInt128::MAX) + 1).to_u128?.should be_nil
-      end
-
-      it "wraps the two's complement, as BigInt#to_u64!" do
-        Integer.new(-1).to_u64!.should eq(UInt64::MAX)
-        Integer.new(-3).to_i64!.should eq(-3_i64)
-        (-(Integer.new(1) << 64) - 5).to_i64!.should eq(-5_i64)
-        (Integer.new(-1) << 70).to_u64!.should eq(0_u64)
-        Integer.new(-1).to_i128!.should eq(-1_i128)
       end
     end
   end
