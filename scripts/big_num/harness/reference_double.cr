@@ -122,7 +122,13 @@ module G2Harness
       end
 
       def {{op.id}}(other : ::Int::Primitive) : self
-        wrap(@value {{op.id}} other)
+        # BigInt#%(Int) negates a for a negative primitive; GMP's fdiv_r
+        # through a BigInt divisor is the contract (see operations.cr).
+        {% if op == "%" %}
+          wrap(@value % BigInt.new(other))
+        {% else %}
+          wrap(@value {{op.id}} other)
+        {% end %}
       end
     {% end %}
 
@@ -145,6 +151,33 @@ module G2Harness
     def tdivmod(other : ReferenceDouble | ::Int::Primitive) : {self, self}
       divisor = other.is_a?(ReferenceDouble) ? other.value : other
       {wrap(@value.tdiv(divisor)), ReferenceDouble.new(@value.remainder(divisor))}
+    end
+
+    # The engine raises DivisionByZeroError where GMP's unsafe_* faults.
+    {% for pair in [{"unsafe_floored_div", "//"}, {"unsafe_floored_mod", "%"}, {"unsafe_truncated_div", "tdiv"}, {"unsafe_truncated_mod", "remainder"}] %}
+      def {{pair[0].id}}(other : ReferenceDouble | ::Int::Primitive) : self
+        divisor = other.is_a?(ReferenceDouble) ? other.value : BigInt.new(other)
+        raise DivisionByZeroError.new if divisor.zero?
+        wrap(@value.{{pair[0].id}}(divisor))
+      end
+    {% end %}
+
+    def unsafe_floored_divmod(other : ReferenceDouble | ::Int::Primitive) : {self, self}
+      divisor = other.is_a?(ReferenceDouble) ? other.value : other
+      raise DivisionByZeroError.new if divisor.zero?
+      quotient, remainder = @value.unsafe_floored_divmod(divisor)
+      {wrap(quotient), ReferenceDouble.new(remainder)}
+    end
+
+    def unsafe_truncated_divmod(other : ReferenceDouble | ::Int::Primitive) : {self, self}
+      divisor = other.is_a?(ReferenceDouble) ? other.value : other
+      raise DivisionByZeroError.new if divisor.zero?
+      quotient, remainder = @value.unsafe_truncated_divmod(divisor)
+      {wrap(quotient), ReferenceDouble.new(remainder)}
+    end
+
+    def divexact(other : ReferenceDouble) : self
+      wrap(GMPOracle.divexact(@value, other.value))
     end
 
     def **(exponent : ::Int) : self
