@@ -521,7 +521,7 @@ describe BigDecimal do
     assert_prints BigDecimal.new("-#{digits}".to_big_i, 304).to_s, "-1.#{digits[1..]}e-5"
     assert_prints BigDecimal.new(5, 1_000).to_s, "5.0e-1000"
     assert_prints BigDecimal.new(-9223372036854775807, 0).to_s, "-9.223372036854775807e+18"
-    assert_prints BigDecimal.new(0, 3).to_s, "0.0"
+    assert_prints BigDecimal.new(0, 3).to_s, "0.000"
     BigDecimal.new(1, 30).format.should eq("0.000000000000000000000000000001")
   end
 
