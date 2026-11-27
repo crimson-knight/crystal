@@ -56,18 +56,7 @@ struct BigInt < Int
   #
   # *num* must be finite. The value is truncated toward zero.
   def initialize(num : Float::Primitive)
-    raise ArgumentError.new "Can only construct from a finite number" unless num.finite?
-    float = num.to_f64
-    if float.abs < 9.223372036854775808e18 # 2.0 ** 63
-      @value = Crystal::BigNum::Integer.new(float.to_i64!)
-    else
-      # An integral value: its IEEE 754 mantissa shifted by its exponent.
-      bits = float.abs.unsafe_as(UInt64)
-      exponent = ((bits >> 52) & 0x7ff).to_i32 - 1075
-      mantissa = (bits & ((1_u64 << 52) - 1)) | (1_u64 << 52)
-      magnitude = Crystal::BigNum::Integer.new(mantissa) << exponent
-      @value = float < 0 ? -magnitude : magnitude
-    end
+    @value = Crystal::BigNum::Integer.new(num)
   end
 
   # :ditto:
@@ -138,21 +127,15 @@ struct BigInt < Int
   end
 
   def <=>(other : Int)
-    @value <=> operand(other)
+    if other.is_a?(Int::Primitive) && Int64::MIN <= other <= Int64::MAX
+      compare_signed_limb(other.to_i64!)
+    else
+      @value <=> operand(other)
+    end
   end
 
   def <=>(other : Float::Primitive) : Int32?
-    return nil if other.nan?
-    return other > 0 ? -1 : 1 if other.infinite?
-
-    float = other.to_f64
-    truncated = float.trunc
-    comparison = self <=> BigInt.new(truncated)
-    return comparison unless comparison == 0
-
-    # Equal integer parts: the fraction of *other* decides (it is exact).
-    fraction = float - truncated
-    fraction > 0 ? -1 : (fraction < 0 ? 1 : 0)
+    @value <=> other
   end
 
   def +(other : BigInt) : BigInt
@@ -263,7 +246,16 @@ struct BigInt < Int
   end
 
   def unsafe_floored_mod(other : Int) : BigInt
-    BigInt.new(@value % operand(other))
+    # A negative primitive divisor whose magnitude fits in 64 bits gives
+    # `-(self mod |other|)`, as the GMP-backed `BigInt` always has (it calls
+    # `mpz_fdiv_r_ui` with the magnitude, then negates). This differs from
+    # the floored modulo when the remainder is not zero, for example
+    # `BigInt.new(-5) % -3 == -1`. Kept so both builds agree.
+    if other.is_a?(Int::Primitive) && other < 0 && other.abs_unsigned <= UInt64::MAX
+      BigInt.new(-(@value % other.abs_unsigned))
+    else
+      BigInt.new(@value % operand(other))
+    end
   end
 
   def unsafe_truncated_mod(other : BigInt) : BigInt
@@ -404,26 +396,11 @@ struct BigInt < Int
   end
 
   def to_s(base : Int = 10, *, precision : Int = 1, upcase : Bool = false) : String
-    raise ArgumentError.new("Invalid base #{base}") unless 2 <= base <= 36 || base == 62
-    raise ArgumentError.new("upcase must be false for base 62") if upcase && base == 62
-    raise ArgumentError.new("Precision must be non-negative") unless precision >= 0
-
-    return "" if precision == 0 && zero?
-
-    digits = @value.to_s(base.to_i32, upcase)
-    negative = @value.negative?
-    count = digits.bytesize - (negative ? 1 : 0)
-    return digits if precision <= count
-
-    String.build(precision + (negative ? 1 : 0)) do |io|
-      io << '-' if negative
-      (precision - count).times { io << '0' }
-      io.write_string(digits.to_slice[(negative ? 1 : 0)..])
-    end
+    @value.to_s(base, upcase, precision: precision)
   end
 
   def to_s(io : IO, base : Int = 10, *, precision : Int = 1, upcase : Bool = false) : Nil
-    io << to_s(base, precision: precision, upcase: upcase)
+    @value.to_s(io, base, upcase, precision: precision)
   end
 
   def digits(base = 10) : Array(Int32)
@@ -553,6 +530,20 @@ struct BigInt < Int
 
   def clone : BigInt
     self
+  end
+
+  # `self <=> other` as GMP's `mpz_cmp_si` gives it, which the GMP-backed
+  # `BigInt` has always returned: the signed limb count of `self` minus the
+  # sign of *other* when they differ or `self` is zero, so the result is not
+  # always -1, 0 or 1 (`(BigInt.new(2) ** 200) <=> 3 == 3`).
+  private def compare_signed_limb(other : Int64) : Int32
+    own_size = @value.negative? ? -@value.size : @value.size
+    other_size = other <=> 0
+    if own_size == 0 || own_size != other_size
+      own_size - other_size
+    else
+      @value <=> other
+    end
   end
 
   private def check_division_by_zero(value)
