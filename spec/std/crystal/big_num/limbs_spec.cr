@@ -1,34 +1,57 @@
 require "spec"
+require "crystal/big_num"
 
-# GMP's `BigInt` is the oracle in these examples, and only `-Duse_gmp` keeps
-# `BigInt` on GMP; the default build puts it on the engine under test.
+# The examples above the `-Duse_gmp` guard check the engine against itself and
+# run in every build. Below the guard GMP's `BigInt` is the oracle, and only
+# `-Duse_gmp` keeps `BigInt` on GMP; the default build puts it on the engine
+# under test.
+
+private alias Limbs = Crystal::BigNum::Limbs
+private alias Limb = Crystal::BigNum::Limb
+
+private def random_limbs(random : Random, count : Int32) : Slice(Limb)
+  Slice(Limb).new(count) do
+    case random.rand(4)
+    when 0 then Limb::MAX
+    when 1 then Limb.zero
+    else        random.rand(Limb)
+    end
+  end
+end
+
+private def each_case(&)
+  random = Random::PCG32.new(20261127)
+  (0..40).each do |count|
+    6.times { yield random, count }
+  end
+end
+
+describe Crystal::BigNum::Limbs do
+  it "applies and, and-not, or, or-not and xor limb by limb" do
+    each_case do |random, count|
+      a = random_limbs(random, count)
+      b = random_limbs(random, count)
+      result = Slice(Limb).new(count)
+      Limbs.and_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
+      result.should eq(Slice(Limb).new(count) { |i| a[i] & b[i] })
+      Limbs.andn_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
+      result.should eq(Slice(Limb).new(count) { |i| a[i] & ~b[i] })
+      Limbs.ior_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
+      result.should eq(Slice(Limb).new(count) { |i| a[i] | b[i] })
+      Limbs.iorn_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
+      result.should eq(Slice(Limb).new(count) { |i| a[i] | ~b[i] })
+      Limbs.xor_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
+      result.should eq(Slice(Limb).new(count) { |i| a[i] ^ b[i] })
+    end
+  end
+end
+
 {% if flag?(:use_gmp) %}
   require "big"
-  require "crystal/big_num"
-
-  private alias Limbs = Crystal::BigNum::Limbs
-  private alias Limb = Crystal::BigNum::Limb
 
   # The number the limbs of *slice* spell, least significant first.
   private def value_of(slice : Slice(Limb)) : BigInt
     slice.reverse_each.reduce(BigInt.new(0)) { |total, limb| (total << 64) + limb }
-  end
-
-  private def random_limbs(random : Random, count : Int32) : Slice(Limb)
-    Slice(Limb).new(count) do
-      case random.rand(4)
-      when 0 then Limb::MAX
-      when 1 then Limb.zero
-      else        random.rand(Limb)
-      end
-    end
-  end
-
-  private def each_case(&)
-    random = Random::PCG32.new(20261127)
-    (0..40).each do |count|
-      6.times { yield random, count }
-    end
   end
 
   describe Crystal::BigNum::Limbs do
@@ -129,24 +152,6 @@ require "spec"
         complement = Slice(Limb).new(count)
         Limbs.com(complement.to_unsafe, a.to_unsafe, count)
         (value_of(complement) + value_of(a)).should eq((BigInt.new(1) << (64 * count)) - 1)
-      end
-    end
-
-    it "applies and, and-not, or, or-not and xor limb by limb" do
-      each_case do |random, count|
-        a = random_limbs(random, count)
-        b = random_limbs(random, count)
-        result = Slice(Limb).new(count)
-        Limbs.and_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
-        result.should eq(Slice(Limb).new(count) { |i| a[i] & b[i] })
-        Limbs.andn_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
-        result.should eq(Slice(Limb).new(count) { |i| a[i] & ~b[i] })
-        Limbs.ior_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
-        result.should eq(Slice(Limb).new(count) { |i| a[i] | b[i] })
-        Limbs.iorn_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
-        result.should eq(Slice(Limb).new(count) { |i| a[i] | ~b[i] })
-        Limbs.xor_n(result.to_unsafe, a.to_unsafe, b.to_unsafe, count)
-        result.should eq(Slice(Limb).new(count) { |i| a[i] ^ b[i] })
       end
     end
   end

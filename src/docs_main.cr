@@ -6,8 +6,8 @@ require "./annotations"
 require "./compiler/crystal/macros"
 
 require "./*"
-# `src/big/gmp/` holds the `-Duse_gmp` versions of the big types, which
-# define the same types as the default build, so the docs load the entry file.
+# `src/big/pure/` (the default build) and `src/big/gmp/` (`-Duse_gmp`) define
+# the same big types, so the docs load the entry file, which picks one.
 require "./big"
 require "./big/json"
 require "./big/yaml"

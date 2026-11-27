@@ -3,9 +3,9 @@ require "random"
 
 # A `BigInt` can represent arbitrarily large integers.
 #
-# It is implemented in pure Crystal (`Crystal::BigNum::Integer`). The
-# `-Duse_gmp` compile-time flag switches it back to
-# [GMP](https://gmplib.org/).
+# On 64-bit targets it is implemented in pure Crystal
+# (`Crystal::BigNum::Integer`). The `-Duse_gmp` compile-time flag switches it
+# back to [GMP](https://gmplib.org/), which 32-bit targets always use.
 #
 # NOTE: To use `BigInt`, you must explicitly import it with `require "big"`
 struct BigInt < Int
@@ -281,12 +281,12 @@ struct BigInt < Int
     {BigInt.new(quotient), BigInt.new(remainder)}
   end
 
-  def unsafe_truncated_divmod(number : BigInt) : Tuple(BigInt, BigInt)
+  def unsafe_truncated_divmod(number : BigInt) : {BigInt, BigInt}
     quotient, remainder = @value.tdivmod(number.value)
     {BigInt.new(quotient), BigInt.new(remainder)}
   end
 
-  def unsafe_truncated_divmod(number : Int)
+  def unsafe_truncated_divmod(number : Int) : {BigInt, BigInt}
     quotient, remainder = @value.tdivmod(operand(number))
     {BigInt.new(quotient), BigInt.new(remainder)}
   end

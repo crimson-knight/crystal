@@ -1,32 +1,36 @@
 require "spec"
+require "crystal/big_num"
 
-# GMP's `BigInt` is the oracle in these examples, and only `-Duse_gmp` keeps
-# `BigInt` on GMP; the default build puts it on the engine under test.
+# The examples above the `-Duse_gmp` guard check the engine against itself and
+# run in every build. Below the guard GMP's `BigInt` is the oracle, and only
+# `-Duse_gmp` keeps `BigInt` on GMP; the default build puts it on the engine
+# under test.
+
+private alias Engine = Crystal::BigNum
+private alias Limb = Crystal::BigNum::Limb
+
+# Limbs of four shapes: random, all ones, sparse, and a top limb of one. The
+# top limb is never zero.
+private def operand_limbs(random : Random, count : Int32, shape : Int32) : Slice(Limb)
+  limbs = Slice(Limb).new(count) do |index|
+    case shape
+    when 1 then Limb::MAX
+    when 2 then random.rand(8) == 0 ? random.rand(Limb) : Limb.zero
+    when 3 then index == count - 1 ? Limb.new(1) : random.rand(Limb)
+    else        random.rand(Limb)
+    end
+  end
+  limbs[count - 1] = Limb.new(1) if limbs[count - 1] == 0
+  limbs
+end
+
+private def operand(random : Random, count : Int32, shape : Int32, negative : Bool = false) : Engine::Integer
+  return Engine::Integer.zero if count == 0
+  Engine::Integer.from_limbs(operand_limbs(random, count, shape), negative)
+end
+
 {% if flag?(:use_gmp) %}
   require "./integer_oracle"
-
-  private alias Engine = Crystal::BigNum
-  private alias Limb = Crystal::BigNum::Limb
-
-  # Limbs of four shapes: random, all ones, sparse, and a top limb of one. The
-  # top limb is never zero.
-  private def operand_limbs(random : Random, count : Int32, shape : Int32) : Slice(Limb)
-    limbs = Slice(Limb).new(count) do |index|
-      case shape
-      when 1 then Limb::MAX
-      when 2 then random.rand(8) == 0 ? random.rand(Limb) : Limb.zero
-      when 3 then index == count - 1 ? Limb.new(1) : random.rand(Limb)
-      else        random.rand(Limb)
-      end
-    end
-    limbs[count - 1] = Limb.new(1) if limbs[count - 1] == 0
-    limbs
-  end
-
-  private def operand(random : Random, count : Int32, shape : Int32, negative : Bool = false) : Engine::Integer
-    return Engine::Integer.zero if count == 0
-    Engine::Integer.from_limbs(operand_limbs(random, count, shape), negative)
-  end
 
   private def big(value : Engine::Integer) : BigInt
     IntegerOracle.to_big(value)

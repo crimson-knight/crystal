@@ -444,6 +444,22 @@ describe "BigInt" do
     (123456.to_big_i << 8).should eq(31604736)
   end
 
+  # An intended difference between the builds: the default build takes a
+  # negative count as a shift the other way, as `Int#<<` and `Int#>>` do,
+  # while the `-Duse_gmp` build passes it to GMP as unsigned and the process
+  # dies with SIGFPE.
+  {% unless flag?(:use_gmp) %}
+    it "shifts the other way for a negative count" do
+      (40.to_big_i >> -3).should eq(320)
+      (40.to_big_i << -3).should eq(5)
+      (-41.to_big_i << -3).should eq(-6)
+      (5.to_big_i << Int64::MIN).should eq(0)
+      (-5.to_big_i << Int64::MIN).should eq(-1)
+      ((1.to_big_i << 300) << -300).should eq(1)
+      expect_raises(OverflowError) { 5.to_big_i >> Int64::MIN }
+    end
+  {% end %}
+
   it "raises if divides by zero" do
     expect_raises DivisionByZeroError do
       10.to_big_i / 0.to_big_i
