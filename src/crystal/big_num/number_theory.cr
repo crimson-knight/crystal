@@ -12,9 +12,9 @@ module Crystal::BigNum
   # |---|---|
   # | `pow` | left-to-right binary exponentiation (square and multiply), Knuth TAOCP Vol. 2, 4.6.3; factors of two of the base become one shift |
   # | `factorial` | the product of the odd parts of 1 to n, as many factors per limb as fit, shifted by Legendre's count of twos; n up to 57 (results up to 256 bits) from a table built once by the same product |
-  # | `gcd`, `lcm` | binary gcd (Stein; Knuth 4.5.2 Algorithm B) on one limb; Lehmer's algorithm (Knuth 4.5.2 Algorithm L) with 62-bit leading digits above one limb |
-  # | `invert` | extended Euclid on one limb; extended Lehmer (Algorithm L carrying one cofactor) above |
-  # | `isqrt` | a floating-point estimate and one Newton step on two limbs; Newton's method seeded from the square root of the top half (Brent and Zimmermann, *Modern Computer Arithmetic*, 1.5.1) above |
+  # | `gcd`, `lcm` | binary gcd (Stein; Knuth 4.5.2 Algorithm B) on one and two limbs; Lehmer's algorithm (Knuth 4.5.2 Algorithm L) with 62-bit leading digits from three limbs, down to two |
+  # | `invert` | extended Euclid on one limb; extended Lehmer (Algorithm L carrying one cofactor) above, finishing with extended Euclid whose cofactor steps are gathered in one matrix |
+  # | `isqrt` | a floating-point estimate and one Newton step on two limbs; one Karatsuba square root step (Brent and Zimmermann, *Modern Computer Arithmetic*, Algorithm 1.12) on three and four limbs; Newton's method seeded from the root of the top half above |
   # | `remove` | division by the largest power of the factor that fits a limb, then the factor's multiplicity in the first nonzero remainder |
   #
   # Operands and results of up to two limbs stay in registers as `UInt128`
@@ -32,78 +32,78 @@ module Crystal::BigNum
     # *base* raised to *exponent* (`mpz_pow_ui`); `0 ** 0` is 1.
     def self.pow(base : Integer, exponent : Int) : Integer
       raise ArgumentError.new("Negative exponent isn't supported") if exponent < 0
-      e = exponent.to_u64
-      return Integer.new(1) if e == 0
-      return base if e == 1 || base.zero?
-      negative = base.negative? && e.odd?
+      exponent_value = exponent.to_u64
+      return Integer.new(1) if exponent_value == 0
+      return base if exponent_value == 1 || base.zero?
+      negative = base.negative? && exponent_value.odd?
       count = base.size
       if count == 1
-        b = base.limb_at(0)
-        return Integer.new(negative ? -1 : 1) if b == 1
-        bits = LIMB_BITS - b.leading_zeros_count.to_i32
-        if e <= 128 && bits.to_u64 * e <= 128
-          return Integer.from_magnitude(pow_128(b, e), negative)
+        base_limb = base.limb_at(0)
+        return Integer.new(negative ? -1 : 1) if base_limb == 1
+        bits = LIMB_BITS - base_limb.leading_zeros_count.to_i32
+        if exponent_value <= 128 && bits.to_u64 * exponent_value <= 128
+          return Integer.from_magnitude(pow_128(base_limb, exponent_value), negative)
         end
       end
       zeros = base.trailing_zeros_count
       if zeros > 0
         odd = base.abs >> zeros
-        shift = zeros.to_u128 * e
+        shift = zeros.to_u128 * exponent_value
         raise ArgumentError.new("Result of ** too large") if shift > Int32::MAX
-        powered = odd.size == 1 && odd.limb_at(0) == 1 ? Integer.new(1) : pow(odd, e)
+        powered = odd.size == 1 && odd.limb_at(0) == 1 ? Integer.new(1) : pow(odd, exponent_value)
         result = powered.abs << shift.to_i32
         return negative ? -result : result
       end
-      pow_magnitude(base, e, negative)
+      pow_magnitude(base, exponent_value, negative)
     end
 
-    # *b* to the *e*, when the result fits 128 bits.
-    private def self.pow_128(b : Limb, e : UInt64) : UInt128
-      result = b.to_u128!
-      index = 62 - e.leading_zeros_count.to_i32
+    # *base_limb* to the *exponent_value*, when the result fits 128 bits.
+    private def self.pow_128(base_limb : Limb, exponent_value : UInt64) : UInt128
+      result = base_limb.to_u128!
+      index = 62 - exponent_value.leading_zeros_count.to_i32
       while index >= 0
         result = result &* result
-        result = result &* b if e.bit(index) == 1
+        result = result &* base_limb if exponent_value.bit(index) == 1
         index -= 1
       end
       result
     end
 
     # The odd magnitude of *base* (more than one limb, or a result above
-    # 128 bits) raised to *e* >= 2, with the sign *negative*.
-    private def self.pow_magnitude(base : Integer, e : UInt64, negative : Bool) : Integer
+    # 128 bits) raised to *exponent_value* >= 2, with the sign *negative*.
+    private def self.pow_magnitude(base : Integer, exponent_value : UInt64, negative : Bool) : Integer
       bn = base.size
-      bits = base.bit_length.to_u128 * e
+      bits = base.bit_length.to_u128 * exponent_value
       raise ArgumentError.new("Result of ** too large") if bits > (Int32::MAX.to_u128 - 2) * LIMB_BITS
       capacity = (bits // LIMB_BITS).to_i32 + 2
       bp = base.limb_pointer
       if capacity <= STACK_LIMBS
         first = uninitialized StaticArray(Limb, STACK_LIMBS)
         second = uninitialized StaticArray(Limb, STACK_LIMBS)
-        rp, used = pow_into(first.to_unsafe, second.to_unsafe, bp, bn, e)
+        rp, used = pow_into(first.to_unsafe, second.to_unsafe, bp, bn, exponent_value)
         Integer.build(used, negative) do |target|
           Limbs.copy(target, rp, used)
           used
         end
       else
-        rp, used = pow_into(Limbs.allocate(capacity), Limbs.allocate(capacity), bp, bn, e)
+        rp, used = pow_into(Limbs.allocate(capacity), Limbs.allocate(capacity), bp, bn, exponent_value)
         Integer.from_buffer(rp, used, negative, true)
       end
     end
 
     # Left-to-right square and multiply of the *bn* limbs of *bp* to the
-    # *e*, ping-ponging between *rp* and *tp* (each large enough for the
+    # *exponent_value*, ping-ponging between *rp* and *tp* (each large enough for the
     # result plus two limbs). Returns the buffer that holds the result and
     # its limb count.
-    private def self.pow_into(rp : Pointer(Limb), tp : Pointer(Limb), bp : Pointer(Limb), bn : Int32, e : UInt64) : {Pointer(Limb), Int32}
+    private def self.pow_into(rp : Pointer(Limb), tp : Pointer(Limb), bp : Pointer(Limb), bn : Int32, exponent_value : UInt64) : {Pointer(Limb), Int32}
       Limbs.copy(rp, bp, bn)
       rn = bn
-      index = 62 - e.leading_zeros_count.to_i32
+      index = 62 - exponent_value.leading_zeros_count.to_i32
       while index >= 0
         Multiply.sqr(tp, rp, rn)
         rn = Limbs.normalize(tp, 2 * rn)
         rp, tp = tp, rp
-        if e.bit(index) == 1
+        if exponent_value.bit(index) == 1
           if bn == 1
             rp[rn] = Limbs.mul_1(rp, rp, rn, bp[0])
             rn = Limbs.normalize(rp, rn + 1)
@@ -139,9 +139,9 @@ module Crystal::BigNum
     def self.factorial(n : Int) : Integer
       raise ArgumentError.new("Factorial not defined for negative values") if n < 0
       raise ArgumentError.new("Factorial not supported for numbers bigger than #{UInt64::MAX}") if n > UInt64::MAX
-      k = n.to_u64
-      return FACTORIAL_TABLE[k] if k <= FACTORIAL_TABLE_LIMIT
-      odd_factorial_shifted(k)
+      factor_count = n.to_u64
+      return FACTORIAL_TABLE[factor_count] if factor_count <= FACTORIAL_TABLE_LIMIT
+      odd_factorial_shifted(factor_count)
     end
 
     # *n*! (above the table) as the table's last entry times the odd parts
