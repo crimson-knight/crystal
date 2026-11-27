@@ -14,7 +14,7 @@ module Crystal::BigNum
   # | `factorial` | the product of the odd parts of 1 to n, as many factors per limb as fit, shifted by Legendre's count of twos; n up to 57 (results up to 256 bits) from a table built once by the same product |
   # | `gcd`, `lcm` | binary gcd (Stein; Knuth 4.5.2 Algorithm B) on one and two limbs; Lehmer's algorithm (Knuth 4.5.2 Algorithm L) with 62-bit leading digits from three limbs, down to two |
   # | `invert` | extended Euclid on one limb; extended Lehmer (Algorithm L carrying one cofactor) above, finishing with extended Euclid whose cofactor steps are gathered in one matrix |
-  # | `isqrt` | a floating-point estimate and one Newton step on two limbs; one Karatsuba square root step (Brent and Zimmermann, *Modern Computer Arithmetic*, Algorithm 1.12) on three and four limbs; Newton's method seeded from the root of the top half above |
+  # | `isqrt` | a floating-point estimate and one Newton step on two limbs; one Karatsuba square root step (Brent and Zimmermann, *Modern Computer Arithmetic*, Algorithm 1.12) on three and four limbs, in registers from double-precision estimates; Newton's method seeded from the root of the top half above |
   # | `remove` | division by the largest power of the factor that fits a limb, then the factor's multiplicity in the first nonzero remainder |
   #
   # Operands and results of up to two limbs stay in registers as `UInt128`
@@ -831,29 +831,77 @@ module Crystal::BigNum
       root
     end
 
+    # 2**64 as a double, and the largest double below it.
+    private TWO_TO_64       = 18_446_744_073_709_551_616.0
+    private BELOW_TWO_TO_64 = 18_446_744_073_709_549_568.0
+
     # The square root of *n* of three or four limbs, rounded down: one step
     # of Zimmermann's Karatsuba square root on limbs (Brent and Zimmermann,
-    # *Modern Computer Arithmetic*, Algorithm 1.12 `SqrtRem`). With *n*
-    # shifted left by an even count to `a3:a2:a1:a0` (`a3 >= 2**62`), the
-    # root `s1` and remainder `r1` of `a3:a2` and one division of `r1:a1` by
-    # `2 * s1` give the root `s1 * B + q`, too large by one at most.
+    # *Modern Computer Arithmetic*, Algorithm 1.12 `SqrtRem`), in registers.
+    # With *n* shifted left by an even count to `a3:a2:a1:a0`
+    # (`a3 >= 2**62`; a three-limb value takes a zero `a0` and half a limb
+    # more of shift), the root `s1` and remainder `r1` of `a3:a2` and the
+    # quotient `q` of `r1:a1` by `2 * s1` give the root `s1 * B + q`, too
+    # large by one at most. Both `s1` and `q` come from double-precision
+    # estimates (the square root of `a3:a2` and its reciprocal) corrected
+    # once from their exact 128-bit remainder, then by a step or two;
+    # there is no hardware division.
     private def self.isqrt_256(n : Integer) : Integer
-      count = n.size
       np = n.limb_pointer
-      padded = StaticArray(Limb, 4).new(Limb.zero)
-      Limbs.copy(padded.to_unsafe, np, count)
-      zeros = (4 - count) * LIMB_BITS + np[count - 1].leading_zeros_count.to_i32
-      half_shift = zeros // 2
-      limbs = shift_left_256(padded, 2 * half_shift)
-      a3, a2, a1, a0 = limbs[3], limbs[2], limbs[1], limbs[0]
+      if n.size == 4
+        a3, a2, a1, a0 = np[3], np[2], np[1], np[0]
+        half_shift = 0
+      else
+        a3, a2, a1, a0 = np[2], np[1], np[0], Limb.zero
+        half_shift = LIMB_BITS // 2
+      end
+      shift = a3.leading_zeros_count.to_i32 & ~1
+      half_shift += shift >> 1
+      # `(x >> 1) >> (63 - shift)` is `x >> (64 - shift)`, and 0 for a zero shift.
+      back = LIMB_BITS - 1 - shift
+      a3 = (a3 << shift) | ((a2 >> 1) >> back)
+      a2 = (a2 << shift) | ((a1 >> 1) >> back)
+      a1 = (a1 << shift) | ((a0 >> 1) >> back)
+      a0 <<= shift
+
+      # s1, r1: the estimate is within 2**13 of the root; one Newton
+      # correction (r / 2s, from the exact remainder) leaves it within one.
       top = (a3.to_u128! << LIMB_BITS) | a2
-      s1 = isqrt_128(top)
-      r1 = top &- s1.to_u128! &* s1
-      # (r1 * B + a1) / (2 * s1) as ((r1 * B + a1) / 2) / s1: r1 <= 2 * s1,
-      # so the halved numerator fits 128 bits.
+      root_estimate = Math.min(Math.sqrt(a3.to_f64 * TWO_TO_64 + a2.to_f64), BELOW_TWO_TO_64)
+      inverse = 1.0 / root_estimate
+      s0 = root_estimate.to_u64!
+      r = (top &- s0.to_u128! &* s0).to_i128!
+      s = s0.to_i128! &+ (signed_to_f64(r) * 0.5 * inverse).to_i64!
+      r = top.to_i128! &- s &* s
+      while r < 0
+        s &-= 1
+        r &+= (s << 1) &+ 1
+      end
+      while r > (s << 1)
+        r &-= (s << 1) &+ 1
+        s &+= 1
+      end
+      s1 = s.to_u64!
+      r1 = r.to_u128!
+
+      # q = (r1 * B + a1) / (2 * s1) as ((r1 * B + a1) / 2) / s1: r1 <= 2 * s1,
+      # so the halved numerator fits 128 bits and q is at most B.
       halved = (r1 << (LIMB_BITS - 1)) | (a1 >> 1)
-      q, halved_remainder = Divide.div_128_by_64(halved, s1)
-      remainder = (DoubleLimb.new(halved_remainder) << 1) | (a1 & 1)
+      quotient_estimate = ((halved >> LIMB_BITS).to_u64!.to_f64 * TWO_TO_64 + halved.to_u64!.to_f64) * inverse
+      q = Math.min(quotient_estimate, BELOW_TWO_TO_64).to_u64!.to_u128!
+      halved_remainder = (halved &- q &* s1).to_i128!
+      q = (q.to_i128! &+ (signed_to_f64(halved_remainder) * inverse).to_i64!).to_u128!
+      halved_remainder = (halved &- q &* s1).to_i128!
+      while halved_remainder < 0
+        q &-= 1
+        halved_remainder &+= s1
+      end
+      while halved_remainder >= s1
+        q &+= 1
+        halved_remainder &-= s1
+      end
+      remainder = (halved_remainder.to_u128! << 1) | (a1 & 1)
+
       # The root is too large by one when remainder * B + a0 < q**2; both
       # sides have up to 129 bits (q is at most B).
       left_high = remainder >> LIMB_BITS
@@ -865,20 +913,9 @@ module Crystal::BigNum
       Integer.from_magnitude(root >> half_shift, false)
     end
 
-    # The four limbs of *value* shifted left by *count* bits (below 256).
-    private def self.shift_left_256(value : StaticArray(Limb, 4), count : Int32) : StaticArray(Limb, 4)
-      limb_shift = count // LIMB_BITS
-      bit_shift = count % LIMB_BITS
-      result = StaticArray(Limb, 4).new(Limb.zero)
-      index = 3
-      while index >= limb_shift
-        source = index - limb_shift
-        limb = value[source] << bit_shift
-        limb |= value[source - 1] >> (LIMB_BITS - bit_shift) if bit_shift != 0 && source > 0
-        result[index] = limb
-        index -= 1
-      end
-      result
+    # The signed 128-bit *value* as a double (two exact limb conversions).
+    private def self.signed_to_f64(value : Int128) : Float64
+      (value >> LIMB_BITS).to_i64!.to_f64 * TWO_TO_64 + value.to_u64!.to_f64
     end
 
     # The square root of *n* above four limbs: the root of the top half

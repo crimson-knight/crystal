@@ -233,6 +233,27 @@ require "spec"
         end
       end
 
+      it "matches GMP on three and four limbs at every bit length and every root shape" do
+        # Every normalizing shift, the largest and smallest roots of each
+        # length (estimates at the 2**64 clamp), squares and their
+        # neighbors, and remainders of exactly 2 * root.
+        random = Random::PCG32.new(192_u64)
+        (129..256).each do |bits|
+          low = BigInt.new(1) << (bits - 1)
+          high = (BigInt.new(1) << bits) - 1
+          [low, low + 1, high, high - 1].each do |value|
+            big(integer(value).isqrt).should eq(Math.isqrt(value))
+          end
+          8.times do
+            root = Math.isqrt(random_big(random, bits))
+            [root * root - 1, root * root, root * root + 1, root * root + 2 * root].each do |value|
+              next unless value.bit_length.in?(129..256)
+              big(integer(value).isqrt).should eq(Math.isqrt(value))
+            end
+          end
+        end
+      end
+
       it "matches GMP on random values" do
         random = Random::PCG32.new(5_u64)
         (1..300).each do |bits|
