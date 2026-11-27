@@ -116,6 +116,22 @@ require "spec"
       end
     end
 
+    it "gives the same 3/2 quotient and remainder from the hardware divide as from the reciprocal" do
+      random = Random::PCG32.new(37)
+      200_000.times do |round|
+        d1 = random.rand(UInt64) | (1_u64 << 63)
+        d0 = round % 7 == 0 ? UInt64::MAX - random.rand(3).to_u64 : random.rand(UInt64)
+        divisor = (d1.to_u128 << 64) | d0
+        # n2:n1 below the divisor, often with n2 == d1 (the B - 1 estimate).
+        top = round % 3 == 0 ? divisor - 1 - random.rand(UInt64) : ((random.rand(UInt64).to_u128 << 64) | random.rand(UInt64)) % divisor
+        n2 = (top >> 64).to_u64!
+        n1 = top.to_u64!
+        n0 = random.rand(UInt64)
+        expected = Divide.div_3by2(n2, n1, n0, d1, d0, Divide.invert_pair(d1, d0))
+        Divide.div_3by2_by_divide(n2, n1, n0, d1, d0).should eq(expected)
+      end
+    end
+
     it "divides by one limb (divrem_1 and mod_1), normalized and not" do
       random = Random::PCG32.new(11)
       [1_u64, 3_u64, 10_u64 ** 19, 1_u64 << 63, (1_u64 << 63) + 1, UInt64::MAX, 0x1234_5678_u64].each do |d|
