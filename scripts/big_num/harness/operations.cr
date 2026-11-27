@@ -19,7 +19,7 @@ module G2Harness
   # (`Crystal::BigNum::Integer`, or `ReferenceDouble` for the self-check).
   class Operations(T)
     LIST_OF_NAMES = %w(
-      new_primitive new_float from_limbs parse to_s
+      new_primitive new_float from_limbs parse parse_round_trip to_s size_in_base
       compare compare_primitive compare_float equal hash
       add add_primitive sub sub_primitive mul mul_primitive sqr square negate abs
       floor_div floor_div_primitive floor_mod floor_mod_primitive divmod divmod_primitive
@@ -188,23 +188,43 @@ module G2Harness
       source.chance(0.05) ? 0 : source.primitive
     end
 
+    # A string for `parse` in *base*: mostly valid digits in either case,
+    # with the syntax `mpz_set_str` accepts around them (leading whitespace,
+    # a sign, a base prefix, leading zeros, whitespace inside) and now and
+    # then something it rejects or cuts short (an invalid byte, a space after
+    # the sign, a NUL byte).
     private def digit_string(source : OperandSource, base : Int32) : String
       digits = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      upper = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      spaces = [' ', '\t', '\n', '\v', '\f', '\r']
       effective = base == 0 ? 10 : base.clamp(2, 62)
-      length = Math.max(1, source.operand.bits * 3 // 10)
+      length = source.chance(0.05) ? source.rand(0..3) : Math.max(1, source.operand.bits * 3 // 10)
       String.build do |io|
-        io << source.sample(['-', '+', ' ']) if source.chance(0.3)
-        if base == 0
-          io << source.sample(["", "0x", "0X", "0b", "0B", "0"])
+        source.rand(1..3).times { io << source.sample(spaces) } if source.chance(0.1)
+        io << source.sample(["-", "+", " ", "- ", "-+", "--"]) if source.chance(0.3)
+        if base == 0 || source.chance(0.02)
+          io << source.sample(["", "0x", "0X", "0b", "0B", "0", "0x ", "0 x", "00x"])
         end
+        source.rand(1..5).times { io << (source.chance(0.8) ? '0' : source.sample(spaces)) } if source.chance(0.1)
         length.times do |index|
-          io << (source.chance(0.002) ? source.sample(['_', ' ', '\t', '\n']) : digits[source.rand(effective)])
+          if source.chance(0.002)
+            io << source.sample(spaces + ['_'])
+          elsif effective <= 36 && source.chance(0.5)
+            io << upper[source.rand(effective)]
+          else
+            io << digits[source.rand(effective)]
+          end
           io << '_' if index > 0 && source.chance(0.001)
         end
         if source.chance(0.05) # invalid digit for this base
           io << digits[Math.min(effective, 61)]
         end
         io << "!" if source.chance(0.01)
+        io << ' ' if source.chance(0.005)
+        if source.chance(0.01) # mpz_set_str stops at a NUL byte
+          io << '\0' << source.sample(["", "12", "zz", " "])
+        end
+        source.rand(1..3).times { io << source.sample(spaces) } if source.chance(0.05)
       end
     end
 
@@ -227,11 +247,24 @@ module G2Harness
         s = digit_string(source, base)
         b = base
         check({s, b}, BigInt.new(s, b), T.parse(s.lchop('+').delete('_'), b))
+      when "parse_round_trip"
+        a = source.operand
+        b = source.sample([2, 8, 10, 10, 16, 16, 36, 62, source.rand(2..36)])
+        u = b != 62 && source.chance(0.5)
+        s = oracle_value(a).to_s(b, upcase: u)
+        s = " #{s[0, s.size // 2]} #{s[s.size // 2..]}\n" if source.chance(0.1)
+        b = 0 if b == 10 && source.chance(0.2)
+        check({s, b}, BigInt.new(s, b), T.parse(s.lchop('+').delete('_'), b))
       when "to_s"
         a = source.operand
         b = source.sample([2, 8, 10, 10, 16, 36, 62, source.rand(2..36)])
         u = b != 62 && source.chance(0.5)
-        check({a, b, u}, a.to_s(b, upcase: u), a.to_s(b, upcase: u))
+        p = source.chance(0.8) ? 1 : source.rand(0..(a.bits // 2 + 20))
+        check({a, b, u, p}, a.to_s(b, upcase: u, precision: p))
+      when "size_in_base"
+        a = source.operand
+        b = source.rand(2..62)
+        check({a, b}, LibGMP.sizeinbase(a, b).to_i64, a.size_in_base(b))
       when "compare"
         a = source.operand
         c = other_for(a, source)

@@ -38,11 +38,12 @@ module G2Harness
 
   class Bench
     LIST_OF_OPERATIONS = %w(add sub mul mul_unbalanced sqr divmod divmod_limb to_s_10 to_s_16 parse_10
+      to_s_10_call to_s_16_call parse_10_call parse_16 parse_16_call to_f64 new_float compare_float
       gcd isqrt pow pow_mod shift and compare hash)
     LIST_OF_BITS_UNDER_THE_BAR = [64, 128, 256, 512, 1_024, 2_048, 4_096]
     LIST_OF_BITS_REPORTED      = [8_192, 32_768, 131_072, 1_048_576]
     # Rows that take minutes per operation on GMP itself above these sizes.
-    LARGEST_BITS = {"pow_mod" => 8_192}
+    LARGEST_BITS = {"pow_mod" => 8_192, "new_float" => 1_024}
 
     @@sink = 0_u64
     @@live = true
@@ -75,9 +76,10 @@ module G2Harness
       limbs.empty? ? 0_u64 : limbs[0]
     end
 
+    # The low limb, read without a copy (`limbs` copies an inline value
+    # to the heap, which would bill our side for an allocation).
     private def fold(value : Crystal::BigNum::Integer) : UInt64
-      limbs = value.limbs
-      limbs.empty? ? 0_u64 : limbs[0]
+      value.to_u64!
     end
 
     private def fold(value : Tuple) : UInt64
@@ -129,6 +131,32 @@ module G2Harness
       when "parse_10"
         text = gmp_of(a).to_s
         row(BigInt.new(text, 10), Crystal::BigNum::Integer.parse(text, 10))
+      when "to_s_10_call", "to_s_16_call"
+        # The `_call` rows time GMP's own call alone: `mpz_get_str` into a
+        # buffer allocated once against our `to_s(io)` into an `IO::Memory`
+        # reused across calls (neither side allocates up to 512 bits), and
+        # `mpz_set_str` into a value initialized once against our whole
+        # `parse`.
+        base = operation == "to_s_10_call" ? 10 : 16
+        buffer = Pointer(UInt8).malloc(gmp_of(a).to_s(base).bytesize + 2)
+        io = IO::Memory.new(gmp_of(a).to_s(base).bytesize + 2)
+        row(LibGMP.get_str(buffer, base, x).value, (io.clear; x.to_s(io, base); io.bytesize))
+      when "parse_10_call", "parse_16_call", "parse_16"
+        base = operation == "parse_10_call" ? 10 : 16
+        text = gmp_of(a).to_s(base)
+        target = BigInt.new(text, base)
+        if operation == "parse_16"
+          row(BigInt.new(text, base), Crystal::BigNum::Integer.parse(text, base))
+        else
+          row(LibGMP.set_str(target, text, base), Crystal::BigNum::Integer.parse(text, base))
+        end
+      when "to_f64" then row(x.to_f64.unsafe_as(UInt64))
+      when "new_float"
+        float = gmp_of(a).to_f64
+        row(BigInt.new(float), Crystal::BigNum::Integer.new(float))
+      when "compare_float"
+        float = gmp_of(a).to_f64
+        row((x <=> float) || 0)
       when "gcd"   then row(x.gcd(y))
       when "isqrt" then row(Math.isqrt(x), x.isqrt)
       when "pow"
