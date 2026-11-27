@@ -37,9 +37,9 @@ module G2Harness
   record BenchCase, operation : String, bits : Int32, gmp : Proc(UInt64), ours : Proc(UInt64)
 
   class Bench
-    LIST_OF_OPERATIONS = %w(add sub mul mul_unbalanced sqr divmod divmod_limb to_s_10 to_s_16 parse_10
+    LIST_OF_OPERATIONS = %w(add sub mul mul_unbalanced mul_primitive sqr divmod divmod_limb to_s_10 to_s_16 parse_10
       gcd isqrt pow pow_mod shift and compare hash)
-    LIST_OF_BITS_UNDER_THE_BAR = [64, 128, 256, 512, 1_024, 2_048, 4_096]
+    LIST_OF_BITS_UNDER_THE_BAR = [64, 128, 192, 256, 512, 1_024, 2_048, 4_096]
     LIST_OF_BITS_REPORTED      = [8_192, 32_768, 131_072, 1_048_576]
     # Rows that take minutes per operation on GMP itself above these sizes.
     LARGEST_BITS = {"pow_mod" => 8_192}
@@ -117,7 +117,10 @@ module G2Harness
       when "sub"            then row(x - y)
       when "mul"            then row(x * y)
       when "mul_unbalanced" then row(x * z)
-      when "sqr"            then row(x * x, x.square)
+      when "mul_primitive"
+        factor = source.dense_of(64).limbs[0] >> 1
+        row(x * factor)
+      when "sqr" then row(x * x, x.square)
       when "divmod"
         a = operand(source, bits * 2)
         row(x.divmod(y))
