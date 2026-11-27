@@ -65,7 +65,7 @@ require "spec"
   end
 
   describe Crystal::BigNum::Divide do
-    it "divides two limbs by one with the hardware divide (div_2by1_plain)" do
+    it "divides two limbs by one with the hardware divide (div_2by1_plain and the half-limb body)" do
       random = Random::PCG32.new(17)
       divisors = [1_u64 << 63, (1_u64 << 63) + 1, UInt64::MAX, UInt64::MAX - 1, 0x8000_0001_0000_0000_u64, 0xffff_ffff_0000_0000_u64]
       20.times { divisors << (random.rand(UInt64) | (1_u64 << 63)) }
@@ -78,6 +78,7 @@ require "spec"
             dividend = (BigInt.new(u1) << 64) + u0
             q.should eq(dividend // d)
             r.should eq(dividend % d)
+            Divide.div_2by1_by_halves(u1, u0, d).should eq({q, r})
           end
         end
       end

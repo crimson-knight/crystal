@@ -28,11 +28,31 @@ module Crystal::BigNum
 
     # ---- Two-limb by one-limb, without a reciprocal ----
 
-    # Divides *u1*:*u0* (`u1 < d`) by the normalized limb *d* (top bit set)
-    # with two hardware divides of a limb by a half limb; returns the
-    # quotient and the remainder. Knuth's Algorithm D on half-limb digits, as
-    # Warren, *Hacker's Delight* (2nd ed., 2013), 9-4 `divlu`.
+    # Divides *u1*:*u0* (`u1 < d`) by the normalized limb *d* (top bit set);
+    # returns the quotient and the remainder.
+    #
+    # On x86-64 this is one `div` instruction, which divides the two-limb
+    # `rdx:rax` by a limb (our own assembly, BIGNUM.md 4.8: the bodies LLVM
+    # builds from 64-bit divides left `tdiv_q_half` at 256 bits below GMP on
+    # every x86-64 family measured). `u1 < d` keeps the quotient within a
+    # limb, so the instruction cannot fault. Elsewhere, and with
+    # `-Dbignum_generic_kernels`, `div_2by1_by_halves` runs.
+    @[AlwaysInline]
     def self.div_2by1_plain(u1 : Limb, u0 : Limb, d : Limb) : {Limb, Limb}
+      {% if flag?(:x86_64) && flag?(:bits64) && !flag?(:bignum_generic_kernels) %}
+        quotient = uninitialized Limb
+        remainder = uninitialized Limb
+        asm("divq $4" : "={rax}"(quotient), "={rdx}"(remainder) : "{rax}"(u0), "{rdx}"(u1), "r"(d))
+        {quotient, remainder}
+      {% else %}
+        div_2by1_by_halves(u1, u0, d)
+      {% end %}
+    end
+
+    # `div_2by1_plain` with two hardware divides of a limb by a half limb:
+    # Knuth's Algorithm D on half-limb digits, as Warren, *Hacker's Delight*
+    # (2nd ed., 2013), 9-4 `divlu`.
+    def self.div_2by1_by_halves(u1 : Limb, u0 : Limb, d : Limb) : {Limb, Limb}
       d_high = d >> HALF_BITS
       d_low = d & HALF_MASK
       u0_high = u0 >> HALF_BITS
