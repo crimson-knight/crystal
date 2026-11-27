@@ -2,8 +2,8 @@
 
 `BigInt`, `BigFloat`, `BigRational` and `BigDecimal` run on
 `Crystal::BigNum` (`src/crystal/big_num.cr`, `src/crystal/big_num/` and
-`src/big/pure/`), written in Crystal. A program that requires `big` links no libgmp and
-imports no `__gmp` symbol. Existing code keeps its API and its results.
+`src/big/pure/`), written in Crystal. On a 64-bit target, a program that requires `big`
+links no libgmp and imports no `__gmp` symbol. Existing code keeps its API and its results.
 
 ```console
 $ crystal build app.cr          # require "big"
@@ -25,8 +25,8 @@ is built and where it runs. `to_unsafe` and the constructors that take a raw
 
 Each file under `big/` can be required on its own (`big/big_int`,
 `big/big_float`, `big/big_rational`, `big/big_decimal`, `big/number`,
-`big/json`, `big/yaml`) in either build; each one loads the engine that
-`src/big.cr` selects.
+`big/json`, `big/yaml`) in every build (default, `-Duse_gmp`, 32-bit); each
+one loads the engine that `src/big.cr` selects.
 
 Evidence behind the default: `spec/std/big` and `spec/std/crystal/big_num`
 pass in both builds; differentials against GMP found 0 differences in
@@ -39,9 +39,9 @@ bits is at least as fast as GMP on Apple M4 and Linux arm64.
 
 The default engine raises where GMP stops the process:
 
-| Call | Default engine | `-Duse_gmp` |
+| Call | Default engine | GMP (`-Duse_gmp`, 32-bit targets) |
 |---|---|---|
-| `unsafe_*` division by zero, `BigInt#remove(0)` | `DivisionByZeroError` | process crash |
+| `unsafe_*` division by zero, `BigInt#factor_by(0)` | `DivisionByZeroError` | process crash |
 | `Math.isqrt` of a negative `BigInt` | `ArgumentError` | SIGFPE |
 | `Math.sqrt` of a negative `BigFloat` | `ArgumentError` | SIGFPE |
 | NaN or infinity into `BigFloat` | `ArgumentError` | SIGFPE |

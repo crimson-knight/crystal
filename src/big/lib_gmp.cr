@@ -284,8 +284,9 @@ lib LibGMP
 end
 
 # Route GMP's allocations to the GC. `src/big.cr` requires this file only
-# when GMP runs the big types (`-Duse_gmp`, and every 32-bit target); a program
-# that requires `big/lib_gmp` itself opts into GMP the same way.
+# when GMP runs the big types (`-Duse_gmp`, and every 32-bit target). A program
+# that requires `big/lib_gmp` directly links libgmp and gets the same GC routing;
+# the big types still follow `Crystal::BigNum::BACKS_BIG_TYPES`.
 LibGMP.set_memory_functions(
   ->(size) { GC.malloc(size) },
   ->(ptr, old_size, new_size) { GC.realloc(ptr, new_size) },

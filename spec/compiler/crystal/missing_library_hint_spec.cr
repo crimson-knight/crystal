@@ -28,9 +28,9 @@ describe Crystal::MissingLibraryHint do
     hint.read("ld: library 'gmp' not found\n")
 
     hint.to_s.should eq <<-TEXT
-      The linker needs libgmp because the program was built with -Duse_gmp or for a 32-bit target (BigInt, BigFloat, BigRational and BigDecimal on GMP).
+      The linker needs libgmp because the program was built with -Duse_gmp, for a 32-bit target, or binds LibGMP itself (require "big/lib_gmp").
         Install it with: brew install gmp
-        On a 64-bit target, build without -Duse_gmp to run the big numbers on pure Crystal, which needs no C library.
+        On a 64-bit target, build without -Duse_gmp and without require "big/lib_gmp" to run the big numbers on pure Crystal, which needs no C library.
 
       TEXT
   end
