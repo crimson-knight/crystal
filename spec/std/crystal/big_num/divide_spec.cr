@@ -132,7 +132,7 @@ end
   end
 
   describe Crystal::BigNum::Divide do
-    it "divides two limbs by one with the hardware divide (div_2by1_plain)" do
+    it "divides two limbs by one with the hardware divide (div_2by1_plain and the half-limb body)" do
       random = Random::PCG32.new(17)
       divisors = [1_u64 << 63, (1_u64 << 63) + 1, UInt64::MAX, UInt64::MAX - 1, 0x8000_0001_0000_0000_u64, 0xffff_ffff_0000_0000_u64]
       20.times { divisors << (random.rand(UInt64) | (1_u64 << 63)) }
@@ -145,6 +145,7 @@ end
             dividend = (BigInt.new(u1) << 64) + u0
             q.should eq(dividend // d)
             r.should eq(dividend % d)
+            Divide.div_2by1_by_halves(u1, u0, d).should eq({q, r})
           end
         end
       end
@@ -179,6 +180,22 @@ end
         divisor = (BigInt.new(d1) << 64) + d0
         expected = ((BigInt.new(1) << 192) - 1) // divisor - (BigInt.new(1) << 64)
         Divide.invert_pair(d1, d0).should eq(expected)
+      end
+    end
+
+    it "gives the same 3/2 quotient and remainder from the hardware divide as from the reciprocal" do
+      random = Random::PCG32.new(37)
+      200_000.times do |round|
+        d1 = random.rand(UInt64) | (1_u64 << 63)
+        d0 = round % 7 == 0 ? UInt64::MAX - random.rand(3).to_u64 : random.rand(UInt64)
+        divisor = (d1.to_u128 << 64) | d0
+        # n2:n1 below the divisor, often with n2 == d1 (the B - 1 estimate).
+        top = round % 3 == 0 ? divisor - 1 - random.rand(UInt64) : ((random.rand(UInt64).to_u128 << 64) | random.rand(UInt64)) % divisor
+        n2 = (top >> 64).to_u64!
+        n1 = top.to_u64!
+        n0 = random.rand(UInt64)
+        expected = Divide.div_3by2(n2, n1, n0, d1, d0, Divide.invert_pair(d1, d0))
+        Divide.div_3by2_by_divide(n2, n1, n0, d1, d0).should eq(expected)
       end
     end
 
@@ -228,6 +245,46 @@ end
         dividend[-1] = divisor[-1]
         dividend[-2] = divisor[-2]
         check_all_variants(big(integer(dividend)), big(integer(divisor)))
+      end
+    end
+
+    it "matches GMP for four-limb dividends by two-limb divisors in registers" do
+      random = Random::PCG32.new(31)
+      20_000.times do |round|
+        divisor = random_limbs(random, 2)
+        divisor[-1] |= 1_u64 << 63 if round % 4 == 0
+        dividend = random_limbs(random, 4)
+        if round % 3 == 0
+          dividend[-1] = divisor[-1]
+          dividend[-2] = divisor[-2] &- random.rand(2).to_u64
+        end
+        a = big(integer(dividend))
+        b = big(integer(divisor))
+        q, r = integer(dividend).tdivmod(integer(divisor))
+        {big(q), big(r)}.should eq(a.unsafe_truncated_divmod(b))
+        big(integer(dividend).tdiv(integer(divisor))).should eq(a.tdiv(b))
+        q, r = (-integer(dividend)).divmod(integer(divisor))
+        {big(q), big(r)}.should eq((-a).divmod(b))
+      end
+    end
+
+    it "matches GMP for four-limb divisors in registers (add-back and B - 1 shapes)" do
+      random = Random::PCG32.new(29)
+      20_000.times do |round|
+        divisor = random_limbs(random, 4)
+        divisor[-1] = (1_u64 << 63) | random.rand(3).to_u64 if round % 3 == 0
+        divisor[-2] = UInt64::MAX - random.rand(2).to_u64 if round % 5 == 0
+        dividend = random_limbs(random, 4 + random.rand(9))
+        if round % 2 == 0 && dividend.size > 5
+          # Top limbs equal to the divisor's, at the top and one limb down.
+          offset = 1 + random.rand(2)
+          dividend[-offset] = divisor[-1]
+          dividend[-offset - 1] = divisor[-2]
+        end
+        a = big(integer(dividend))
+        b = big(integer(divisor))
+        q, r = integer(dividend).tdivmod(integer(divisor))
+        {big(q), big(r)}.should eq(a.unsafe_truncated_divmod(b))
       end
     end
 

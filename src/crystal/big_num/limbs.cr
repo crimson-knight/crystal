@@ -254,6 +254,7 @@ module Crystal::BigNum
     # (`1 <= count < LIMB_BITS`) into *rp* and returns the bits shifted out at
     # the top, in the low bits of the result. *rp* may be *ap*, or above it.
     def self.lshift(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, count : Int32) : Limb
+      return lshift_up_to_four(rp, ap, n, count) if n <= 4
       back = LIMB_BITS - count
       high = ap[n - 1]
       shifted_out = high >> back
@@ -281,6 +282,7 @@ module Crystal::BigNum
     # the bottom, in the high bits of the result. *rp* may be *ap*, or below
     # it.
     def self.rshift(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, count : Int32) : Limb
+      return rshift_up_to_four(rp, ap, n, count) if n <= 4
       back = LIMB_BITS - count
       low = ap[0]
       shifted_out = low << back
@@ -301,6 +303,39 @@ module Crystal::BigNum
       end
       rp[n - 1] = low >> count
       shifted_out
+    end
+
+    # `lshift` of up to four limbs in straight-line code: every limb is
+    # read before any is written, so *rp* may overlap *ap* either way.
+    @[AlwaysInline]
+    private def self.lshift_up_to_four(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, count : Int32) : Limb
+      back = LIMB_BITS - count
+      a0 = ap[0]
+      a1 = n > 1 ? ap[1] : Limb.zero
+      a2 = n > 2 ? ap[2] : Limb.zero
+      a3 = n > 3 ? ap[3] : Limb.zero
+      top = n > 3 ? a3 : (n > 2 ? a2 : (n > 1 ? a1 : a0))
+      rp[0] = a0.unsafe_shl(count)
+      rp[1] = a1.unsafe_shl(count) | a0.unsafe_shr(back) if n > 1
+      rp[2] = a2.unsafe_shl(count) | a1.unsafe_shr(back) if n > 2
+      rp[3] = a3.unsafe_shl(count) | a2.unsafe_shr(back) if n > 3
+      top.unsafe_shr(back)
+    end
+
+    # `rshift` of up to four limbs in straight-line code: every limb is
+    # read before any is written, so *rp* may overlap *ap* either way.
+    @[AlwaysInline]
+    private def self.rshift_up_to_four(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, count : Int32) : Limb
+      back = LIMB_BITS - count
+      a0 = ap[0]
+      a1 = n > 1 ? ap[1] : Limb.zero
+      a2 = n > 2 ? ap[2] : Limb.zero
+      a3 = n > 3 ? ap[3] : Limb.zero
+      rp[0] = a0.unsafe_shr(count) | a1.unsafe_shl(back)
+      rp[1] = a1.unsafe_shr(count) | a2.unsafe_shl(back) if n > 1
+      rp[2] = a2.unsafe_shr(count) | a3.unsafe_shl(back) if n > 2
+      rp[3] = a3.unsafe_shr(count) if n > 3
+      a0.unsafe_shl(back)
     end
 
     # Compares the *n* limbs of *ap* and *bp* as unsigned numbers and returns

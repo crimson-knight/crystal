@@ -177,6 +177,9 @@ module Crystal::BigNum
           return Integer.from_magnitude(b &- a, other.negative?)
         end
       end
+      if size <= 4 && other.size <= 4
+        return Integer.add_signed_in_registers(limb_pointer, @size, other.limb_pointer, other.signed_size)
+      end
       Integer.add_signed(limb_pointer, @size, other.limb_pointer, other.signed_size)
     end
 
@@ -222,6 +225,61 @@ module Crystal::BigNum
           end
         end
       end
+    end
+
+    # The sum of the signed magnitudes at *ap* and *bp* (signed limb counts
+    # *a_size* and *b_size*, at most four limbs each and more than two in
+    # one of them), in registers: one carry chain (`adc` on x86-64,
+    # `adcs` on AArch64) and one heap buffer of exactly the result's limb
+    # count, or none when the result fits inline.
+    protected def self.add_signed_in_registers(ap : Pointer(Limb), a_size : Int32, bp : Pointer(Limb), b_size : Int32) : Integer
+      a0, a1, a2, a3 = up_to_four_limbs(ap, a_size.abs)
+      b0, b1, b2, b3 = up_to_four_limbs(bp, b_size.abs)
+      if (a_size < 0) == (b_size < 0)
+        sum0 = a0.to_u128! &+ b0
+        sum1 = a1.to_u128! &+ b1 &+ (sum0 >> 64)
+        sum2 = a2.to_u128! &+ b2 &+ (sum1 >> 64)
+        sum3 = a3.to_u128! &+ b3 &+ (sum2 >> 64)
+        carry = (sum3 >> 64).to_u64!
+        # One operand is at least 2**128, so the sum has three limbs or more.
+        count = carry != 0 ? 5 : (sum3.to_u64! != 0 ? 4 : 3)
+        heap = Limbs.allocate(count)
+        heap[0] = sum0.to_u64!
+        heap[1] = sum1.to_u64!
+        heap[2] = sum2.to_u64!
+        heap[3] = sum3.to_u64! if count >= 4
+        heap[4] = carry if count == 5
+        return new(a_size < 0 ? -count : count, Limb.zero, Limb.zero, heap)
+      end
+      # |a| - |b| as |a| + ~|b| + 1; no carry out means |b| > |a|, and the
+      # two's complement of the result (through the mask) is |b| - |a|.
+      sum0 = a0.to_u128! &+ ~b0 &+ 1
+      sum1 = a1.to_u128! &+ ~b1 &+ (sum0 >> 64)
+      sum2 = a2.to_u128! &+ ~b2 &+ (sum1 >> 64)
+      sum3 = a3.to_u128! &+ ~b3 &+ (sum2 >> 64)
+      b_larger = (sum3 >> 64).to_u64! == 0
+      mask = b_larger ? Limb::MAX : Limb.zero
+      difference0 = (sum0.to_u64! ^ mask).to_u128! &+ (mask & 1)
+      difference1 = (sum1.to_u64! ^ mask).to_u128! &+ (difference0 >> 64)
+      difference2 = (sum2.to_u64! ^ mask).to_u128! &+ (difference1 >> 64)
+      limb3 = (sum3.to_u64! ^ mask) &+ (difference2 >> 64).to_u64!
+      limb2 = difference2.to_u64!
+      negative = b_larger ? b_size < 0 : a_size < 0
+      if limb3 == 0 && limb2 == 0
+        return from_magnitude((difference1 << 64) | difference0.to_u64!, negative)
+      end
+      from_three_or_four_limbs(difference0.to_u64!, difference1.to_u64!, limb2, limb3, negative)
+    end
+
+    # The *count* limbs (at most four) at *pointer*, zero above *count*.
+    @[AlwaysInline]
+    private def self.up_to_four_limbs(pointer : Pointer(Limb), count : Int32) : {Limb, Limb, Limb, Limb}
+      {
+        count > 0 ? pointer[0] : Limb.zero,
+        count > 1 ? pointer[1] : Limb.zero,
+        count > 2 ? pointer[2] : Limb.zero,
+        count > 3 ? pointer[3] : Limb.zero,
+      }
     end
 
     def - : Integer
@@ -536,15 +594,19 @@ module Crystal::BigNum
       limb_shift = shift // LIMB_BITS
       bit_shift = shift % LIMB_BITS
       count_in = size
-      capacity = count_in + limb_shift + 1
       ap = limb_pointer
+      # The result has a limb above the shifted magnitude only when the top
+      # limb's high bits spill into it; the buffer is that exact size (the
+      # collector's size classes make every spare limb count).
+      spills = bit_shift != 0 && ap[count_in - 1].unsafe_shr(LIMB_BITS - bit_shift) != 0
+      capacity = count_in + limb_shift + (spills ? 1 : 0)
       Integer.build(capacity, negative?) do |rp|
         Limbs.zero(rp, limb_shift)
         if bit_shift == 0
           Limbs.copy(rp + limb_shift, ap, count_in)
-          rp[capacity - 1] = Limb.zero
         else
-          rp[capacity - 1] = Limbs.lshift(rp + limb_shift, ap, count_in, bit_shift)
+          shifted_out = Limbs.lshift(rp + limb_shift, ap, count_in, bit_shift)
+          rp[capacity - 1] = shifted_out if spills
         end
         capacity
       end
@@ -569,19 +631,22 @@ module Crystal::BigNum
       bit_shift = shift % LIMB_BITS
       count_out = count_in - limb_shift
       ap = limb_pointer
-      Integer.build(count_out + 1, negative?) do |rp|
+      # The result has count_out limbs (fewer once normalized), written to an
+      # inline or heap buffer of exactly that size. Rounding a negative value
+      # away from zero carries out of the top only when every limb shifted
+      # in was all ones; the result is then -(2 ** (64 * count_out)).
+      carried_out = false
+      result = Integer.build(count_out, negative?) do |rp|
         lost = !Limbs.zero?(ap, limb_shift)
         if bit_shift == 0
           Limbs.copy(rp, ap + limb_shift, count_out)
         else
           lost |= Limbs.rshift(rp, ap + limb_shift, count_out, bit_shift) != 0
         end
-        if negative? && lost
-          Integer.increment_into(rp, count_out)
-        else
-          count_out
-        end
+        carried_out = Limbs.add_1(rp, rp, count_out, Limb.new(1)) != 0 if negative? && lost
+        count_out
       end
+      carried_out ? -(Integer.new(1) << (LIMB_BITS * count_out)) : result
     end
 
     # :nodoc:
@@ -791,7 +856,9 @@ module Crystal::BigNum
 
     # The product of the *a_count* limbs at *ap* and the *b_count* limbs at
     # *bp* (`a_count >= 3`, `a_count >= b_count >= 2`) with the sign
-    # *negative*.
+    # *negative*. Inlined into `*`, so a product of up to four limbs by
+    # four reaches its unrolled routine with no call in between.
+    @[AlwaysInline]
     protected def self.multiply_magnitudes(ap : Pointer(Limb), a_count : Int32, bp : Pointer(Limb), b_count : Int32, negative : Bool) : Integer
       total = a_count + b_count
       build(total, negative) do |rp|

@@ -93,3 +93,28 @@ describe Crystal::BigNum::ProcessorKernels do
     STDERR.puts "processor kernels: compared #{checked} kernel calls"
   end
 end
+
+describe "Crystal::BigNum::Multiply.mul_4_by_4_with_assembly" do
+  it "gives the schoolbook rows' product, bit for bit, where the processor has BMI2 and ADX" do
+    {% if flag?(:x86_64) %}
+      if ProcessorKernels.adx?
+        random = Random::PCG32.new(20261128)
+        200_000.times do
+          a = random_limbs(random, 4)
+          b = random_limbs(random, 4)
+          expected = Slice(Limb).new(8)
+          expected[4] = Limbs.generic_mul_1(expected.to_unsafe, a.to_unsafe, 4, b[0])
+          (1..3).each { |row| expected[4 + row] = Limbs.generic_addmul_1(expected.to_unsafe + row, a.to_unsafe, 4, b[row]) }
+          actual = Slice(Limb).new(8, Limb::MAX)
+          Crystal::BigNum::Multiply.mul_4_by_4_with_assembly(actual.to_unsafe, a.to_unsafe, b.to_unsafe)
+          actual.should eq(expected)
+        end
+        STDERR.puts "processor kernels: mul_4_by_4 assembly compared 200000 products (#{ProcessorKernels.chosen_variants})"
+      else
+        pending!("this processor lacks BMI2 or ADX")
+      end
+    {% else %}
+      pending!("the mul_4_by_4 assembly is x86-64 only")
+    {% end %}
+  end
+end

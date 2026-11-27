@@ -194,9 +194,12 @@ module Crystal::BigNum
           remainder = divisor &- remainder if round_away && remainder != 0
           return {zero, from_magnitude(remainder.to_u128!, remainder_negative)}
         end
-        # The quotient has a_count - 1 or a_count limbs: from three limbs on
-        # it may still fit inline.
-        return with_scratch(a_count + 1, a_count > 3) do |qp, quotient_on_heap|
+        # The quotient has a_count limbs when the top limb of |a| reaches the
+        # divisor and a_count - 1 otherwise; one that cannot fit inline is
+        # written to a heap buffer of exactly that many limbs (one more
+        # when rounding away from zero may carry).
+        quotient_to_heap = a_count > 3 || (a_count == 3 && ap[2] >= divisor)
+        return with_scratch(quotient_to_heap && !round_away ? a_count : a_count + 1, quotient_to_heap) do |qp, quotient_on_heap|
           remainder = Divide.divrem_1(qp, ap, a_count, divisor)
           used = a_count
           if round_away && remainder != 0
@@ -209,9 +212,16 @@ module Crystal::BigNum
 
       bp = b.limb_pointer
       quotient_count = a_count - b_count + 1
-      # A kept result that cannot fit inline goes straight to the heap; the
-      # quotient has at least quotient_count - 1 limbs.
-      with_scratch(quotient_count + 1, want_quotient && quotient_count > 3) do |qp, quotient_on_heap|
+      # A kept result that cannot fit inline goes straight to a heap buffer
+      # of exactly quotient_count limbs (one more when rounding away from
+      # zero may carry): the collector's size classes make every spare limb
+      # count. The quotient has quotient_count limbs exactly when the top
+      # b_count limbs of |a| reach |b|, and one fewer otherwise, so a
+      # three-limb quotient is told from a two-limb one (inline) before
+      # dividing.
+      quotient_to_heap = want_quotient && (quotient_count > 3 ||
+                                           (quotient_count == 3 && Limbs.cmp(ap + (a_count - b_count), bp, b_count) >= 0))
+      with_scratch(quotient_to_heap && !round_away ? quotient_count : quotient_count + 1, quotient_to_heap) do |qp, quotient_on_heap|
         with_scratch(b_count, want_remainder && b_count > 2) do |rp, remainder_on_heap|
           Divide.div_qr(qp, rp, ap, a_count, bp, b_count)
           used = quotient_count
