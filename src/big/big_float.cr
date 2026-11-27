@@ -12,10 +12,12 @@ struct BigFloat < Float
   include Comparable(Float)
 
   def initialize
+    Crystal::GMPAllocator.route_to_gc
     LibGMP.mpf_init(out @mpf)
   end
 
   def initialize(str : String)
+    Crystal::GMPAllocator.route_to_gc
     # Strip leading '+' char to smooth out cases with strings like "+123"
     str = str.lchop('+')
     # Strip '_' to make it compatible with int literals like "1_000_000"
@@ -26,43 +28,50 @@ struct BigFloat < Float
   end
 
   def initialize(num : BigInt)
+    Crystal::GMPAllocator.route_to_gc
     LibGMP.mpf_init(out @mpf)
-    LibGMP.mpf_set_z(self, num)
+    num.with_mpz { |mpz| LibGMP.mpf_set_z(self, mpz) }
   end
 
   def initialize(num : BigRational)
+    Crystal::GMPAllocator.route_to_gc
     LibGMP.mpf_init(out @mpf)
     LibGMP.mpf_set_q(self, num)
   end
 
   def initialize(num : BigFloat)
+    Crystal::GMPAllocator.route_to_gc
     LibGMP.mpf_init(out @mpf)
     LibGMP.mpf_set(self, num)
   end
 
   def initialize(num : Int)
+    Crystal::GMPAllocator.route_to_gc
     Int.primitive_si_ui_check(num) do |si, ui, big_i|
       {
         si:    LibGMP.mpf_init_set_si(out @mpf, {{ si }}),
         ui:    LibGMP.mpf_init_set_ui(out @mpf, {{ ui }}),
         big_i: begin
           LibGMP.mpf_init(out @mpf)
-          LibGMP.mpf_set_z(self, {{ big_i }})
+          {{ big_i }}.with_mpz { |mpz| LibGMP.mpf_set_z(self, mpz) }
         end,
       }
     end
   end
 
   def initialize(num : Float::Primitive)
+    Crystal::GMPAllocator.route_to_gc
     raise ArgumentError.new "Can only construct from a finite number" unless num.finite?
     LibGMP.mpf_init_set_d(out @mpf, num)
   end
 
   def initialize(num : Number)
+    Crystal::GMPAllocator.route_to_gc
     LibGMP.mpf_init_set_d(out @mpf, num.to_f64)
   end
 
   def initialize(num : Float, precision : Int)
+    Crystal::GMPAllocator.route_to_gc
     raise ArgumentError.new "Can only construct from a finite number" unless num.finite?
     LibGMP.mpf_init2(out @mpf, precision.to_u64)
     LibGMP.mpf_set_d(self, num.to_f64)
@@ -72,6 +81,7 @@ struct BigFloat < Float
   end
 
   def self.new(&)
+    Crystal::GMPAllocator.route_to_gc
     LibGMP.mpf_init(out mpf)
     yield pointerof(mpf)
     new(mpf)
@@ -102,7 +112,7 @@ struct BigFloat < Float
   end
 
   def <=>(other : BigInt)
-    LibGMP.mpf_cmp_z(self, other)
+    other.with_mpz { |mpz| LibGMP.mpf_cmp_z(self, mpz) }
   end
 
   def <=>(other : Float::Primitive) : Int32?
@@ -207,14 +217,14 @@ struct BigFloat < Float
       LibGMP.mpf_init_set_si(result, 1)
       next if is_zero # define `0 ** 0 == 1`
 
-      # these are mutated and must be copies of `other` and `self`!
-      exponent = BigInt.new { |mpz| LibGMP.abs(mpz, other) } # `other.abs`
-      k = BigFloat.new { |mpf| LibGMP.mpf_set(mpf, self) }   # `self`
+      # `k` is mutated and must be a copy of `self`!
+      exponent = other.abs
+      k = BigFloat.new { |mpf| LibGMP.mpf_set(mpf, self) } # `self`
 
       while exponent > 0
         LibGMP.mpf_mul(result, result, k) if exponent.to_i!.odd? # `result *= k`
-        LibGMP.fdiv_q_2exp(exponent, exponent, 1)                # `exponent /= 2`
-        LibGMP.mpf_mul(k, k, k) if exponent > 0                  # `k *= k`
+        exponent >>= 1
+        LibGMP.mpf_mul(k, k, k) if exponent > 0 # `k *= k`
       end
 
       LibGMP.mpf_ui_div(result, 1, result) if other < 0 # `result = 1 / result`
@@ -284,7 +294,7 @@ struct BigFloat < Float
   end
 
   def to_big_i : BigInt
-    BigInt.new { |mpz| LibGMP.set_f(mpz, mpf) }
+    BigInt.from_mpz { |mpz| LibGMP.set_f(mpz, mpf) }
   end
 
   def to_i64 : Int64

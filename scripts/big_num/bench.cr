@@ -3,7 +3,7 @@
 # One binary calls both: each round times every selected row on our engine
 # and on GMP, alternating which side goes first, and the reported time is the
 # median of the rounds (6 by default). Build it --release from the fork's root:
-#   CRYSTAL_PATH=$PWD/src <compiler> build --release scripts/big_num/bench.cr -o bin/big_num_bench
+#   CRYSTAL_PATH=$PWD/src <compiler> build --release -Duse_gmp scripts/big_num/bench.cr -o bin/big_num_bench
 #   bin/big_num_bench [--ops add,mul] [--bits 64,128] [--rounds 6] [--json out.json] [--markdown out.md]
 require "option_parser"
 require "json"

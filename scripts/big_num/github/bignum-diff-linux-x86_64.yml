@@ -41,7 +41,7 @@ jobs:
           mkdir -p out
           { lscpu | grep "Model name"; uname -m; dpkg-query -W libgmp10 libgmp-dev; sha256sum $(dpkg -L libgmp10 | grep 'libgmp.so.10.[0-9.]*$'); } | tee out/host.txt
           crystal --version | tee out/compiler.txt
-          CRYSTAL_PATH="$PWD/src" crystal build --release scripts/big_num/differential.cr -o big_num_differential
+          CRYSTAL_PATH="$PWD/src" crystal build --release -Duse_gmp scripts/big_num/differential.cr -o big_num_differential
           for seed in __SEEDS__; do
             ./big_num_differential __ARGUMENTS__ --seed "$seed" --count __COUNT__ \
               --json "out/shard-$seed.json" --reproducers "out/reproducers-$seed" 2>&1 | tail -5 | tee "out/shard-$seed.log"

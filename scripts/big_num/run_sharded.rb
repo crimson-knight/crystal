@@ -81,7 +81,7 @@ def build_macos_binary(options)
   return File.expand_path(options[:binary]) if options[:binary]
   binary = File.join(OUT, "build", "big_num_differential")
   FileUtils.mkdir_p(File.dirname(binary))
-  command = [compiler, "build", "--release", "scripts/big_num/differential.cr", "-o", binary]
+  command = [compiler, "build", "--release", "-Duse_gmp", "scripts/big_num/differential.cr", "-o", binary]
   puts "building: CRYSTAL_PATH=#{ROOT}/src #{command.join(" ")}"
   system({"CRYSTAL_PATH" => File.join(ROOT, "src")}, *command) or abort "build failed"
   binary
@@ -157,7 +157,7 @@ def linux_script(seeds, count, options, compiler_command)
     set -e
     cd "$SRC"
     #{compiler_command} --version | tee $OUT_DIR/compiler.txt
-    CRYSTAL_PATH="$SRC/src" #{compiler_command} build --release scripts/big_num/differential.cr -o big_num_differential
+    CRYSTAL_PATH="$SRC/src" #{compiler_command} build --release -Duse_gmp scripts/big_num/differential.cr -o big_num_differential
     { uname -m; dpkg-query -W libgmp10 libgmp-dev; sha256sum $(dpkg -L libgmp10 | grep 'libgmp.so.10.[0-9.]*$'); } | tee $OUT_DIR/host.txt
     set +e
     #{runs.join("\n")}
