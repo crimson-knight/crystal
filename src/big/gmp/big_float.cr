@@ -160,7 +160,7 @@ struct BigFloat < Float
       {
         ui:     BigFloat.new { |mpf| LibGMP.mpf_mul_ui(mpf, self, {{ ui }}) },
         neg_ui: BigFloat.new { |mpf| LibGMP.mpf_mul_ui(mpf, self, {{ neg_ui }}); LibGMP.mpf_neg(mpf, mpf) },
-        big_i:  self + {{ big_i }},
+        big_i:  self * {{ big_i }},
       }
     end
   end

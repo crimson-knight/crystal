@@ -168,6 +168,14 @@ describe "BigFloat" do
     it { ("0.04".to_big_f * "89.0001".to_big_f).to_s.should eq("3.560004") }
     it { ("-5.5".to_big_f * "5.5".to_big_f).to_s.should eq("-30.25") }
     it { ("5.5".to_big_f * "-5.5".to_big_f).to_s.should eq("-30.25") }
+
+    it "multiplies by 128-bit integers" do
+      (3.to_big_f * (1_i128 << 100)).should eq(3.to_big_f * 2.to_big_f ** 100)
+      (3.to_big_f * -(1_i128 << 100)).should eq(-3.to_big_f * 2.to_big_f ** 100)
+      (3.to_big_f * (1_u128 << 127)).should eq(3.to_big_f * 2.to_big_f ** 127)
+      (3.to_big_f * Int128::MIN).should eq(-3.to_big_f * 2.to_big_f ** 127)
+      ("1.5".to_big_f * (UInt128::MAX >> 1)).to_s.should eq("2.55211775190703847598e+38")
+    end
   end
 
   describe "#/" do

@@ -57,3 +57,39 @@ struct BigInt
     from_mpz(mpz)
   end
 end
+
+# :nodoc:
+#
+# The bridge from the pure `BigFloat` to the GMP-backed `BigRational`, which
+# stays on GMP until it moves to the engine too (relay piece G3b). A GMP
+# float is built from a `BigFloat`'s limbs, and a `BigFloat` from a GMP
+# float's limbs; either way the limbs are copied. `BigFloat` itself calls no
+# GMP function.
+struct BigFloat
+  # :nodoc:
+  #
+  # A pointer to a fresh GMP float equal to `self`, with its precision.
+  def to_unsafe : Pointer(LibGMP::MPF)
+    Crystal::GMPAllocator.route_to_gc
+    engine = big_num_value
+    mpf = Pointer(LibGMP::MPF).malloc(1)
+    LibGMP.mpf_init2(mpf, Crystal::BigNum::Float.bit_precision(engine.precision))
+    count = engine.size
+    mpf.value._mp_d.copy_from(engine.limbs.to_unsafe, count) if count > 0
+    mpf.value._mp_size = engine.signed_size
+    mpf.value._mp_exp = engine.exponent
+    mpf
+  end
+
+  # :nodoc:
+  #
+  # Yields a pointer to a fresh GMP float (zero, at the default precision)
+  # for the block to set, then returns its value.
+  def self.new(& : Pointer(LibGMP::MPF) ->) : BigFloat
+    Crystal::GMPAllocator.route_to_gc
+    LibGMP.mpf_init2(out mpf, default_precision)
+    yield pointerof(mpf)
+    limbs = Slice.new(mpf._mp_d, mpf._mp_size.abs, read_only: true)
+    new(Crystal::BigNum::Float.from_parts(limbs, mpf._mp_size < 0, mpf._mp_exp.to_i64, mpf._mp_prec))
+  end
+end
