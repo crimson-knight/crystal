@@ -209,9 +209,13 @@ module Crystal::BigNum
 
       bp = b.limb_pointer
       quotient_count = a_count - b_count + 1
-      # A kept result that cannot fit inline goes straight to the heap; the
-      # quotient has at least quotient_count - 1 limbs.
-      with_scratch(quotient_count + 1, want_quotient && quotient_count > 3) do |qp, quotient_on_heap|
+      # A kept result that cannot fit inline goes straight to the heap. The
+      # quotient has quotient_count limbs exactly when the top b_count limbs
+      # of |a| reach |b|, and one fewer otherwise, so a three-limb quotient
+      # is told from a two-limb one (inline) before dividing.
+      quotient_to_heap = want_quotient && (quotient_count > 3 ||
+                                           (quotient_count == 3 && Limbs.cmp(ap + (a_count - b_count), bp, b_count) >= 0))
+      with_scratch(quotient_count + 1, quotient_to_heap) do |qp, quotient_on_heap|
         with_scratch(b_count, want_remainder && b_count > 2) do |rp, remainder_on_heap|
           Divide.div_qr(qp, rp, ap, a_count, bp, b_count)
           used = quotient_count

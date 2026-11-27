@@ -102,10 +102,11 @@ module Crystal::BigNum
     # 64-bit `div` takes tens of cycles, it comes from a table and three
     # Newton steps (`invert_limb_by_newton`); elsewhere from two hardware
     # divides (`invert_limb_by_division`), which Apple's and Linux arm64's
-    # processors finish sooner.
+    # processors finish sooner. `-Dbignum_division_reciprocal` takes the
+    # divides on x86-64 too, so a bench can compare both.
     @[AlwaysInline]
     def self.invert_limb(d : Limb) : Limb
-      {% if flag?(:x86_64) && flag?(:bits64) %}
+      {% if flag?(:x86_64) && flag?(:bits64) && !flag?(:bignum_division_reciprocal) %}
         invert_limb_by_newton(d)
       {% else %}
         invert_limb_by_division(d)
@@ -299,6 +300,7 @@ module Crystal::BigNum
     # two-limb divisor needs no multiply-subtract: each step is one 3/2
     # division, and the dividend is normalized on the fly, with no scratch.
     def self.divrem_2(qp : Pointer(Limb), np : Pointer(Limb), n : Int32, dp : Pointer(Limb)) : DoubleLimb
+      return divrem_2_of_four(qp, np, dp) if n == 4
       shift = dp[1].leading_zeros_count.to_i32
       divisor = ((dp[1].to_u128! << LIMB_BITS) | dp[0]) << shift
       d1 = (divisor >> LIMB_BITS).to_u64!
@@ -339,6 +341,43 @@ module Crystal::BigNum
           index -= 1
         end
         ((r1.to_u128! << LIMB_BITS) | r0) >> shift
+      end
+    end
+
+    # `divrem_2` for a four-limb dividend (256 bits by 128), unrolled with
+    # every limb in a register: three 3/2 divisions after the normalizing
+    # shift, or a compare and two when the divisor is already normalized.
+    private def self.divrem_2_of_four(qp : Pointer(Limb), np : Pointer(Limb), dp : Pointer(Limb)) : DoubleLimb
+      shift = dp[1].leading_zeros_count.to_i32
+      divisor = ((dp[1].to_u128! << LIMB_BITS) | dp[0]).unsafe_shl(shift)
+      d1 = (divisor >> LIMB_BITS).to_u64!
+      d0 = divisor.to_u64!
+      dinv = invert_pair(d1, d0)
+      n0, n1, n2, n3 = np[0], np[1], np[2], np[3]
+      if shift == 0
+        top = (n3.to_u128! << LIMB_BITS) | n2
+        q2 = Limb.zero
+        if top >= divisor
+          top &-= divisor
+          q2 = Limb.new(1)
+        end
+        q1, remainder = div_3by2((top >> LIMB_BITS).to_u64!, top.to_u64!, n1, d1, d0, dinv)
+        q0, remainder = div_3by2((remainder >> LIMB_BITS).to_u64!, remainder.to_u64!, n0, d1, d0, dinv)
+        qp[0], qp[1], qp[2] = q0, q1, q2
+        remainder
+      else
+        back = LIMB_BITS - shift
+        # The dividend shifted left: u4:u3:u2:u1:u0, with u4 below d1.
+        u4 = n3.unsafe_shr(back)
+        u3 = n3.unsafe_shl(shift) | n2.unsafe_shr(back)
+        u2 = n2.unsafe_shl(shift) | n1.unsafe_shr(back)
+        u1 = n1.unsafe_shl(shift) | n0.unsafe_shr(back)
+        u0 = n0.unsafe_shl(shift)
+        q2, remainder = div_3by2(u4, u3, u2, d1, d0, dinv)
+        q1, remainder = div_3by2((remainder >> LIMB_BITS).to_u64!, remainder.to_u64!, u1, d1, d0, dinv)
+        q0, remainder = div_3by2((remainder >> LIMB_BITS).to_u64!, remainder.to_u64!, u0, d1, d0, dinv)
+        qp[0], qp[1], qp[2] = q0, q1, q2
+        remainder.unsafe_shr(shift)
       end
     end
 

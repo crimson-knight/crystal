@@ -178,6 +178,26 @@ require "spec"
       end
     end
 
+    it "matches GMP for four-limb dividends by two-limb divisors in registers" do
+      random = Random::PCG32.new(31)
+      20_000.times do |round|
+        divisor = random_limbs(random, 2)
+        divisor[-1] |= 1_u64 << 63 if round % 4 == 0
+        dividend = random_limbs(random, 4)
+        if round % 3 == 0
+          dividend[-1] = divisor[-1]
+          dividend[-2] = divisor[-2] &- random.rand(2).to_u64
+        end
+        a = big(integer(dividend))
+        b = big(integer(divisor))
+        q, r = integer(dividend).tdivmod(integer(divisor))
+        {big(q), big(r)}.should eq(a.unsafe_truncated_divmod(b))
+        big(integer(dividend).tdiv(integer(divisor))).should eq(a.tdiv(b))
+        q, r = (-integer(dividend)).divmod(integer(divisor))
+        {big(q), big(r)}.should eq((-a).divmod(b))
+      end
+    end
+
     it "matches GMP for four-limb divisors in registers (add-back and B - 1 shapes)" do
       random = Random::PCG32.new(29)
       20_000.times do |round|
