@@ -9,7 +9,11 @@ module Crystal::BigNum
   #
   # - x86-64: CPUID leaf 7 says whether the processor has BMI2 (`mulx`) and
   #   ADX (`adcx`/`adox`); with both, `add_n`, `sub_n`, `mul_1`, `addmul_1`
-  #   and `submul_1` run bodies compiled for `+bmi2,+adx`.
+  #   and `submul_1` run bodies compiled for `+bmi2,+adx`; products of up
+  #   to four limbs by four run bodies compiled for `+bmi2`, and the 4 by 4
+  #   product our own `mulx`/`adcx`/`adox` assembly
+  #   (`Multiply.mul_4_by_4_with_assembly`). Every x86-64 processor divides
+  #   two limbs by one with one `div` (`Divide.div_2by1_plain`).
   # - AArch64 (Linux `AT_HWCAP`, macOS `sysctl`): `add_n` and `sub_n` run our
   #   own assembly (one `adcs`/`sbcs` chain kept in the flags across the
   #   loop, `limbs_aarch64.cr`), which every AArch64 processor runs; the other
