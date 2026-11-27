@@ -23,23 +23,23 @@ end
 
 struct Int
   # :nodoc:
-  # Yields 3 expressions: `Call`s nodes that convert *var* into a `LibGMP::SI`,
-  # a `LibGMP::UI`, and a `BigInt` respectively. These expressions are not
+  # Yields 3 expressions: `Call`s nodes that convert *var* into an `Int64` (GMP's `SI`),
+  # a `UInt64` (GMP's `UI`), and a `BigInt` respectively. These expressions are not
   # evaluated unless they are interpolated in *block*.
   #
   # *block* should return a named tuple: the value for `:si` is returned by the
-  # macro if *var* fits into a `LibGMP::SI`, the value for `:ui` returned if
-  # *var* fits into a `LibGMP::UI`, and the value for `:big_i` otherwise.
+  # macro if *var* fits into an `Int64` (GMP's `SI`), the value for `:ui` returned if
+  # *var* fits into a `UInt64` (GMP's `UI`), and the value for `:big_i` otherwise.
   macro primitive_si_ui_check(var, &block)
     {%
       exps = yield(
-        "::LibGMP::SI.new!(#{var.id})".id,
-        "::LibGMP::UI.new!(#{var.id})".id,
+        "::Int64.new!(#{var.id})".id,
+        "::UInt64.new!(#{var.id})".id,
         "::BigInt.new(#{var.id})".id,
       )
     %}
-    if ::LibGMP::SI::MIN <= {{ var }} <= ::LibGMP::UI::MAX
-      if {{ var }} <= ::LibGMP::SI::MAX
+    if ::Int64::MIN <= {{ var }} <= ::UInt64::MAX
+      if {{ var }} <= ::Int64::MAX
         {{ exps[:si] }}
       else
         {{ exps[:ui] }}
@@ -50,26 +50,26 @@ struct Int
   end
 
   # :nodoc:
-  # Yields 3 expressions: `Call`s nodes that convert *var* into a `LibGMP::UI`,
-  # the negative of *var* into a `LibGMP::UI`, and *var* into a `BigInt`,
+  # Yields 3 expressions: `Call`s nodes that convert *var* into a `UInt64` (GMP's `UI`),
+  # the negative of *var* into a `UInt64` (GMP's `UI`), and *var* into a `BigInt`,
   # respectively. These expressions are not evaluated unless they are
   # interpolated in *block*.
   #
   # *block* should return a named tuple: the value for `:ui` is returned by the
-  # macro if *var* fits into a `LibGMP::UI`, the value for `:neg_ui` returned if
-  # the negative of *var* fits into a `LibGMP::UI`, and the value for `:big_i`
+  # macro if *var* fits into a `UInt64` (GMP's `UI`), the value for `:neg_ui` returned if
+  # the negative of *var* fits into a `UInt64` (GMP's `UI`), and the value for `:big_i`
   # otherwise.
   macro primitive_ui_check(var, &block)
     {%
       exps = yield(
-        "::LibGMP::UI.new!(#{var.id})".id,
-        "::LibGMP::UI.new!((#{var.id}).abs_unsigned)".id,
+        "::UInt64.new!(#{var.id})".id,
+        "::UInt64.new!((#{var.id}).abs_unsigned)".id,
         "::BigInt.new(#{var.id})".id,
       )
     %}
-    if ::LibGMP::UI::MIN <= {{ var }} <= ::LibGMP::UI::MAX
+    if ::UInt64::MIN <= {{ var }} <= ::UInt64::MAX
       {{ exps[:ui] }}
-    elsif {{ var }}.responds_to?(:abs_unsigned) && {{ var }}.abs_unsigned <= ::LibGMP::UI::MAX
+    elsif {{ var }}.responds_to?(:abs_unsigned) && {{ var }}.abs_unsigned <= ::UInt64::MAX
       {{ exps[:neg_ui] }}
     else
       {{ exps[:big_i] }}

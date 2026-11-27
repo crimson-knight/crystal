@@ -1,7 +1,7 @@
 # Differential test of `Crystal::BigNum::Integer` against GMP (BIGNUM.md 5.2).
 #
 # Build from the fork's root:
-#   CRYSTAL_PATH=$PWD/src crystal-alpha build --release scripts/big_num/differential.cr -o bin/big_num_differential
+#   CRYSTAL_PATH=$PWD/src crystal-alpha build --release -Duse_gmp scripts/big_num/differential.cr -o bin/big_num_differential
 # Run:
 #   bin/big_num_differential --seed 1 --count 100000 [--ops add,mul] [--max-bits 8192] [--json out.json]
 # See scripts/big_num/README.md for the planted-bug check and the sharded runs.

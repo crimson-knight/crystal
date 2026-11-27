@@ -32,9 +32,10 @@ struct BigRational < Number
     numerator = BigInt.new(numerator) unless numerator.is_a?(BigInt)
     denominator = BigInt.new(denominator) unless denominator.is_a?(BigInt)
 
+    Crystal::GMPAllocator.route_to_gc
     LibGMP.mpq_init(out @mpq)
-    LibGMP.mpq_set_num(mpq, numerator.to_unsafe)
-    LibGMP.mpq_set_den(mpq, denominator.to_unsafe)
+    numerator.with_mpz { |mpz| LibGMP.mpq_set_num(mpq, mpz) }
+    denominator.with_mpz { |mpz| LibGMP.mpq_set_den(mpq, mpz) }
     LibGMP.mpq_canonicalize(mpq)
   end
 
@@ -72,22 +73,20 @@ struct BigRational < Number
 
   # :nodoc:
   def self.new(&)
+    Crystal::GMPAllocator.route_to_gc
     LibGMP.mpq_init(out mpq)
     yield pointerof(mpq)
     new(mpq)
   end
 
   def numerator : BigInt
-    # Returns `LibGMP.mpq_numref(self)`, whose C macro expansion effectively
-    # produces a raw member access. This is only as safe as copying `BigInt`s by
-    # value, as both involve copying `LibGMP::MPZ` around which has reference
-    # semantics, and `BigInt`s cannot be safely mutated in-place this way; see
-    # #9825 for details. Ditto for `#denominator`.
-    BigInt.new(@mpq._mp_num)
+    # Copies the limbs of `LibGMP.mpq_numref(self)` into a new `BigInt`.
+    # Ditto for `#denominator`.
+    BigInt.from_mpz(@mpq._mp_num)
   end
 
   def denominator : BigInt
-    BigInt.new(@mpq._mp_den)
+    BigInt.from_mpz(@mpq._mp_den)
   end
 
   def <=>(other : BigRational) : Int32
@@ -121,7 +120,7 @@ struct BigRational < Number
   end
 
   def <=>(other : BigInt) : Int32
-    LibGMP.mpq_cmp_z(self, other)
+    other.with_mpz { |mpz| LibGMP.mpq_cmp_z(self, mpz) }
   end
 
   def ==(other : BigRational) : Bool
@@ -340,7 +339,7 @@ struct BigRational < Number
   end
 
   def to_big_i : BigInt
-    BigInt.new { |mpz| LibGMP.set_q(mpz, mpq) }
+    BigInt.from_mpz { |mpz| LibGMP.set_q(mpz, mpq) }
   end
 
   # Returns the string representing this rational.
@@ -476,8 +475,11 @@ end
 # :nodoc:
 struct Crystal::Hasher
   def self.reduce_num(value : BigRational) : UInt64
-    inverse = BigInt.new do |mpz|
-      if LibGMP.invert(mpz, value.denominator, HASH_MODULUS_INT_P) == 0
+    inverse = BigInt.from_mpz do |mpz|
+      found = value.denominator.with_mpz do |denominator|
+        HASH_MODULUS_INT_P.with_mpz { |modulus| LibGMP.invert(mpz, denominator, modulus) }
+      end
+      if found == 0
         # inverse doesn't exist, i.e. denominator is a multiple of HASH_MODULUS
         return value >= 0 ? HASH_INF_PLUS : HASH_INF_MINUS
       end

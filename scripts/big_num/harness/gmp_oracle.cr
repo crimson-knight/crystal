@@ -1,5 +1,11 @@
 require "big"
 
+# The oracle is GMP's `BigInt`, which the default build replaces with the
+# engine: build every harness binary and spec with `-Duse_gmp`.
+{% unless flag?(:use_gmp) %}
+  {% raise "The BigNum harness compares against GMP: build it with -Duse_gmp" %}
+{% end %}
+
 # GMP entry points the harness needs as an oracle that `src/big/lib_gmp.cr`
 # does not bind. GMP is a black-box oracle here only.
 lib LibGMPHarness

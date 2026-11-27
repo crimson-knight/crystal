@@ -510,8 +510,7 @@ struct BigDecimal < Number
   protected def to_s_impl(io : IO, *, point_range : Range) : Nil
     factor_powers_of_ten
 
-    cstr = LibGMP.get_str(nil, 10, @value)
-    buffer = Slice.new(cstr, LibC.strlen(cstr))
+    buffer = @value.to_s.to_slice
 
     # add negative sign
     if buffer[0]? == 45 # '-'

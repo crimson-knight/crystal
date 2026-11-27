@@ -282,8 +282,32 @@ lib LibGMP
   fun set_memory_functions = __gmp_set_memory_functions(malloc : SizeT -> Void*, realloc : Void*, SizeT, SizeT -> Void*, free : Void*, SizeT ->)
 end
 
-LibGMP.set_memory_functions(
-  ->(size) { GC.malloc(size) },
-  ->(ptr, old_size, new_size) { GC.realloc(ptr, new_size) },
-  ->(ptr, size) { GC.free(ptr) }
-)
+{% if flag?(:use_gmp) %}
+  LibGMP.set_memory_functions(
+    ->(size) { GC.malloc(size) },
+    ->(ptr, old_size, new_size) { GC.realloc(ptr, new_size) },
+    ->(ptr, size) { GC.free(ptr) }
+  )
+{% else %}
+  # :nodoc:
+  #
+  # Routes GMP's allocations to the GC. In the default build only `BigFloat`,
+  # `BigRational` and the `BigInt` bridge call GMP, and each calls
+  # `route_to_gc` before its first GMP allocation. The hookup runs once, on
+  # that first call, so a program that never reaches GMP does not link it.
+  module Crystal::GMPAllocator
+    ROUTED_TO_GC = begin
+      LibGMP.set_memory_functions(
+        ->(size) { GC.malloc(size) },
+        ->(ptr, old_size, new_size) { GC.realloc(ptr, new_size) },
+        ->(ptr, size) { GC.free(ptr) }
+      )
+      true
+    end
+
+    def self.route_to_gc : Nil
+      ROUTED_TO_GC
+      nil
+    end
+  end
+{% end %}

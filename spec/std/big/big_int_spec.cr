@@ -248,7 +248,8 @@ describe "BigInt" do
 
   it "raises if factorial of 2^64" do
     expect_raises ArgumentError do
-      (LibGMP::UI::MAX.to_big_i + 1).factorial
+      limit = {% if flag?(:use_gmp) %} LibGMP::UI::MAX {% else %} UInt64::MAX {% end %}
+      (limit.to_big_i + 1).factorial
     end
   end
 
