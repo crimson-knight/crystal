@@ -223,6 +223,8 @@ module Crystal::BigNum
     def self.submul_1(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, b : Limb) : Limb
       {% if flag?(:x86_64) %}
         return submul_1_with_adx(rp, ap, n, b) if ProcessorKernels.adx?
+      {% elsif flag?(:aarch64) && !flag?(:bignum_generic_kernels) %}
+        return submul_1_with_assembly(rp, ap, n, b)
       {% end %}
       generic_submul_1(rp, ap, n, b)
     end

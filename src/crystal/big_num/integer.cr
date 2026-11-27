@@ -681,7 +681,7 @@ module Crystal::BigNum
 
     # ---- Owned by later pieces (G2b to G2e) ----
 
-    {% for operator in %w(* // % tdiv remainder) %}
+    {% for operator in %w(*) %}
       def {{ operator.id }}(other : Integer) : Integer
         raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + operator + (operator == "*" ? " (G2b)" : " (G2c)") }})
       end
@@ -694,24 +694,6 @@ module Crystal::BigNum
     # The square of the value.
     def square : Integer
       raise NotImplementedError.new("Crystal::BigNum::Integer#square (G2b)")
-    end
-
-    {% for name in %w(divmod tdivmod) %}
-      def {{ name.id }}(other : Integer) : {Integer, Integer}
-        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2c)" }})
-      end
-
-      def {{ name.id }}(other : ::Int::Primitive) : {Integer, Integer}
-        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2c)" }})
-      end
-    {% end %}
-
-    def divisible_by?(other : Integer) : Bool
-      raise NotImplementedError.new("Crystal::BigNum::Integer#divisible_by? (G2c)")
-    end
-
-    def divisible_by?(other : ::Int::Primitive) : Bool
-      raise NotImplementedError.new("Crystal::BigNum::Integer#divisible_by? (G2c)")
     end
 
     def **(exponent : Int) : Integer
