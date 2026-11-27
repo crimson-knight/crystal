@@ -839,7 +839,9 @@ module Crystal::BigNum
 
     # The product of the *a_count* limbs at *ap* and the *b_count* limbs at
     # *bp* (`a_count >= 3`, `a_count >= b_count >= 2`) with the sign
-    # *negative*.
+    # *negative*. Inlined into `*`, so a product of up to four limbs by
+    # four reaches its unrolled routine with no call in between.
+    @[AlwaysInline]
     protected def self.multiply_magnitudes(ap : Pointer(Limb), a_count : Int32, bp : Pointer(Limb), b_count : Int32, negative : Bool) : Integer
       total = a_count + b_count
       build(total, negative) do |rp|

@@ -15,6 +15,7 @@ module Crystal::BigNum
     # Writes the `an + bn` limbs of the product of the *an* limbs of *ap* and
     # the *bn* limbs of *bp* into *rp*. Requires `an >= bn >= 1`; *rp* must
     # not overlap *ap* or *bp*.
+    @[AlwaysInline]
     def self.mul(rp : Pointer(Limb), ap : Pointer(Limb), an : Int32, bp : Pointer(Limb), bn : Int32) : Nil
       return if an <= SMALL_LIMBS && mul_small(rp, ap, an, bp, bn)
       rp[an] = Limbs.mul_1(rp, ap, an, bp[0])
