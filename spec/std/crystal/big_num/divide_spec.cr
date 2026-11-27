@@ -241,6 +241,30 @@ describe Crystal::BigNum::Integer do
     end
   end
 
+  it "divides values of up to 128 bits with no heap allocation" do
+    values = [Integer.new(UInt128::MAX), Integer.new(-(Int128::MAX // 3)), Integer.new(UInt64::MAX), Integer.new(-7), Integer.new((1_u128 << 64) + 5)]
+    divisors = [Integer.new(3), Integer.new(-(1_i128 << 70) - 1), Integer.new(UInt64::MAX - 2), Integer.new(UInt128::MAX >> 1)]
+    sink = 0_u64
+    # Warm up first, so nothing lazily set up is counted.
+    values.each { |a| divisors.each { |b| sink &+= a.divmod(b)[1].to_u64! } }
+    before = GC.stats.total_bytes
+    1_000.times do
+      values.each do |a|
+        divisors.each do |b|
+          q, r = a.divmod(b)
+          sink &+= q.to_u64! &+ r.to_u64!
+          q, r = a.tdivmod(b)
+          sink &+= q.to_u64! &+ r.to_u64! &+ (a % 7).to_u64! &+ a.tdiv(-5).to_u64!
+          sink &+= 1 if a.divisible_by?(b)
+        end
+      end
+    end
+    # 28,000 calls; one allocation per call would be 16 bytes or more
+    # each. The runner itself may take a few bytes meanwhile.
+    (GC.stats.total_bytes - before).should be < 1_000
+    sink.should_not eq(0)
+  end
+
   it "raises DivisionByZeroError for a zero divisor in every variant" do
     x = integer([1_u64, 2_u64, 3_u64])
     zero = Integer.zero
