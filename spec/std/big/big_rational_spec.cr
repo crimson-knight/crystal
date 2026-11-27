@@ -516,3 +516,50 @@ describe "BigRational Math" do
     Math.sqrt(BigRational.new(BigInt.new("1" + "0"*48), 1)).should eq(BigFloat.new("1" + "0"*24))
   end
 end
+
+# Behaviors the pure engine keeps from GMP's mpq functions; each example runs
+# in both builds unless it says otherwise.
+describe "BigRational parity with GMP" do
+  big = BigInt.new(2) ** 300
+
+  it "returns mpq_cmp's values from <=>, not only -1, 0 and 1" do
+    (BigRational.new(big, 3) <=> br(1, 7)).should eq(5)
+    (br(0, 1) <=> BigRational.new(big, 3)).should eq(-5)
+    (BigRational.new(1, big) <=> br(1, 7)).should eq(-1)
+    (BigRational.new(BigInt.new(2) ** 100 - 1, BigInt.new(2) ** 100) <=> br(1, 1)).should eq(-2)
+  end
+
+  it "returns mpq_cmp_si, mpq_cmp_ui and mpq_cmp_z's values from <=>(Int)" do
+    (BigRational.new(big, 3) <=> 5).should eq(5)
+    (BigRational.new(big, 3) <=> -5).should eq(1)
+    (BigRational.new(-big, 3) <=> -5).should eq(-5)
+    (BigRational.new(big, 3) <=> UInt64::MAX).should eq(5)
+    (BigRational.new(big, 3) <=> big * big).should eq(-5)
+    (BigRational.new(big, 1) <=> Int128::MAX).should eq(1)
+    (5 <=> BigRational.new(big, 3)).should eq(-5)
+  end
+
+  it "truncates in to_f64 and flushes values below the subnormals to positive zero" do
+    br(2, 3).to_f64.should eq(0.6666666666666666)
+    value = BigRational.new(-1, big ** 4).to_f64
+    value.should eq(0.0)
+    value.sign_bit.should eq(1)
+    BigRational.new(big ** 4, 3).to_f64.should eq(Float64::INFINITY)
+    BigRational.new(BigInt.new(2) ** 1024 - 1, 1).to_f64.should eq(Float64::MAX)
+  end
+
+  it "is exact from subnormal and extreme floats" do
+    BigRational.new(5.0e-324).should eq(BigRational.new(1, BigInt.new(2) ** 1074))
+    BigRational.new(Float64::MAX).should eq(BigRational.new((BigInt.new(2) ** 53 - 1) << 971, 1))
+    BigRational.new(BigFloat.new(0.1, precision: 64)).should eq(BigRational.new(0.1))
+  end
+
+  # GMP receives a negative count converted to an unsigned bit count and
+  # stops the process (SIGFPE); the pure engine shifts the other way.
+  {% unless flag?(:use_gmp) %}
+    it "shifts the other way for a negative count" do
+      (br(3, 4) >> -2).should eq(br(3, 1))
+      (br(3, 1) << -2).should eq(br(3, 4))
+    end
+  {% end %}
+end

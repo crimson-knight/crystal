@@ -865,6 +865,13 @@ module Crystal::BigNum
       Radix.to_s(io, limb_pointer, size, negative?, base.to_i32, upcase, precision.to_i32)
     end
 
+    # Renders the decimal digits of the magnitude (`0` for zero), with no
+    # sign: yields their count and writes them to the buffer the block
+    # returns. `BigDecimal#to_s` prints from this with no intermediate string.
+    def render_decimal_magnitude(& : Int32 -> Pointer(UInt8)) : Nil
+      Radix.render(limb_pointer, size, false, 10, false, 1) { |length| yield length }
+    end
+
     # The digit count of the value in *base* (2 to 62) that GMP's
     # `mpz_sizeinbase` gives: exact for a power-of-two base, and possibly
     # one more than exact otherwise. Zero gives 1.
