@@ -77,6 +77,10 @@ module Crystal::BigNum
       {% begin %}
       {% if flag?(:x86_64) %}
         if ProcessorKernels.adx?
+          if an == 4 && bn == 4
+            mul_4_by_4_with_assembly(rp, ap, bp)
+            return true
+          end
           case an &* 8 &+ bn
           {% for an in 1..4 %}
             {% for bn in 1..an %}
@@ -144,6 +148,89 @@ module Crystal::BigNum
           end
         {% end %}
       {% end %}
+    {% end %}
+
+    {% if flag?(:x86_64) %}
+      # The 4 by 4 product in our own x86-64 assembly (BIGNUM.md 4.8: the
+      # `+bmi2` body LLVM builds left `mul` at 256 bits at or just under GMP
+      # on AMD Zen 3 and Intel Emerald Rapids). Row 0 is one `mulx` and
+      # `add`/`adc` chain; each later row adds `a * b[j]` with two carry
+      # chains at once, `adcx` (CF) for the low halves and `adox` (OF) for
+      # the high halves, so no limb waits on the other chain. The result
+      # limbs stay in registers until their row is done. Needs BMI2 and ADX
+      # (`ProcessorKernels.adx?`).
+      def self.mul_4_by_4_with_assembly(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb)) : Nil
+        asm("
+          movq (%rcx), %rdx
+          mulxq (%rsi), %r8, %r9
+          mulxq 8(%rsi), %rax, %r10
+          addq %rax, %r9
+          mulxq 16(%rsi), %rax, %r11
+          adcq %rax, %r10
+          mulxq 24(%rsi), %rax, %r12
+          adcq %rax, %r11
+          adcq $$0, %r12
+          movq %r8, (%rdi)
+
+          movq 8(%rcx), %rdx
+          xorl %r13d, %r13d
+          mulxq (%rsi), %rax, %rbx
+          adcxq %rax, %r9
+          adoxq %rbx, %r10
+          mulxq 8(%rsi), %rax, %rbx
+          adcxq %rax, %r10
+          adoxq %rbx, %r11
+          mulxq 16(%rsi), %rax, %rbx
+          adcxq %rax, %r11
+          adoxq %rbx, %r12
+          mulxq 24(%rsi), %rax, %rbx
+          adcxq %rax, %r12
+          adoxq %rbx, %r13
+          movl $$0, %eax
+          adcxq %rax, %r13
+          movq %r9, 8(%rdi)
+
+          movq 16(%rcx), %rdx
+          xorl %r14d, %r14d
+          mulxq (%rsi), %rax, %rbx
+          adcxq %rax, %r10
+          adoxq %rbx, %r11
+          mulxq 8(%rsi), %rax, %rbx
+          adcxq %rax, %r11
+          adoxq %rbx, %r12
+          mulxq 16(%rsi), %rax, %rbx
+          adcxq %rax, %r12
+          adoxq %rbx, %r13
+          mulxq 24(%rsi), %rax, %rbx
+          adcxq %rax, %r13
+          adoxq %rbx, %r14
+          movl $$0, %eax
+          adcxq %rax, %r14
+          movq %r10, 16(%rdi)
+
+          movq 24(%rcx), %rdx
+          xorl %r15d, %r15d
+          mulxq (%rsi), %rax, %rbx
+          adcxq %rax, %r11
+          adoxq %rbx, %r12
+          mulxq 8(%rsi), %rax, %rbx
+          adcxq %rax, %r12
+          adoxq %rbx, %r13
+          mulxq 16(%rsi), %rax, %rbx
+          adcxq %rax, %r13
+          adoxq %rbx, %r14
+          mulxq 24(%rsi), %rax, %rbx
+          adcxq %rax, %r14
+          adoxq %rbx, %r15
+          movl $$0, %eax
+          adcxq %rax, %r15
+          movq %r11, 24(%rdi)
+          movq %r12, 32(%rdi)
+          movq %r13, 40(%rdi)
+          movq %r14, 48(%rdi)
+          movq %r15, 56(%rdi)
+        " :: "{rdi}"(rp), "{rsi}"(ap), "{rcx}"(bp) : "rax", "rbx", "rdx", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "cc", "memory")
+      end
     {% end %}
 
     # The basecase square with every limb in a local: the cross products
