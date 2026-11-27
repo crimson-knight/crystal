@@ -1,12 +1,58 @@
 require "spec"
+require "crystal/big_num"
 
-# GMP's `BigInt` is the oracle in these examples, and only `-Duse_gmp` keeps
-# `BigInt` on GMP; the default build puts it on the engine under test.
+# The examples above the `-Duse_gmp` guard check the engine against itself and
+# run in every build. Below the guard GMP's `BigInt` is the oracle, and only
+# `-Duse_gmp` keeps `BigInt` on GMP; the default build puts it on the engine
+# under test.
+
+private alias Integer = Crystal::BigNum::Integer
+
+describe "Crystal::BigNum::Integer radix conversion" do
+  describe "#to_s" do
+    it "writes base 62 as 0-9a-zA-Z" do
+      Integer.new(10).to_s(62).should eq("a")
+      Integer.new(36).to_s(62).should eq("A")
+      Integer.new(61).to_s(62).should eq("Z")
+    end
+
+    it "rejects what BigInt rejects" do
+      expect_raises(ArgumentError, "Invalid base 1") { Integer.new(1).to_s(1) }
+      expect_raises(ArgumentError, "Invalid base 37") { Integer.new(1).to_s(37) }
+      expect_raises(ArgumentError, "upcase must be false for base 62") { Integer.new(1).to_s(62, upcase: true) }
+      expect_raises(ArgumentError, "Precision must be non-negative") { Integer.new(1).to_s(precision: -1) }
+    end
+  end
+
+  describe ".parse" do
+    it "reads base 62 as GMP does: A-Z before a-z" do
+      Integer.parse("A", 62).should eq(Integer.new(10))
+      Integer.parse("a", 62).should eq(Integer.new(36))
+      Integer.parse("z", 62).should eq(Integer.new(61))
+      Integer.parse("Z", 40).should eq(Integer.new(35))
+      Integer.parse("a", 40).should eq(Integer.new(36))
+      Integer.parse?("y", 40).should be_nil
+    end
+
+    it "raises the error BigInt raises" do
+      expect_raises(ArgumentError, "Invalid BigInt: 12z") { Integer.parse("12z", 10) }
+      expect_raises(ArgumentError, "Invalid BigInt: ") { Integer.parse("", 10) }
+    end
+
+    it "parses up to 38 decimal digits with no heap allocation" do
+      text = "-" + "9" * 38
+      Integer.parse(text, 10)
+      before = GC.stats.total_bytes
+      sum = 0_u64
+      1_000.times { sum &+= Integer.parse(text, 10).to_u64! }
+      (GC.stats.total_bytes - before).should eq(0)
+      sum.should_not eq(1)
+    end
+  end
+end
+
 {% if flag?(:use_gmp) %}
   require "big"
-  require "crystal/big_num"
-
-  private alias Integer = Crystal::BigNum::Integer
 
   private def integer_of(value : BigInt) : Integer
     Integer.from_limbs(Slice.new(LibGMP.limbs_read(value), LibGMP.size(value).abs.to_i32), value < 0)
@@ -74,12 +120,6 @@ require "spec"
         Integer.new(-85).to_s(precision: 5).should eq("-00085")
       end
 
-      it "writes base 62 as 0-9a-zA-Z" do
-        Integer.new(10).to_s(62).should eq("a")
-        Integer.new(36).to_s(62).should eq("A")
-        Integer.new(61).to_s(62).should eq("Z")
-      end
-
       it "writes to an IO" do
         value = integer_of(BigInt.new(-3) ** 200)
         io = IO::Memory.new
@@ -88,13 +128,6 @@ require "spec"
         io = IO::Memory.new
         Integer.new(255).to_s(io, 16, upcase: true)
         io.to_s.should eq("FF")
-      end
-
-      it "rejects what BigInt rejects" do
-        expect_raises(ArgumentError, "Invalid base 1") { Integer.new(1).to_s(1) }
-        expect_raises(ArgumentError, "Invalid base 37") { Integer.new(1).to_s(37) }
-        expect_raises(ArgumentError, "upcase must be false for base 62") { Integer.new(1).to_s(62, upcase: true) }
-        expect_raises(ArgumentError, "Precision must be non-negative") { Integer.new(1).to_s(precision: -1) }
       end
     end
 
@@ -110,15 +143,6 @@ require "spec"
         end
       end
 
-      it "reads base 62 as GMP does: A-Z before a-z" do
-        Integer.parse("A", 62).should eq(Integer.new(10))
-        Integer.parse("a", 62).should eq(Integer.new(36))
-        Integer.parse("z", 62).should eq(Integer.new(61))
-        Integer.parse("Z", 40).should eq(Integer.new(35))
-        Integer.parse("a", 40).should eq(Integer.new(36))
-        Integer.parse?("y", 40).should be_nil
-      end
-
       it "accepts exactly the syntax mpz_set_str accepts" do
         texts = ["0", "-0", "00000", "  12", "\t\n\v\f\r 12", "- 12", "-12", "--12", "1 2 3", "1\t2\n3", "12 ",
                  "", " ", "-", "x", "0x", "0x1f", "0X1F", "-0x1f", "0x 1f", "0 x1f", "0b101", "0B2", "017", "019",
@@ -130,11 +154,6 @@ require "spec"
         end
       end
 
-      it "raises the error BigInt raises" do
-        expect_raises(ArgumentError, "Invalid BigInt: 12z") { Integer.parse("12z", 10) }
-        expect_raises(ArgumentError, "Invalid BigInt: ") { Integer.parse("", 10) }
-      end
-
       it "parses a 147,000-digit decimal (the Postgres NUMERIC maximum) as GMP does" do
         random = Random::PCG32.new(147_000)
         text = String.build do |io|
@@ -142,16 +161,6 @@ require "spec"
           146_999.times { io << random.rand(10) }
         end
         Integer.parse(text, 10).to_s.should eq(BigInt.new(text).to_s)
-      end
-
-      it "parses up to 38 decimal digits with no heap allocation" do
-        text = "-" + "9" * 38
-        Integer.parse(text, 10)
-        before = GC.stats.total_bytes
-        sum = 0_u64
-        1_000.times { sum &+= Integer.parse(text, 10).to_u64! }
-        (GC.stats.total_bytes - before).should eq(0)
-        sum.should_not eq(1)
       end
     end
 
