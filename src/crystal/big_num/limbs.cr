@@ -5,10 +5,7 @@ module Crystal::BigNum
     # :nodoc:
     alias DoubleLimb = UInt128
   {% else %}
-    # :nodoc:
-    alias Limb = UInt32
-    # :nodoc:
-    alias DoubleLimb = UInt64
+    {% raise "Crystal::BigNum supports 64-bit targets only; `require \"big\"` uses GMP (src/big/gmp/) on 32-bit targets" %}
   {% end %}
 
   # :nodoc:

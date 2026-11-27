@@ -1,19 +1,92 @@
-require "spec"
+# The engine is 64-bit only; 32-bit targets run the big types on GMP.
+require "crystal/big_num/availability"
+{% skip_file unless Crystal::BigNum::TARGET_SUPPORTED %}
 
-# GMP's `BigInt` is the oracle in these examples, and only `-Duse_gmp` keeps
-# `BigInt` on GMP; the default build puts it on the engine under test.
+require "spec"
+require "crystal/big_num"
+
+# The examples above the `-Duse_gmp` guard check the engine against itself and
+# run in every build. Below the guard GMP's `BigInt` is the oracle, and only
+# `-Duse_gmp` keeps `BigInt` on GMP; the default build puts it on the engine
+# under test.
+
+private alias Integer = Crystal::BigNum::Integer
+private alias Limb = Crystal::BigNum::Limb
+private alias Divide = Crystal::BigNum::Divide
+
+private def integer(limbs : Array(Limb), negative = false) : Integer
+  Integer.from_limbs(Slice.new(limbs.to_unsafe, limbs.size), negative)
+end
+
+private def random_limbs(random, count) : Array(Limb)
+  limbs = Array(Limb).new(count) { random.rand(Limb) }
+  limbs[-1] |= 1_u64 << random.rand(64) if count > 0
+  limbs
+end
+
+describe Crystal::BigNum::Integer do
+  it "divides values of up to 128 bits with no heap allocation" do
+    values = [Integer.new(UInt128::MAX), Integer.new(-(Int128::MAX // 3)), Integer.new(UInt64::MAX), Integer.new(-7), Integer.new((1_u128 << 64) + 5)]
+    divisors = [Integer.new(3), Integer.new(-(1_i128 << 70) - 1), Integer.new(UInt64::MAX - 2), Integer.new(UInt128::MAX >> 1)]
+    sink = 0_u64
+    # Warm up first, so nothing lazily set up is counted.
+    values.each { |a| divisors.each { |b| sink &+= a.divmod(b)[1].to_u64! } }
+    before = GC.stats.total_bytes
+    1_000.times do
+      values.each do |a|
+        divisors.each do |b|
+          q, r = a.divmod(b)
+          sink &+= q.to_u64! &+ r.to_u64!
+          q, r = a.tdivmod(b)
+          sink &+= q.to_u64! &+ r.to_u64! &+ (a % 7).to_u64! &+ a.tdiv(-5).to_u64!
+          sink &+= 1 if a.divisible_by?(b)
+        end
+      end
+    end
+    # 28,000 calls; one allocation per call would be 16 bytes or more
+    # each. The runner itself may take a few bytes meanwhile.
+    (GC.stats.total_bytes - before).should be < 1_000
+    sink.should_not eq(0)
+  end
+
+  it "raises DivisionByZeroError for a zero divisor in every variant" do
+    x = integer([1_u64, 2_u64, 3_u64])
+    zero = Integer.zero
+    {x, Integer.new(-5), zero}.each do |value|
+      expect_raises(DivisionByZeroError) { value // zero }
+      expect_raises(DivisionByZeroError) { value % zero }
+      expect_raises(DivisionByZeroError) { value.tdiv(zero) }
+      expect_raises(DivisionByZeroError) { value.remainder(zero) }
+      expect_raises(DivisionByZeroError) { value.divmod(zero) }
+      expect_raises(DivisionByZeroError) { value.tdivmod(zero) }
+      expect_raises(DivisionByZeroError) { value.unsafe_floored_div(zero) }
+      expect_raises(DivisionByZeroError) { value.unsafe_floored_mod(zero) }
+      expect_raises(DivisionByZeroError) { value.unsafe_floored_divmod(zero) }
+      expect_raises(DivisionByZeroError) { value.unsafe_truncated_div(zero) }
+      expect_raises(DivisionByZeroError) { value.unsafe_truncated_mod(zero) }
+      expect_raises(DivisionByZeroError) { value.unsafe_truncated_divmod(zero) }
+      expect_raises(DivisionByZeroError) { value // 0 }
+      expect_raises(DivisionByZeroError) { value.unsafe_truncated_divmod(0_u8) }
+      expect_raises(DivisionByZeroError) { value.divexact(zero) }
+    end
+  end
+
+  it "answers divisible_by? as GMP's divisible_p, zero divisor included" do
+    Integer.zero.divisible_by?(Integer.zero).should be_true
+    Integer.new(3).divisible_by?(Integer.zero).should be_false
+    Integer.new(3).divisible_by?(0).should be_false
+    big_power = integer([0_u64, 0_u64, 1_u64 << 5])
+    big_power.divisible_by?(integer([0_u64, 1_u64])).should be_true
+    big_power.divisible_by?(integer([0_u64, 0_u64, 1_u64 << 6])).should be_false
+    (big_power + Integer.new(1 << 20)).divisible_by?(1 << 21).should be_false
+    integer([0_u64, 0_u64, 3_u64]).divisible_by?(-3).should be_true
+  end
+end
+
 {% if flag?(:use_gmp) %}
   require "big"
-  require "crystal/big_num"
 
   # GMP (through the GMP-backed `BigInt`) is the oracle throughout.
-  private alias Integer = Crystal::BigNum::Integer
-  private alias Limb = Crystal::BigNum::Limb
-  private alias Divide = Crystal::BigNum::Divide
-
-  private def integer(limbs : Array(Limb), negative = false) : Integer
-    Integer.from_limbs(Slice.new(limbs.to_unsafe, limbs.size), negative)
-  end
 
   private def integer(value : BigInt) : Integer
     limbs = [] of Limb
@@ -29,12 +102,6 @@ require "spec"
     result = BigInt.new(0)
     value.limbs.reverse_each { |limb| result = (result << 64) | limb }
     value.negative? ? -result : result
-  end
-
-  private def random_limbs(random, count) : Array(Limb)
-    limbs = Array(Limb).new(count) { random.rand(Limb) }
-    limbs[-1] |= 1_u64 << random.rand(64) if count > 0
-    limbs
   end
 
   # Checks every Integer-divisor variant of *a* by *b* against GMP.
@@ -300,63 +367,6 @@ require "spec"
           end
         {% end %}
       end
-    end
-
-    it "divides values of up to 128 bits with no heap allocation" do
-      values = [Integer.new(UInt128::MAX), Integer.new(-(Int128::MAX // 3)), Integer.new(UInt64::MAX), Integer.new(-7), Integer.new((1_u128 << 64) + 5)]
-      divisors = [Integer.new(3), Integer.new(-(1_i128 << 70) - 1), Integer.new(UInt64::MAX - 2), Integer.new(UInt128::MAX >> 1)]
-      sink = 0_u64
-      # Warm up first, so nothing lazily set up is counted.
-      values.each { |a| divisors.each { |b| sink &+= a.divmod(b)[1].to_u64! } }
-      before = GC.stats.total_bytes
-      1_000.times do
-        values.each do |a|
-          divisors.each do |b|
-            q, r = a.divmod(b)
-            sink &+= q.to_u64! &+ r.to_u64!
-            q, r = a.tdivmod(b)
-            sink &+= q.to_u64! &+ r.to_u64! &+ (a % 7).to_u64! &+ a.tdiv(-5).to_u64!
-            sink &+= 1 if a.divisible_by?(b)
-          end
-        end
-      end
-      # 28,000 calls; one allocation per call would be 16 bytes or more
-      # each. The runner itself may take a few bytes meanwhile.
-      (GC.stats.total_bytes - before).should be < 1_000
-      sink.should_not eq(0)
-    end
-
-    it "raises DivisionByZeroError for a zero divisor in every variant" do
-      x = integer([1_u64, 2_u64, 3_u64])
-      zero = Integer.zero
-      {x, Integer.new(-5), zero}.each do |value|
-        expect_raises(DivisionByZeroError) { value // zero }
-        expect_raises(DivisionByZeroError) { value % zero }
-        expect_raises(DivisionByZeroError) { value.tdiv(zero) }
-        expect_raises(DivisionByZeroError) { value.remainder(zero) }
-        expect_raises(DivisionByZeroError) { value.divmod(zero) }
-        expect_raises(DivisionByZeroError) { value.tdivmod(zero) }
-        expect_raises(DivisionByZeroError) { value.unsafe_floored_div(zero) }
-        expect_raises(DivisionByZeroError) { value.unsafe_floored_mod(zero) }
-        expect_raises(DivisionByZeroError) { value.unsafe_floored_divmod(zero) }
-        expect_raises(DivisionByZeroError) { value.unsafe_truncated_div(zero) }
-        expect_raises(DivisionByZeroError) { value.unsafe_truncated_mod(zero) }
-        expect_raises(DivisionByZeroError) { value.unsafe_truncated_divmod(zero) }
-        expect_raises(DivisionByZeroError) { value // 0 }
-        expect_raises(DivisionByZeroError) { value.unsafe_truncated_divmod(0_u8) }
-        expect_raises(DivisionByZeroError) { value.divexact(zero) }
-      end
-    end
-
-    it "answers divisible_by? as GMP's divisible_p, zero divisor included" do
-      Integer.zero.divisible_by?(Integer.zero).should be_true
-      Integer.new(3).divisible_by?(Integer.zero).should be_false
-      Integer.new(3).divisible_by?(0).should be_false
-      big_power = integer([0_u64, 0_u64, 1_u64 << 5])
-      big_power.divisible_by?(integer([0_u64, 1_u64])).should be_true
-      big_power.divisible_by?(integer([0_u64, 0_u64, 1_u64 << 6])).should be_false
-      (big_power + Integer.new(1 << 20)).divisible_by?(1 << 21).should be_false
-      integer([0_u64, 0_u64, 3_u64]).divisible_by?(-3).should be_true
     end
   end
 {% else %}

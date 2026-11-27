@@ -11,9 +11,13 @@ end
 struct BigDecimal < Number
 end
 
-# The engine: every big type runs on the pure-Crystal `Crystal::BigNum` by
-# default, or on GMP under `-Duse_gmp` (`src/big/gmp/`).
-{% if flag?(:use_gmp) %}
+# The engine: every big type runs on the pure-Crystal `Crystal::BigNum`
+# (`src/big/pure/`) by default, or on GMP (`src/big/gmp/`) under `-Duse_gmp`.
+# 32-bit targets always use GMP: the engine's kernels are written for 64-bit
+# limbs. `Crystal::BigNum::BACKS_BIG_TYPES` holds the choice.
+require "./crystal/big_num/availability"
+
+{% unless Crystal::BigNum::BACKS_BIG_TYPES %}
   require "./big/lib_gmp"
   require "./big/gmp/big_int"
   require "./big/gmp/big_float"
@@ -22,9 +26,9 @@ end
   require "./big/gmp/number"
 {% else %}
   require "./crystal/big_num"
-  require "./big/big_int"
-  require "./big/big_float"
-  require "./big/big_rational"
-  require "./big/big_decimal"
-  require "./big/number"
+  require "./big/pure/big_int"
+  require "./big/pure/big_float"
+  require "./big/pure/big_rational"
+  require "./big/pure/big_decimal"
+  require "./big/pure/number"
 {% end %}

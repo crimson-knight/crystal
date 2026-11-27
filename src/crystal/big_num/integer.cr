@@ -574,9 +574,15 @@ module Crystal::BigNum
 
     # ---- Shifts ----
 
-    # The value times 2 ** *count*. A negative *count* shifts right.
+    # The value times 2 ** *count*. A negative *count* shifts right, as
+    # `Int#<<` does; a negative *count* at or past the bit length (down to
+    # `Int64::MIN`) shifts every bit out and gives 0, or -1 for a negative
+    # value (`>>` rounds toward minus infinity).
     def <<(count : Int) : Integer
-      return self >> (0 &- count.to_i64) if count < 0
+      if count < 0
+        return all_bits_shifted_out if count <= -(size.to_i64 * LIMB_BITS)
+        return self >> -count.to_i64
+      end
       return self if count == 0 || zero?
       if inline? && count < 128
         magnitude = magnitude128
@@ -607,14 +613,13 @@ module Crystal::BigNum
     end
 
     # The value divided by 2 ** *count*, rounded toward minus infinity (GMP's
-    # `fdiv_q_2exp`). A negative *count* shifts left.
+    # `fdiv_q_2exp`). A negative *count* shifts left, as `Int#>>` does; a left
+    # shift too large for memory raises `OverflowError`.
     def >>(count : Int) : Integer
-      return self << (0 &- count.to_i64) if count < 0
+      return self << -count.to_i64 if count < 0
       return self if count == 0 || zero?
       count_in = size
-      if count >= count_in.to_i64 * LIMB_BITS
-        return negative? ? Integer.new(-1) : Integer.zero
-      end
+      return all_bits_shifted_out if count >= count_in.to_i64 * LIMB_BITS
       if inline?
         magnitude = magnitude128
         quotient = magnitude >> count
@@ -647,6 +652,11 @@ module Crystal::BigNum
     # :nodoc:
     def unsafe_shr(count : Int) : Integer
       self >> count
+    end
+
+    # A right shift by at least the bit length: 0, or -1 for a negative value.
+    private def all_bits_shifted_out : Integer
+      negative? ? Integer.new(-1) : Integer.zero
     end
 
     # ---- Conversions ----

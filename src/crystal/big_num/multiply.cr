@@ -68,10 +68,11 @@ module Crystal::BigNum
     SMALL_LIMBS = 4
 
     # Writes the product of *an* by *bn* limbs (`SMALL_LIMBS >= an >= bn`)
-    # with one fully unrolled routine per pair of sizes, and returns true.
-    # On x86-64 with BMI2 the routines compiled for `+bmi2` run instead:
-    # `mulx` leaves the flags to the carry chains, which LLVM then
-    # interleaves (about 2 ns faster for 4 by 4 on AMD Zen 3).
+    # with one fully unrolled routine per pair of sizes, and returns true; for
+    # any other pair of sizes it writes nothing and returns false, and the
+    # caller takes the general path. On x86-64 with BMI2 the routines compiled
+    # for `+bmi2` run instead: `mulx` leaves the flags to the carry chains,
+    # which LLVM then interleaves (about 2 ns faster for 4 by 4 on AMD Zen 3).
     @[AlwaysInline]
     protected def self.mul_small(rp : Pointer(Limb), ap : Pointer(Limb), an : Int32, bp : Pointer(Limb), bn : Int32) : Bool
       {% begin %}
@@ -94,26 +95,33 @@ module Crystal::BigNum
       case an &* 8 &+ bn
       {% for an in 1..4 %}
         {% for bn in 1..an %}
-          when {{ an * 8 + bn }} then mul_{{ an }}_by_{{ bn }}(rp, ap, bp)
+          when {{ an * 8 + bn }}
+            mul_{{ an }}_by_{{ bn }}(rp, ap, bp)
+            true
         {% end %}
       {% end %}
+      else
+        false
       end
       {% end %}
-      true
     end
 
     # Writes the square of *n* limbs (`SMALL_LIMBS >= n >= 1`) with one fully
-    # unrolled routine per size, and returns true.
+    # unrolled routine per size, and returns true; for any other size it
+    # writes nothing and returns false.
     @[AlwaysInline]
     protected def self.sqr_small(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32) : Bool
       {% begin %}
       case n
       {% for n in 1..4 %}
-        when {{ n }} then sqr_{{ n }}(rp, ap)
+        when {{ n }}
+          sqr_{{ n }}(rp, ap)
+          true
       {% end %}
+      else
+        false
       end
       {% end %}
-      true
     end
 
     # The schoolbook rows of Algorithm M with every limb in a local: row *j*
