@@ -2,10 +2,10 @@ module Crystal
   # Explains a C library the linker could not find: what in the program asked for
   # it, how to install it, and how to build without it.
   #
-  # Regex, YAML, text encodings and compression run on Mica by default, so a program
-  # needs their C libraries only when a flag asks for them. The Homebrew formula
-  # installs none of those libraries; this hint tells the person who passed the flag
-  # what to install.
+  # Regex, YAML, text encodings and compression run on Mica, and the big numbers on
+  # pure Crystal, by default, so a program needs their C libraries only when a flag
+  # asks for them. The Homebrew formula installs none of those libraries; this hint
+  # tells the person who passed the flag what to install.
   struct MissingLibraryHint
     # A C library the standard library can link, and how a program comes to need it.
     record KnownLibrary,
@@ -51,10 +51,10 @@ module Crystal
         debian_package: "libevent-dev",
         way_without_it: "Build without -Devloop=libevent to use the default event loop, which needs no C library."),
       "gmp" => KnownLibrary.new(
-        reason: %(the program requires "big" (BigInt, BigFloat, BigRational, BigDecimal)),
+        reason: %(the program was built with -Duse_gmp, for a 32-bit target, or binds LibGMP itself (require "big/lib_gmp")),
         homebrew_formula: "gmp",
         debian_package: "libgmp-dev",
-        way_without_it: %(A program that leaves out require "big" needs no GMP.)),
+        way_without_it: %(On a 64-bit target, build without -Duse_gmp and without require "big/lib_gmp" to run the big numbers on pure Crystal, which needs no C library.)),
       "ssl" => KnownLibrary.new(
         reason: %(the program uses TLS or OpenSSL (require "openssl", an HTTPS client or server)),
         homebrew_formula: "openssl@3",

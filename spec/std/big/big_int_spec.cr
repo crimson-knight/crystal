@@ -102,6 +102,37 @@ describe "BigInt" do
     [3.to_big_i, 2.to_big_i, 10.to_big_i, 4, 8_u8].sort.should eq([2, 3, 4, 8, 10])
   end
 
+  # `<=>` with a primitive in the `Int64` range returns what GMP's
+  # `mpz_cmp_si` gives, as the GMP-backed `BigInt` always has: the signed
+  # limb count minus the sign of the primitive when those differ.
+  it "compares with a signed 64-bit primitive as mpz_cmp_si does" do
+    big = 2.to_big_i ** 200
+    (big <=> 3).should eq(3)
+    (big <=> -3).should eq(5)
+    (big <=> 0).should eq(4)
+    (-big <=> 3).should eq(-5)
+    (3 <=> big).should eq(-3)
+    (5.to_big_i <=> -3).should eq(2)
+    (5.to_big_i <=> 3).should eq(1)
+    (0.to_big_i <=> -3).should eq(1)
+    (big <=> UInt64::MAX).should eq(1)
+    (big <=> Int128::MAX).should eq(1)
+    (big <=> 3.to_big_i).should eq(1)
+  end
+
+  # `<=>` with a zero double returns what GMP's `mpz_cmp_d` gives, as the
+  # GMP-backed `BigInt` always has: the signed limb count.
+  it "compares with a zero float as mpz_cmp_d does" do
+    big = 2.to_big_i ** 100
+    (big <=> 0.0).should eq(2)
+    (-big <=> -0.0).should eq(-2)
+    (big <=> 0.0_f32).should eq(2)
+    (0.0 <=> big).should eq(-2)
+    (5.to_big_i <=> 0.0).should eq(1)
+    (0.to_big_i <=> 0.0).should eq(0)
+    (big <=> 0.5).should eq(1)
+  end
+
   it "compares against float" do
     1.to_big_i.should eq(1.0)
     1.to_big_i.should eq(1.0_f32)
@@ -248,7 +279,8 @@ describe "BigInt" do
 
   it "raises if factorial of 2^64" do
     expect_raises ArgumentError do
-      (LibGMP::UI::MAX.to_big_i + 1).factorial
+      limit = {% if Crystal::BigNum::BACKS_BIG_TYPES %} UInt64::MAX {% else %} LibGMP::UI::MAX {% end %}
+      (limit.to_big_i + 1).factorial
     end
   end
 
@@ -326,6 +358,24 @@ describe "BigInt" do
     (-6.to_big_i % -2).should eq(0.to_big_i)
   end
 
+  # The GMP-backed `BigInt` has always computed `%` and `unsafe_floored_mod`
+  # with a negative primitive divisor as `-(self mod |divisor|)` (GMP is
+  # called with the magnitude, then the result is negated). Both builds keep
+  # it; a `BigInt` divisor and `divmod` give the floored modulo.
+  it "keeps the modulo by a negative primitive as -(self mod |divisor|)" do
+    (-5.to_big_i % -3).should eq(-1.to_big_i)
+    (5.to_big_i % -3).should eq(-2.to_big_i)
+    (-5.to_big_i % -3_i128).should eq(-1.to_big_i)
+    (-5.to_big_i % Int64::MIN).should eq(-(-5.to_big_i % (2.to_big_i ** 63)))
+    -5.to_big_i.unsafe_floored_mod(-3).should eq(-1.to_big_i)
+    5.to_big_i.unsafe_floored_mod(-3).should eq(-2.to_big_i)
+
+    (-5.to_big_i % -3.to_big_i).should eq(-2.to_big_i)
+    (5.to_big_i % -3.to_big_i).should eq(-1.to_big_i)
+    -5.to_big_i.divmod(-3).should eq({1.to_big_i, -2.to_big_i})
+    5.to_big_i.divmod(-3).should eq({-2.to_big_i, -1.to_big_i})
+  end
+
   it "does remainder with negative numbers" do
     5.to_big_i.remainder(3).should eq(2)
     -5.to_big_i.remainder(3).should eq(-2)
@@ -393,6 +443,22 @@ describe "BigInt" do
     (123.to_big_i << 4).should eq(1968)
     (123456.to_big_i << 8).should eq(31604736)
   end
+
+  # An intended difference between the engines: the pure engine takes a
+  # negative count as a shift the other way, as `Int#<<` and `Int#>>` do,
+  # while GMP (`-Duse_gmp`, and every 32-bit target) receives it as unsigned
+  # and the process dies with SIGFPE.
+  {% if Crystal::BigNum::BACKS_BIG_TYPES %}
+    it "shifts the other way for a negative count" do
+      (40.to_big_i >> -3).should eq(320)
+      (40.to_big_i << -3).should eq(5)
+      (-41.to_big_i << -3).should eq(-6)
+      (5.to_big_i << Int64::MIN).should eq(0)
+      (-5.to_big_i << Int64::MIN).should eq(-1)
+      ((1.to_big_i << 300) << -300).should eq(1)
+      expect_raises(OverflowError) { 5.to_big_i >> Int64::MIN }
+    end
+  {% end %}
 
   it "raises if divides by zero" do
     expect_raises DivisionByZeroError do
@@ -463,6 +529,18 @@ describe "BigInt" do
       it_converts_to_s (-a), "-1tckI1NfUnH", base: 62
 
       it_converts_to_s 16.to_big_i ** 1000, "1#{"0" * 1000}", base: 16
+
+      # `to_s(62)` prints 0-9, a-z, A-Z (the case of `Int#to_s(62)`), while
+      # `BigInt.new(str, 62)` reads 0-9, A-Z, a-z (GMP's own order), so base 62
+      # does not round-trip, as with the GMP-backed `BigInt`.
+      it "keeps base 62 as GMP-backed BigInt has it: to_s and new disagree on case" do
+        a.to_s(62).should eq("1tckI1NfUnH")
+        BigInt.new("1tckI1NfUnH", 62).should_not eq(a)
+        BigInt.new("1TCKi1nFuNh", 62).should eq(a)
+        BigInt.new("z", 62).should eq(61)
+        BigInt.new("Z", 62).should eq(35)
+        61.to_big_i.to_s(62).should eq("Z")
+      end
 
       it "raises on base 1" do
         expect_raises(ArgumentError, "Invalid base 1") { a.to_s(1) }

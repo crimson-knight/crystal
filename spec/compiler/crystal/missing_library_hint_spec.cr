@@ -23,6 +23,18 @@ describe Crystal::MissingLibraryHint do
     hint.list_of_missing_libraries.should eq ["yaml", "gmp", "event"]
   end
 
+  it "names -Duse_gmp as the reason a program links libgmp" do
+    hint = Crystal::MissingLibraryHint.new(installed_by_homebrew: true)
+    hint.read("ld: library 'gmp' not found\n")
+
+    hint.to_s.should eq <<-TEXT
+      The linker needs libgmp because the program was built with -Duse_gmp, for a 32-bit target, or binds LibGMP itself (require "big/lib_gmp").
+        Install it with: brew install gmp
+        On a 64-bit target, build without -Duse_gmp and without require "big/lib_gmp" to run the big numbers on pure Crystal, which needs no C library.
+
+      TEXT
+  end
+
   it "names a package for each platform when the compiler is not a Homebrew keg" do
     hint = Crystal::MissingLibraryHint.new(installed_by_homebrew: false)
     hint.read("/usr/bin/ld: cannot find -lyaml\n")
