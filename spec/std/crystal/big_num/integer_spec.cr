@@ -166,7 +166,6 @@ describe Crystal::BigNum::Integer do
   end
 
   it "names the piece that owns each method not built yet" do
-    expect_raises(NotImplementedError, /G2c/) { Integer.new(2) // 3 }
     expect_raises(NotImplementedError, /G2d/) { Integer.new(2).to_s }
     expect_raises(NotImplementedError, /G2e/) { Integer.new(2) ** 3 }
   end

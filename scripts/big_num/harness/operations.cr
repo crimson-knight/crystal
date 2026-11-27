@@ -24,7 +24,10 @@ module G2Harness
       add add_primitive sub sub_primitive mul mul_primitive sqr square negate abs
       floor_div floor_div_primitive floor_mod floor_mod_primitive divmod divmod_primitive
       tdiv tdiv_primitive remainder remainder_primitive tdivmod tdivmod_primitive
-      divisible_by divisible_by_primitive remove pow factorial isqrt
+      unsafe_floored_div unsafe_floored_div_primitive unsafe_floored_mod unsafe_floored_mod_primitive
+      unsafe_floored_divmod unsafe_floored_divmod_primitive unsafe_truncated_div unsafe_truncated_div_primitive
+      unsafe_truncated_mod unsafe_truncated_mod_primitive unsafe_truncated_divmod unsafe_truncated_divmod_primitive
+      divexact divisible_by divisible_by_primitive remove pow factorial isqrt
       and or xor and_primitive or_primitive xor_primitive complement shift_left shift_right
       bit popcount trailing_zeros_count bit_length
       gcd gcd_primitive lcm lcm_primitive invert pow_mod
@@ -295,7 +298,10 @@ module G2Harness
         check({a, d}, a % d)
       when "floor_mod_primitive"
         a, p = source.operand, primitive_divisor(source)
-        check({a, p}, a % p)
+        # BigInt#%(Int) with a negative primitive returns -(a mod |p|)
+        # (upstream: `BigInt.new(-5) % -3` is -1, `-5 % -3` is -2); GMP's
+        # fdiv_r on the same value is the oracle, through a BigInt divisor.
+        check({a, p}, a % BigInt.new(p), a % p)
       when "divmod"
         a = source.operand
         d = divisor(a, source)
@@ -324,6 +330,68 @@ module G2Harness
       when "tdivmod_primitive"
         a, p = source.operand, primitive_divisor(source)
         check({a, p}, {a.tdiv(p), a.remainder(p)}, a.tdivmod(p))
+      when "unsafe_floored_div"
+        # GMP's unsafe_* takes a zero divisor to a hardware fault; the
+        # oracle answers a zero divisor with the raising variant instead.
+        a = source.operand
+        d = divisor(a, source)
+        check({a, d}, d.zero? ? a // d : a.unsafe_floored_div(d), a.unsafe_floored_div(d))
+      when "unsafe_floored_div_primitive"
+        a, d = source.operand, primitive_divisor(source)
+        check({a, d}, d.zero? ? a // d : a.unsafe_floored_div(d), a.unsafe_floored_div(d))
+      when "unsafe_floored_mod"
+        # GMP's unsafe_* takes a zero divisor to a hardware fault; the
+        # oracle answers a zero divisor with the raising variant instead.
+        a = source.operand
+        d = divisor(a, source)
+        check({a, d}, d.zero? ? a % d : a.unsafe_floored_mod(d), a.unsafe_floored_mod(d))
+      when "unsafe_floored_mod_primitive"
+        a, d = source.operand, primitive_divisor(source)
+        # BigInt#unsafe_floored_mod(Int) with a negative primitive returns -(a mod |p|)
+        # (upstream: `BigInt.new(-5) % -3` is -1, `-5 % -3` is -2); GMP's
+        # fdiv_r on the same value is the oracle, through a BigInt divisor.
+        check({a, d}, d.zero? ? a % d : a.unsafe_floored_mod(BigInt.new(d)), a.unsafe_floored_mod(d))
+      when "unsafe_floored_divmod"
+        # GMP's unsafe_* takes a zero divisor to a hardware fault; the
+        # oracle answers a zero divisor with the raising variant instead.
+        a = source.operand
+        d = divisor(a, source)
+        check({a, d}, d.zero? ? a.divmod(d) : a.unsafe_floored_divmod(d), a.unsafe_floored_divmod(d))
+      when "unsafe_floored_divmod_primitive"
+        a, d = source.operand, primitive_divisor(source)
+        check({a, d}, d.zero? ? a.divmod(d) : a.unsafe_floored_divmod(d), a.unsafe_floored_divmod(d))
+      when "unsafe_truncated_div"
+        # GMP's unsafe_* takes a zero divisor to a hardware fault; the
+        # oracle answers a zero divisor with the raising variant instead.
+        a = source.operand
+        d = divisor(a, source)
+        check({a, d}, d.zero? ? a.tdiv(d) : a.unsafe_truncated_div(d), a.unsafe_truncated_div(d))
+      when "unsafe_truncated_div_primitive"
+        a, d = source.operand, primitive_divisor(source)
+        check({a, d}, d.zero? ? a.tdiv(d) : a.unsafe_truncated_div(d), a.unsafe_truncated_div(d))
+      when "unsafe_truncated_mod"
+        # GMP's unsafe_* takes a zero divisor to a hardware fault; the
+        # oracle answers a zero divisor with the raising variant instead.
+        a = source.operand
+        d = divisor(a, source)
+        check({a, d}, d.zero? ? a.remainder(d) : a.unsafe_truncated_mod(d), a.unsafe_truncated_mod(d))
+      when "unsafe_truncated_mod_primitive"
+        a, d = source.operand, primitive_divisor(source)
+        check({a, d}, d.zero? ? a.remainder(d) : a.unsafe_truncated_mod(d), a.unsafe_truncated_mod(d))
+      when "unsafe_truncated_divmod"
+        # GMP's unsafe_* takes a zero divisor to a hardware fault; the
+        # oracle answers a zero divisor with the raising variant instead.
+        a = source.operand
+        d = divisor(a, source)
+        check({a, d}, d.zero? ? {a.tdiv(d), a.remainder(d)} : a.unsafe_truncated_divmod(d), a.unsafe_truncated_divmod(d))
+      when "unsafe_truncated_divmod_primitive"
+        a, d = source.operand, primitive_divisor(source)
+        check({a, d}, d.zero? ? {a.tdiv(d), a.remainder(d)} : a.unsafe_truncated_divmod(d), a.unsafe_truncated_divmod(d))
+      when "divexact"
+        a = source.operand
+        d = nonzero(divisor(a, source), source)
+        a = operand_from(oracle_value(a).tdiv(oracle_value(d)) * oracle_value(d))
+        check({a, d}, GMPOracle.divexact(a, d), if_defined(a, :divexact, a.divexact(d)))
       when "divisible_by"
         a = source.operand
         d = nonzero(divisor(a, source), source)

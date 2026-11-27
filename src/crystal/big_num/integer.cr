@@ -679,18 +679,6 @@ module Crystal::BigNum
       io << ')'
     end
 
-    # ---- Owned by later pieces (G2b to G2e) ----
-
-    {% for operator in %w(// % tdiv remainder) %}
-      def {{ operator.id }}(other : Integer) : Integer
-        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + operator + " (G2c)" }})
-      end
-
-      def {{ operator.id }}(other : ::Int::Primitive) : Integer
-        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + operator + " (G2c)" }})
-      end
-    {% end %}
-
     # ---- Multiplication ----
 
     # The product, as `mpz_mul`. Operands of up to two limbs multiply in
@@ -824,24 +812,6 @@ module Crystal::BigNum
         Multiply.sqr(rp, ap, count)
         2 * count
       end
-    end
-
-    {% for name in %w(divmod tdivmod) %}
-      def {{ name.id }}(other : Integer) : {Integer, Integer}
-        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2c)" }})
-      end
-
-      def {{ name.id }}(other : ::Int::Primitive) : {Integer, Integer}
-        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2c)" }})
-      end
-    {% end %}
-
-    def divisible_by?(other : Integer) : Bool
-      raise NotImplementedError.new("Crystal::BigNum::Integer#divisible_by? (G2c)")
-    end
-
-    def divisible_by?(other : ::Int::Primitive) : Bool
-      raise NotImplementedError.new("Crystal::BigNum::Integer#divisible_by? (G2c)")
     end
 
     def **(exponent : Int) : Integer

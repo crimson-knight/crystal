@@ -38,7 +38,14 @@ module G2Harness
 
   class Bench
     LIST_OF_OPERATIONS = %w(add sub mul mul_unbalanced mul_primitive sqr divmod divmod_limb to_s_10 to_s_16 parse_10
-      gcd isqrt pow pow_mod shift and compare hash)
+      gcd isqrt pow pow_mod shift and compare hash) + DIVISION_OPERATIONS
+    # Division rows (G2c): GMP's tdiv/fdiv quotient, remainder and both, of a
+    # negative dividend of the row's size by a positive divisor of one limb
+    # (`_limb`), of half the dividend's size (`_half`), or one limb shorter
+    # than the dividend (`_short`; 32 bits for a 64-bit dividend).
+    DIVISION_OPERATIONS = %w(tdiv_q tdiv_r tdiv_qr fdiv_q fdiv_r fdiv_qr).flat_map do |kind|
+      %w(limb half short).map { |shape| "#{kind}_#{shape}" }
+    end
     LIST_OF_BITS_UNDER_THE_BAR = [64, 128, 192, 256, 512, 1_024, 2_048, 4_096]
     LIST_OF_BITS_REPORTED      = [8_192, 32_768, 131_072, 1_048_576]
     # Rows that take minutes per operation on GMP itself above these sizes.
@@ -75,9 +82,10 @@ module G2Harness
       limbs.empty? ? 0_u64 : limbs[0]
     end
 
+    # The low limb read in place: `#limbs` copies an inline value into a
+    # fresh Slice, an allocation the GMP side does not pay.
     private def fold(value : Crystal::BigNum::Integer) : UInt64
-      limbs = value.limbs
-      limbs.empty? ? 0_u64 : limbs[0]
+      value.zero? ? 0_u64 : value.to_u64!
     end
 
     private def fold(value : Tuple) : UInt64
@@ -127,6 +135,23 @@ module G2Harness
       when "divmod_limb"
         divisor = source.dense_of(64).limbs[0]
         row(x.divmod(divisor))
+      when .in?(DIVISION_OPERATIONS)
+        kind, _, shape = operation.rpartition('_')
+        divisor_bits = case shape
+                       when "limb" then 64
+                       when "half" then Math.max(32, bits // 2)
+                       else             bits > 64 ? bits - 64 : 32
+                       end
+        a = Operand.new(a.limbs, true)
+        b = source.dense_of(divisor_bits)
+        case kind
+        when "tdiv_q"  then row(x.unsafe_truncated_div(y))
+        when "tdiv_r"  then row(x.unsafe_truncated_mod(y))
+        when "tdiv_qr" then row(x.unsafe_truncated_divmod(y))
+        when "fdiv_q"  then row(x.unsafe_floored_div(y))
+        when "fdiv_r"  then row(x.unsafe_floored_mod(y))
+        else                row(x.unsafe_floored_divmod(y))
+        end
       when "to_s_10" then row(x.to_s(10))
       when "to_s_16" then row(x.to_s(16))
       when "parse_10"
