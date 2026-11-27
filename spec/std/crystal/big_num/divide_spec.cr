@@ -115,20 +115,6 @@ require "spec"
       end
     end
 
-    it "gives the same 2/1 reciprocal from the Newton steps as from the hardware divides" do
-      random = Random::PCG32.new(23)
-      list_of_divisors = [1_u64 << 63, (1_u64 << 63) + 1, UInt64::MAX, UInt64::MAX - 1]
-      # Every 16-bit top (so every table seed) with low parts at the
-      # boundaries of d40 and d63, then random divisors.
-      (0_u64...(1_u64 << 16)).step(7) do |top|
-        base = (1_u64 << 63) | (top << 47)
-        [0_u64, 1_u64, (1_u64 << 24) - 1, 1_u64 << 24, (1_u64 << 47) - 1].each { |low| list_of_divisors << (base | low) }
-      end
-      200_000.times { list_of_divisors << (random.rand(UInt64) | (1_u64 << 63)) }
-      mismatches = list_of_divisors.count { |d| Divide.invert_limb_by_newton(d) != Divide.invert_limb_by_division(d) }
-      mismatches.should eq(0)
-    end
-
     it "divides by one limb (divrem_1 and mod_1), normalized and not" do
       random = Random::PCG32.new(11)
       [1_u64, 3_u64, 10_u64 ** 19, 1_u64 << 63, (1_u64 << 63) + 1, UInt64::MAX, 0x1234_5678_u64].each do |d|

@@ -98,53 +98,12 @@ module Crystal::BigNum
     # ---- Reciprocals ----
 
     # The 2/1 reciprocal of the normalized limb *d* (top bit set):
-    # `floor((B**2 - 1) / d) - B` with `B = 2**64`. On x86-64, where a
-    # 64-bit `div` takes tens of cycles, it comes from a table and three
-    # Newton steps (`invert_limb_by_newton`); elsewhere from two hardware
-    # divides (`invert_limb_by_division`), which Apple's and Linux arm64's
-    # processors finish sooner. `-Dbignum_division_reciprocal` takes the
-    # divides on x86-64 too, so a bench can compare both.
-    @[AlwaysInline]
+    # `floor((B**2 - 1) / d) - B` with `B = 2**64`.
     def self.invert_limb(d : Limb) : Limb
-      {% if flag?(:x86_64) && flag?(:bits64) && !flag?(:bignum_division_reciprocal) %}
-        invert_limb_by_newton(d)
-      {% else %}
-        invert_limb_by_division(d)
-      {% end %}
-    end
-
-    # `invert_limb` with two hardware divides of a limb by a half limb.
-    def self.invert_limb_by_division(d : Limb) : Limb
       # (B**2 - 1) - B*d = (~d) * B + (B - 1), and ~d < d, so the quotient
       # fits a limb.
       div_2by1_plain(~d, Limb::MAX, d)[0]
     end
-
-    {% if flag?(:bits64) %}
-      # `floor((2**19 - 3 * 2**8) / d9)` for each 9-bit top `d9` of a
-      # normalized limb (256 to 511): the 11-bit seed of
-      # `invert_limb_by_newton`.
-      private RECIPROCAL_SEEDS = StaticArray[{% for top in 256..511 %} {{ 523_520 // top }}_u16, {% end %}]
-
-      # `invert_limb` with no division: an 11-bit seed from
-      # `RECIPROCAL_SEEDS`, two Newton steps to 13 and 34 bits, and a third
-      # with the 2**-64 adjustment that lands on the exact reciprocal
-      # (Möller and Granlund, "Improved division by invariant integers",
-      # IEEE Trans. Computers 60(2), 2011, algorithm 2).
-      def self.invert_limb_by_newton(d : Limb) : Limb
-        d0 = d & 1
-        d9 = d >> 55
-        d40 = (d >> 24) &+ 1
-        d63 = (d >> 1) &+ d0
-        v0 = RECIPROCAL_SEEDS.to_unsafe[d9 &- 256].to_u64!
-        v1 = (v0 << 11) &- ((v0 &* v0 &* d40) >> 40) &- 1
-        v2 = (v1 << 13) &+ ((v1.to_u128! &* ((Limb.new(1) << 60) &- v1 &* d40)) >> 47).to_u64!
-        e = (Limb.zero &- v2 &* d63) &+ ((v2 >> 1) & (Limb.zero &- d0))
-        v3 = (v2 << 31) &+ ((v2.to_u128! &* e) >> 65).to_u64!
-        product = v3.to_u128! &* d &+ d
-        v3 &- ((product >> LIMB_BITS).to_u64! &+ d)
-      end
-    {% end %}
 
     # The 3/2 reciprocal of the normalized two-limb divisor *d1*:*d0*:
     # `floor((B**3 - 1) / (d1 * B + d0)) - B` (Möller-Granlund, algorithm 6).
