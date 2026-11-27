@@ -30,7 +30,8 @@ module Crystal::BigNum
         ebx = 0_u32
         ecx = 0_u32
         edx = 0_u32
-        asm("cpuid" : "={eax}"(eax), "={ebx}"(ebx), "={ecx}"(ecx), "={edx}"(edx) : "{eax}"(leaf), "{ecx}"(0_u32))
+        # Every x86-64 asm here declares "flags" (scripts/big_num/x86_flags_scan.rb checks it).
+        asm("cpuid" : "={eax}"(eax), "={ebx}"(ebx), "={ecx}"(ecx), "={edx}"(edx) : "{eax}"(leaf), "{ecx}"(0_u32) : "flags", "dirflag", "fpsr")
         {eax, ebx, ecx, edx}
       end
 
