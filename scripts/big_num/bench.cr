@@ -39,8 +39,7 @@ module G2Harness
   class Bench
     LIST_OF_OPERATIONS = %w(add sub mul mul_unbalanced mul_primitive sqr divmod divmod_limb to_s_10 to_s_16 parse_10
       to_s_10_call to_s_16_call parse_10_call parse_16 parse_16_call to_f64 new_float compare_float
-      gcd isqrt pow pow_mod shift and compare hash) + DIVISION_OPERATIONS
-    LIST_OF_BITS_UNDER_THE_BAR = [64, 128, 192, 256, 512, 1_024, 2_048, 4_096]
+      gcd isqrt pow pow_mod shift and compare hash) + DIVISION_OPERATIONS + NUMBER_THEORY_OPERATIONS
     # Division rows (G2c): GMP's tdiv/fdiv quotient, remainder and both, of a
     # negative dividend of the row's size by a positive divisor of one limb
     # (`_limb`), of half the dividend's size (`_half`), or one limb shorter
@@ -48,7 +47,13 @@ module G2Harness
     DIVISION_OPERATIONS = %w(tdiv_q tdiv_r tdiv_qr fdiv_q fdiv_r fdiv_qr).flat_map do |kind|
       %w(limb half short).map { |shape| "#{kind}_#{shape}" }
     end
-    LIST_OF_BITS_REPORTED = [8_192, 32_768, 131_072, 1_048_576]
+    # Number theory rows (G2e): lcm, invert (operands nudged until an
+    # inverse exists), factorial of the largest n whose result fits the row's
+    # bits, and the removal of every factor 10 from a value of the row's size
+    # ending in about bits / 16 decimal zeros (BigDecimal's normalization).
+    NUMBER_THEORY_OPERATIONS   = %w(lcm invert factorial remove_10)
+    LIST_OF_BITS_UNDER_THE_BAR = [64, 128, 192, 256, 512, 1_024, 2_048, 4_096]
+    LIST_OF_BITS_REPORTED      = [8_192, 32_768, 131_072, 1_048_576]
     # Rows that take minutes per operation on GMP itself above these sizes.
     LARGEST_BITS = {"pow_mod" => 8_192, "new_float" => 1_024}
 
@@ -186,6 +191,33 @@ module G2Harness
         row((x <=> float) || 0)
       when "gcd"   then row(x.gcd(y))
       when "isqrt" then row(Math.isqrt(x), x.isqrt)
+      when "lcm"   then row(x.lcm(y))
+      when "invert"
+        b = Operand.new(b.limbs, false)
+        modulus = gmp_of(b)
+        candidate = gmp_of(a)
+        while GMPOracle.invert(candidate, modulus).nil?
+          candidate += 1
+        end
+        a = Operand.new(GMPOracle.limbs(candidate).dup, candidate < 0)
+        row(GMPOracle.invert(x, y), x.invert(y))
+      when "factorial"
+        n = 1_u64
+        while GMPOracle.factorial(n + 1).bit_length <= bits
+          n += 1
+        end
+        row(GMPOracle.factorial(n), Crystal::BigNum::Integer.factorial(n))
+      when "remove_10"
+        zeros = Math.max(1, bits // 16)
+        power = BigInt.new(10) ** zeros
+        head_bits = Math.max(1, bits - power.bit_length)
+        head = gmp_of(source.dense_of(head_bits))
+        while head.divisible_by?(10)
+          head += 1
+        end
+        a = Operand.new(GMPOracle.limbs(head * power).dup, false)
+        b = Operand.new(Slice[10_u64], false)
+        row(GMPOracle.remove(x, y), x.remove(y))
       when "pow"
         c = operand(source, Math.max(1, bits // 5))
         row(z ** 5)

@@ -511,7 +511,10 @@ module G2Harness
         check({a, c}, a.gcd(c))
       when "gcd_primitive"
         a, p = source.operand, source.primitive
-        check({a, p}, a.gcd(p).to_big_i, a.gcd(p))
+        # BigInt#gcd(Int) answers a UInt64 (or self for gcd(0) of a value
+        # above a limb); the engine answers mpz_gcd, which the BigInt wrapper
+        # narrows, so the oracle is GMP's gcd with the primitive as a BigInt.
+        check({a, p}, a.gcd(BigInt.new(p)), a.gcd(p))
       when "lcm"
         a, c = source.operand, source.operand
         check({a, c}, a.lcm(c))

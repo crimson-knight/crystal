@@ -164,8 +164,4 @@ describe Crystal::BigNum::Integer do
       Integer.new(-1).to_i128!.should eq(-1_i128)
     end
   end
-
-  it "names the piece that owns each method not built yet" do
-    expect_raises(NotImplementedError, /G2e/) { Integer.new(2) ** 3 }
-  end
 end
