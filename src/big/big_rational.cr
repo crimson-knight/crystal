@@ -17,11 +17,15 @@ require "big"
 # r.to_s # => "-1/3"
 # ```
 #
-# It is implemented under the hood with [GMP](https://gmplib.org/).
+# It is implemented in pure Crystal (`-Duse_gmp` puts it on
+# [GMP](https://gmplib.org/) instead), with the same results either way.
 struct BigRational < Number
   include Comparable(BigRational)
   include Comparable(Int)
   include Comparable(Float)
+
+  # The value, held by the engine.
+  protected getter value : Crystal::BigNum::Rational
 
   # Creates a new `BigRational`.
   #
@@ -29,14 +33,7 @@ struct BigRational < Number
   def initialize(numerator : Int, denominator : Int)
     check_division_by_zero denominator
 
-    numerator = BigInt.new(numerator) unless numerator.is_a?(BigInt)
-    denominator = BigInt.new(denominator) unless denominator.is_a?(BigInt)
-
-    Crystal::GMPAllocator.route_to_gc
-    LibGMP.mpq_init(out @mpq)
-    numerator.with_mpz { |mpz| LibGMP.mpq_set_num(mpq, mpz) }
-    denominator.with_mpz { |mpz| LibGMP.mpq_set_den(mpq, mpz) }
-    LibGMP.mpq_canonicalize(mpq)
+    @value = Crystal::BigNum::Rational.new(BigRational.engine_integer(numerator), BigRational.engine_integer(denominator))
   end
 
   # Creates a new `BigRational` with *num* as the numerator and 1 for denominator.
@@ -49,12 +46,13 @@ struct BigRational < Number
   # Raises `ArgumentError` if *num* is not finite.
   def self.new(num : Float::Primitive) : self
     raise ArgumentError.new "Can only construct from a finite number" unless num.finite?
-    new { |mpq| LibGMP.mpq_set_d(mpq, num) }
+    new(Crystal::BigNum::Rational.new(num))
   end
 
   # Creates an exact representation of float as rational.
   def self.new(num : BigFloat) : self
-    new { |mpq| LibGMP.mpq_set_f(mpq, num) }
+    mantissa, exponent = num.exact_binary
+    new(Crystal::BigNum::Rational.from_binary(mantissa.@value, exponent))
   end
 
   # Creates a `BigRational` from the given *num*.
@@ -68,29 +66,28 @@ struct BigRational < Number
   end
 
   # :nodoc:
-  def initialize(@mpq : LibGMP::MPQ)
+  def initialize(@value : Crystal::BigNum::Rational)
   end
 
-  # :nodoc:
-  def self.new(&)
-    Crystal::GMPAllocator.route_to_gc
-    LibGMP.mpq_init(out mpq)
-    yield pointerof(mpq)
-    new(mpq)
+  # The engine integer equal to *value*.
+  protected def self.engine_integer(value : Int) : Crystal::BigNum::Integer
+    if value.is_a?(BigInt)
+      value.@value
+    else
+      Crystal::BigNum::Integer.new(value)
+    end
   end
 
   def numerator : BigInt
-    # Copies the limbs of `LibGMP.mpq_numref(self)` into a new `BigInt`.
-    # Ditto for `#denominator`.
-    BigInt.from_mpz(@mpq._mp_num)
+    BigInt.new(@value.numerator)
   end
 
   def denominator : BigInt
-    BigInt.from_mpz(@mpq._mp_den)
+    BigInt.new(@value.denominator)
   end
 
   def <=>(other : BigRational) : Int32
-    LibGMP.mpq_cmp(mpq, other)
+    @value <=> other.value
   end
 
   def <=>(other : Float::Primitive) : Int32?
@@ -112,23 +109,23 @@ struct BigRational < Number
   def <=>(other : Int) : Int32
     Int.primitive_si_ui_check(other) do |si, ui, big_i|
       {
-        si:    LibGMP.mpq_cmp_si(self, {{ si }}, 1),
-        ui:    LibGMP.mpq_cmp_ui(self, {{ ui }}, 1),
+        si:    @value <=> {{ si }},
+        ui:    @value <=> {{ ui }},
         big_i: self <=> {{ big_i }},
       }
     end
   end
 
   def <=>(other : BigInt) : Int32
-    other.with_mpz { |mpz| LibGMP.mpq_cmp_z(self, mpz) }
+    @value <=> other.@value
   end
 
   def ==(other : BigRational) : Bool
-    LibGMP.mpq_equal(self, other) != 0
+    @value == other.value
   end
 
   def +(other : BigRational) : BigRational
-    BigRational.new { |mpq| LibGMP.mpq_add(mpq, self, other) }
+    BigRational.new(@value + other.value)
   end
 
   def +(other : Int) : BigRational
@@ -136,7 +133,7 @@ struct BigRational < Number
   end
 
   def -(other : BigRational) : BigRational
-    BigRational.new { |mpq| LibGMP.mpq_sub(mpq, self, other) }
+    BigRational.new(@value - other.value)
   end
 
   def -(other : Int) : BigRational
@@ -144,7 +141,7 @@ struct BigRational < Number
   end
 
   def *(other : BigRational) : BigRational
-    BigRational.new { |mpq| LibGMP.mpq_mul(mpq, self, other) }
+    BigRational.new(@value * other.value)
   end
 
   def *(other : Int) : BigRational
@@ -153,7 +150,7 @@ struct BigRational < Number
 
   def /(other : BigRational) : BigRational
     check_division_by_zero other
-    BigRational.new { |mpq| LibGMP.mpq_div(mpq, self, other) }
+    BigRational.new(@value / other.value)
   end
 
   Number.expand_div [BigInt, BigFloat, BigDecimal], BigRational
@@ -205,36 +202,30 @@ struct BigRational < Number
   end
 
   def ceil : BigRational
-    BigRational.new(-(-numerator // denominator))
+    BigRational.new(Crystal::BigNum::Rational.new(@value.ceil))
   end
 
   def floor : BigRational
-    BigRational.new(numerator // denominator)
+    BigRational.new(Crystal::BigNum::Rational.new(@value.floor))
   end
 
   def trunc : BigRational
-    BigRational.new(numerator.tdiv(denominator))
+    BigRational.new(Crystal::BigNum::Rational.new(@value.trunc))
   end
 
   def round_away : BigRational
-    rem2 = numerator.remainder(denominator).abs * 2
-    x = BigRational.new(numerator.tdiv(denominator))
-    x += sign if rem2 >= denominator
-    x
+    BigRational.new(Crystal::BigNum::Rational.new(@value.round_away))
   end
 
   def round_even : BigRational
-    rem2 = numerator.remainder(denominator).abs * 2
-    x = BigRational.new(numerator.tdiv(denominator))
-    x += sign if rem2 > denominator || (rem2 == denominator && x.numerator.odd?)
-    x
+    BigRational.new(Crystal::BigNum::Rational.new(@value.round_even))
   end
 
   # :inherit:
   def integer? : Bool
     # since all `BigRational`s are canonicalized, the denominator must be
     # positive and coprime with the numerator
-    denominator == 1
+    @value.integer?
   end
 
   # Divides the rational by (2 ** *other*)
@@ -245,7 +236,7 @@ struct BigRational < Number
   # BigRational.new(2, 3) >> 2 # => 1/6
   # ```
   def >>(other : Int) : BigRational
-    BigRational.new { |mpq| LibGMP.mpq_div_2exp(mpq, self, other) }
+    BigRational.new(@value >> other)
   end
 
   # Multiplies the rational by (2 ** *other*)
@@ -256,11 +247,11 @@ struct BigRational < Number
   # BigRational.new(2, 3) << 2 # => 8/3
   # ```
   def <<(other : Int) : BigRational
-    BigRational.new { |mpq| LibGMP.mpq_mul_2exp(mpq, self, other) }
+    BigRational.new(@value << other)
   end
 
   def - : BigRational
-    BigRational.new { |mpq| LibGMP.mpq_neg(mpq, self) }
+    BigRational.new(-@value)
   end
 
   # Raises the rational to the *other*th power
@@ -277,7 +268,7 @@ struct BigRational < Number
     if other < 0
       return (self ** other.abs).inv
     end
-    BigRational.new(numerator ** other, denominator ** other)
+    BigRational.new(@value ** other)
   end
 
   # Returns a new `BigRational` as 1/r.
@@ -285,11 +276,11 @@ struct BigRational < Number
   # This will raise an exception if rational is 0.
   def inv : BigRational
     check_division_by_zero self
-    BigRational.new { |mpq| LibGMP.mpq_inv(mpq, self) }
+    BigRational.new(@value.inv)
   end
 
   def abs : BigRational
-    BigRational.new { |mpq| LibGMP.mpq_abs(mpq, self) }
+    BigRational.new(@value.abs)
   end
 
   # Returns the `Float64` representing this rational.
@@ -302,7 +293,7 @@ struct BigRational < Number
   end
 
   def to_f64 : Float64
-    LibGMP.mpq_get_d(mpq)
+    @value.to_f64
   end
 
   def to_f32! : Float32
@@ -335,11 +326,11 @@ struct BigRational < Number
   end
 
   def to_big_f : BigFloat
-    BigFloat.new { |mpf| LibGMP.mpf_set_q(mpf, mpq) }
+    BigFloat.new(self)
   end
 
   def to_big_i : BigInt
-    BigInt.from_mpz { |mpz| LibGMP.set_q(mpz, mpq) }
+    BigInt.new(@value.trunc)
   end
 
   # Returns the string representing this rational.
@@ -355,12 +346,13 @@ struct BigRational < Number
   # r.to_s(36) # => "4woiz/9b3djm"
   # ```
   def to_s(base : Int = 10) : String
-    String.new(to_cstr(base))
+    check_base(base)
+    @value.to_s(base)
   end
 
   def to_s(io : IO, base : Int = 10) : Nil
-    str = to_cstr(base)
-    io.write_string Slice.new(str, LibC.strlen(str))
+    check_base(base)
+    @value.to_s(io, base)
   end
 
   def inspect : String
@@ -382,17 +374,8 @@ struct BigRational < Number
     self
   end
 
-  private def mpq
-    pointerof(@mpq)
-  end
-
-  def to_unsafe : Pointer(LibGMP::MPQ)
-    mpq
-  end
-
-  private def to_cstr(base = 10)
+  private def check_base(base : Int) : Nil
     raise "Invalid base #{base}" unless 2 <= base <= 36
-    LibGMP.mpq_get_str(nil, base, mpq)
   end
 
   private def check_division_by_zero(value)
@@ -475,14 +458,10 @@ end
 # :nodoc:
 struct Crystal::Hasher
   def self.reduce_num(value : BigRational) : UInt64
-    inverse = BigInt.from_mpz do |mpz|
-      found = value.denominator.with_mpz do |denominator|
-        HASH_MODULUS_INT_P.with_mpz { |modulus| LibGMP.invert(mpz, denominator, modulus) }
-      end
-      if found == 0
-        # inverse doesn't exist, i.e. denominator is a multiple of HASH_MODULUS
-        return value >= 0 ? HASH_INF_PLUS : HASH_INF_MINUS
-      end
+    inverse = value.@value.denominator.invert(HASH_MODULUS_INT_P.@value)
+    unless inverse
+      # inverse doesn't exist, i.e. denominator is a multiple of HASH_MODULUS
+      return value >= 0 ? HASH_INF_PLUS : HASH_INF_MINUS
     end
     UInt64.mulmod(reduce_num(value.numerator.abs), inverse.to_u64!, HASH_MODULUS) &* value.sign
   end
