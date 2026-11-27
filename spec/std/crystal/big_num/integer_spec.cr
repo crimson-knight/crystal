@@ -136,6 +136,11 @@ require "spec"
         (Integer.new(7) >> 10_000).should eq(Integer.new(0))
         (-((Integer.new(1) << 300) + 1) >> 300).should eq(Integer.new(-2))
         (-(Integer.new(1) << 300) >> 300).should eq(Integer.new(-1))
+        # Rounding away from zero carries out of every shifted-in limb.
+        all_ones = (Integer.new(1) << 256) - Integer.new(1)
+        ((-all_ones) >> 64).should eq(-(Integer.new(1) << 192))
+        ((-all_ones) >> 1).should eq(-(Integer.new(1) << 255))
+        ((-(all_ones << 3)) >> 3).should eq(-all_ones)
       end
 
       it "shifts left across limbs and back" do

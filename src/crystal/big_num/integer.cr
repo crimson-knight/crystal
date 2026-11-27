@@ -588,15 +588,19 @@ module Crystal::BigNum
       limb_shift = shift // LIMB_BITS
       bit_shift = shift % LIMB_BITS
       count_in = size
-      capacity = count_in + limb_shift + 1
       ap = limb_pointer
+      # The result has a limb above the shifted magnitude only when the top
+      # limb's high bits spill into it; the buffer is that exact size (the
+      # collector's size classes make every spare limb count).
+      spills = bit_shift != 0 && ap[count_in - 1].unsafe_shr(LIMB_BITS - bit_shift) != 0
+      capacity = count_in + limb_shift + (spills ? 1 : 0)
       Integer.build(capacity, negative?) do |rp|
         Limbs.zero(rp, limb_shift)
         if bit_shift == 0
           Limbs.copy(rp + limb_shift, ap, count_in)
-          rp[capacity - 1] = Limb.zero
         else
-          rp[capacity - 1] = Limbs.lshift(rp + limb_shift, ap, count_in, bit_shift)
+          shifted_out = Limbs.lshift(rp + limb_shift, ap, count_in, bit_shift)
+          rp[capacity - 1] = shifted_out if spills
         end
         capacity
       end
@@ -622,19 +626,22 @@ module Crystal::BigNum
       bit_shift = shift % LIMB_BITS
       count_out = count_in - limb_shift
       ap = limb_pointer
-      Integer.build(count_out + 1, negative?) do |rp|
+      # The result has count_out limbs (fewer once normalized), written to an
+      # inline or heap buffer of exactly that size. Rounding a negative value
+      # away from zero carries out of the top only when every limb shifted
+      # in was all ones; the result is then -(2 ** (64 * count_out)).
+      carried_out = false
+      result = Integer.build(count_out, negative?) do |rp|
         lost = !Limbs.zero?(ap, limb_shift)
         if bit_shift == 0
           Limbs.copy(rp, ap + limb_shift, count_out)
         else
           lost |= Limbs.rshift(rp, ap + limb_shift, count_out, bit_shift) != 0
         end
-        if negative? && lost
-          Integer.increment_into(rp, count_out)
-        else
-          count_out
-        end
+        carried_out = Limbs.add_1(rp, rp, count_out, Limb.new(1)) != 0 if negative? && lost
+        count_out
       end
+      carried_out ? -(Integer.new(1) << (LIMB_BITS * count_out)) : result
     end
 
     # :nodoc:
