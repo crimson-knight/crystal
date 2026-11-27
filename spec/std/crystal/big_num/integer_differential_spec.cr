@@ -1,0 +1,17 @@
+require "spec"
+require "./integer_oracle"
+
+describe "Crystal::BigNum::Integer against GMP" do
+  it "agrees with BigInt on every G2a operation for random operands" do
+    counts, list_of_mismatches = IntegerOracle.run(60_000, 20261127_u64)
+    list_of_mismatches.should eq([] of String)
+    IntegerOracle::OPERATIONS.each { |operation| counts[operation].should be > 0 }
+  end
+
+  it "notices a value that differs from GMP's" do
+    value = Crystal::BigNum::Integer.new(1) << 200
+    IntegerOracle.same?(value, IntegerOracle.to_big(value)).should be_true
+    IntegerOracle.same?(value + 1, IntegerOracle.to_big(value)).should be_false
+    IntegerOracle.same?(-value, IntegerOracle.to_big(value)).should be_false
+  end
+end
