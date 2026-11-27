@@ -94,11 +94,6 @@ module Crystal::BigNum
       end
     end
 
-    # Parses *str* in *base* (2 to 36, or 62), as `BigInt.new(str, base)`.
-    def self.parse(str : String, base : Int32) : Integer
-      raise NotImplementedError.new("Crystal::BigNum::Integer.parse (G2d)")
-    end
-
     # The read-only magnitude, least significant limb first, with no high zero
     # limb. An inline value gives a copy of its limbs.
     def limbs : Slice(Limb)
@@ -650,16 +645,6 @@ module Crystal::BigNum
     # The low 128 bits of the two's complement of the value, as signed.
     def to_i128! : Int128
       to_u128!.to_i128!
-    end
-
-    # The value as a `Float64`, truncated toward zero, as `mpz_get_d`.
-    def to_f64 : Float64
-      raise NotImplementedError.new("Crystal::BigNum::Integer#to_f64 (G2d)")
-    end
-
-    # The value in *base* (2 to 36, or 62), as `BigInt#to_s(base, upcase:)`.
-    def to_s(base : Int32 = 10, upcase : Bool = false) : String
-      raise NotImplementedError.new("Crystal::BigNum::Integer#to_s (G2d)")
     end
 
     # The sign and the limbs in hexadecimal, most significant first; for

@@ -261,8 +261,12 @@ module G2Harness
       plant(@value.to_f64)
     end
 
-    def to_s(base : Int32 = 10, upcase : Bool = false) : String
-      plant(@value.to_s(base, upcase: upcase))
+    def to_s(base : Int32 = 10, upcase : Bool = false, *, precision : Int32 = 1) : String
+      plant(@value.to_s(base, upcase: upcase, precision: precision))
+    end
+
+    def size_in_base(base : Int32) : Int64
+      plant(LibGMP.sizeinbase(@value, base).to_i64)
     end
   end
 end
