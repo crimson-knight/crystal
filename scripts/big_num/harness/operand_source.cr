@@ -88,6 +88,17 @@ module G2Harness
       Operand.new(limbs, negative)
     end
 
+    # A dense uniformly random value of exactly *bits* bits, for the bench.
+    def dense_of(bits : Int32, negative : Bool = false) : Operand
+      return Operand.new(Slice(UInt64).new(0), false) if bits <= 0
+      count = (bits + 63) // 64
+      limbs = Slice(UInt64).new(count) { @random.rand(UInt64) }
+      top_bits = bits - (count - 1) * 64
+      limbs[count - 1] &= top_bits == 64 ? UInt64::MAX : ((1_u64 << top_bits) - 1)
+      set_bit(limbs, bits - 1)
+      Operand.new(limbs, negative)
+    end
+
     private def set_bit(limbs : Slice(UInt64), bit : Int32) : Nil
       limbs[bit // 64] |= 1_u64 << (bit % 64)
     end
