@@ -248,7 +248,7 @@ module Crystal::BigNum
 
     # The gcd of the 128-bit *u* and *v* (either may be zero): the binary
     # algorithm of `gcd_limb` on two limbs while either value has a high
-    # limb, then `gcd_limb`.
+    # limb (in assembly on AArch64), then `gcd_limb`.
     def self.gcd_128(u : DoubleLimb, v : DoubleLimb) : DoubleLimb
       return u | v if u == 0 || v == 0
       shift = (u | v).trailing_zeros_count
@@ -259,6 +259,11 @@ module Crystal::BigNum
       v0 = v.to_u64!
       v1 = (v >> LIMB_BITS).to_u64!
       while (u1 | v1) != 0
+        {% if flag?(:aarch64) %}
+          u0, u1, v0, v1 = binary_steps_with_assembly(u0, u1, v0, v1)
+          break if (u1 | v1) == 0
+          # The low limbs are equal: one step below finishes it or moves on.
+        {% end %}
         low = u0.to_u128! &- v0
         d0 = low.to_u64!
         high = u1.to_u128! &- v1 &- ((low >> LIMB_BITS).to_u64! & 1)
@@ -285,6 +290,57 @@ module Crystal::BigNum
       end
       DoubleLimb.new(gcd_limb(u0, v0)) << shift
     end
+
+    {% if flag?(:aarch64) %}
+      # Binary gcd steps on two-limb odd values in our own AArch64 assembly,
+      # while either value has a high limb and the low limbs differ: both
+      # differences are formed, the trailing zeros of the low difference
+      # counted, the larger value replaced by the difference shifted right
+      # and the smaller kept, with selects and no data-dependent branch.
+      # LLVM's code for the same step ran at 0.80 of GMP's two-limb gcd at
+      # 128 bits (BIGNUM.md 4.8 allows assembly for a kernel only on that
+      # evidence). Returns the four limbs where it stopped.
+      private def self.binary_steps_with_assembly(u0 : Limb, u1 : Limb, v0 : Limb, v1 : Limb) : {Limb, Limb, Limb, Limb}
+        r0 = Limb.zero
+        r1 = Limb.zero
+        r2 = Limb.zero
+        r3 = Limb.zero
+        asm("
+          mov x9, $4
+          mov x10, $5
+          mov x11, $6
+          mov x12, $7
+        1:
+          subs x13, x11, x9
+          sbc x14, x12, x10
+          subs x15, x9, x11
+          sbcs x16, x10, x12
+          cbz x15, 2f
+          csel x13, x13, x15, lo
+          csel x14, x14, x16, lo
+          csel x11, x9, x11, lo
+          csel x12, x10, x12, lo
+          rbit x15, x15
+          clz x15, x15
+          neg x16, x15
+          lsr x9, x13, x15
+          lsl x16, x14, x16
+          orr x9, x9, x16
+          lsr x10, x14, x15
+          orr x16, x10, x12
+          cbnz x16, 1b
+        2:
+          mov $0, x9
+          mov $1, x10
+          mov $2, x11
+          mov $3, x12"
+                : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
+                : "r"(u0), "r"(u1), "r"(v0), "r"(v1)
+                : "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "cc"
+                : "volatile")
+        {r0, r1, r2, r3}
+      end
+    {% end %}
 
     # Lehmer's inner loop (Knuth 4.5.2, Algorithm L, steps L2 and L3) on
     # the leading digits *uh* >= *vh* (below 2**62): runs Euclid's steps on

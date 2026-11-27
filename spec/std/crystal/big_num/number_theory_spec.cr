@@ -128,6 +128,17 @@ describe Crystal::BigNum::NumberTheory do
       big(integer(36).gcd(UInt128::MAX)).should eq(3)
     end
 
+    it "handles two-limb operands whose low limbs are equal" do
+      random = Random::PCG32.new(12_u64)
+      200.times do
+        low = BigInt.new(random.rand(UInt64) | 1)
+        a = (BigInt.new(random.rand(UInt64)) << 64) | low
+        b = (BigInt.new(random.rand(UInt64) >> random.rand(64)) << 64) | low
+        big(integer(a).gcd(integer(b))).should eq(a.gcd(b))
+        big(integer(a).gcd(integer(a))).should eq(a)
+      end
+    end
+
     it "matches GMP on random and shared-factor operands" do
       random = Random::PCG32.new(2_u64)
       SIZES.each do |a_bits|

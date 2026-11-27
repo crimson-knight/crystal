@@ -47,7 +47,8 @@ module G2Harness
       %w(limb half short).map { |shape| "#{kind}_#{shape}" }
     end
     # Number theory rows (G2e): lcm, invert (operands nudged until an
-    # inverse exists), factorial of the largest n whose result fits the row's
+    # inverse exists; gcd, lcm and invert cycle through ROTATING_PAIRS
+    # distinct pairs), factorial of the largest n whose result fits the row's
     # bits, and the removal of every factor 10 from a value of the row's size
     # ending in about bits / 16 decimal zeros (BigDecimal's normalization).
     NUMBER_THEORY_OPERATIONS   = %w(lcm invert factorial remove_10)
@@ -120,6 +121,43 @@ module G2Harness
         ->{ x, y, z = %ours_a, %ours_b, %ours_c; Bench.live? ? fold({{ours_expression || gmp_expression}}) : 0_u64 })
     end
 
+    # Distinct operand pairs a rotating row cycles through, so that neither
+    # side runs one pair over and over (a repeated pair lets the branch
+    # predictor learn a data-dependent loop's exact path).
+    ROTATING_PAIRS = 1_024
+
+    # *ROTATING_PAIRS* pairs of operands of *bits* bits; with *invertible*
+    # the first is positive and nudged until it has an inverse modulo the
+    # second.
+    private def list_of_pairs(source : OperandSource, bits : Int32, invertible : Bool = false) : Array({Operand, Operand})
+      Array.new(ROTATING_PAIRS) do
+        first = operand(source, bits)
+        second = operand(source, bits)
+        if invertible
+          second = Operand.new(second.limbs, false)
+          modulus = gmp_of(second)
+          base = gmp_of(first)
+          while GMPOracle.invert(base, modulus).nil?
+            base += 1
+          end
+          first = Operand.new(GMPOracle.limbs(base).dup, base < 0)
+        end
+        {first, second}
+      end
+    end
+
+    # A row whose closures take the next of *pairs* on each call (the same
+    # sequence on both sides).
+    private macro rotating_row(pairs, gmp_expression, ours_expression = nil)
+      %gmp = {{pairs}}.map { |pair| {gmp_of(pair[0]), gmp_of(pair[1])} }
+      %ours = {{pairs}}.map { |pair| {ours_of(pair[0]), ours_of(pair[1])} }
+      %gmp_index = 0
+      %ours_index = 0
+      BenchCase.new(operation, bits,
+        ->{ x, y = %gmp.unsafe_fetch(%gmp_index & (ROTATING_PAIRS - 1)); %gmp_index &+= 1; fold({{gmp_expression}}) },
+        ->{ x, y = %ours.unsafe_fetch(%ours_index & (ROTATING_PAIRS - 1)); %ours_index &+= 1; Bench.live? ? fold({{ours_expression || gmp_expression}}) : 0_u64 })
+    end
+
     def bench_case(operation : String, bits : Int32) : BenchCase
       source = OperandSource.new(Random::PCG32.new(20_261_127_u64, bits.to_u64), Int32::MAX)
       a = operand(source, bits)
@@ -162,18 +200,10 @@ module G2Harness
       when "parse_10"
         text = gmp_of(a).to_s
         row(BigInt.new(text, 10), Crystal::BigNum::Integer.parse(text, 10))
-      when "gcd"   then row(x.gcd(y))
-      when "isqrt" then row(Math.isqrt(x), x.isqrt)
-      when "lcm"   then row(x.lcm(y))
-      when "invert"
-        b = Operand.new(b.limbs, false)
-        modulus = gmp_of(b)
-        base = gmp_of(a)
-        while GMPOracle.invert(base, modulus).nil?
-          base += 1
-        end
-        a = Operand.new(GMPOracle.limbs(base).dup, base < 0)
-        row(GMPOracle.invert(x, y), x.invert(y))
+      when "gcd"    then rotating_row(list_of_pairs(source, bits), x.gcd(y))
+      when "isqrt"  then row(Math.isqrt(x), x.isqrt)
+      when "lcm"    then rotating_row(list_of_pairs(source, bits), x.lcm(y))
+      when "invert" then rotating_row(list_of_pairs(source, bits, invertible: true), GMPOracle.invert(x, y), x.invert(y))
       when "factorial"
         n = 1_u64
         while GMPOracle.factorial(n + 1).bit_length <= bits
