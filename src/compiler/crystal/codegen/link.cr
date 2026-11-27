@@ -140,6 +140,7 @@ module Crystal
       # searches user-given library paths.
       if has_flag?("msvc")
         CrystalLibraryPath.paths.each do |path|
+          next unless cross_compiling || Dir.exists?(path)
           flags << quote_flag("/LIBPATH:#{path}", cross_compiling)
         end
       end
@@ -167,6 +168,7 @@ module Crystal
       # Add CRYSTAL_LIBRARY_PATH locations, so the linker preferentially
       # searches user-given library paths.
       CrystalLibraryPath.paths.each do |path|
+        next unless cross_compiling || Dir.exists?(path)
         flags << quote_flag("-L#{path}", cross_compiling)
       end
 
@@ -201,6 +203,7 @@ module Crystal
 
       # Add CRYSTAL_LIBRARY_PATH locations
       CrystalLibraryPath.paths.each do |path|
+        next unless cross_compiling || Dir.exists?(path)
         flags << quote_flag("-L#{path}", cross_compiling)
       end
 
