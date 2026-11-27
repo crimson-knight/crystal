@@ -63,11 +63,9 @@ require "./client/tls"
 # ### Client certificates
 #
 # A server that asks for a client certificate (mutual TLS) gets the chain and
-# key set on the `TLSClientContext`. On Beryl, the default TLS stack, the
+# key set on the `TLSClientContext`. On Beryl, the TLS stack, the
 # chain is a PEM file, leaf first, and the key a PEM private key (PKCS #8,
-# SEC 1 or PKCS #1); `certified_key=` takes both already loaded. A
-# `-Duse_openssl` build takes the same two setters on
-# `OpenSSL::SSL::Context::Client`.
+# SEC 1 or PKCS #1); `certified_key=` takes both already loaded.
 #
 # ```
 # require "http/client"
@@ -122,8 +120,7 @@ class HTTP::Client
   getter port : Int32
 
   # If this client uses TLS, returns its `TLSClientContext` (Beryl's
-  # `Crystal::Beryl::TLS::Context::Client`, or `OpenSSL::SSL::Context::Client`
-  # in a `-Duse_openssl` build), raises otherwise.
+  # `Crystal::Beryl::TLS::Context::Client`), raises otherwise.
   #
   # Changes made after the initial request will have no effect.
   #
