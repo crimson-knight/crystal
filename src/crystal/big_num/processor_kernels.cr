@@ -119,7 +119,7 @@ module Crystal::BigNum
         # `{{ name.id }}` compiled for BMI2 and ADX.
         @[TargetFeature("+bmi2,+adx")]
         def self.{{ name.id }}_with_adx(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32) : Limb
-          generic_{{ name.id }}(rp, ap, bp, n)
+          generic_{{ name.id }}(rp, ap, bp, n, Limb.zero)
         end
       {% end %}
 
