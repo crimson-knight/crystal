@@ -1,8 +1,8 @@
 # Big numbers on pure Crystal (the default)
 
 `BigInt`, `BigFloat`, `BigRational` and `BigDecimal` run on
-`Crystal::BigNum` (`src/crystal/big_num.cr` and `src/crystal/big_num/`),
-written in Crystal. A program that requires `big` links no libgmp and
+`Crystal::BigNum` (`src/crystal/big_num.cr`, `src/crystal/big_num/` and
+`src/big/pure/`), written in Crystal. A program that requires `big` links no libgmp and
 imports no `__gmp` symbol. Existing code keeps its API and its results.
 
 ```console
@@ -16,11 +16,17 @@ $ otool -L app                  # or ldd: no libgmp
 |---|---|
 | `crystal build app.cr` | `Crystal::BigNum` (pure Crystal) |
 | `crystal build -Duse_gmp app.cr` | GMP (`src/big/gmp/`, links `libgmp`) |
+| any build for a 32-bit target | GMP: the engine's kernels are written for 64-bit limbs |
 
 `-Duse_gmp` is kept for one release, so a program can compare the two
 engines on its own numbers. Such a program needs the GMP library where it
 is built and where it runs. `to_unsafe` and the constructors that take a raw
-`LibGMP::MPZ`, `MPF` or `MPQ` exist only in the `-Duse_gmp` build.
+`LibGMP::MPZ`, `MPF` or `MPQ` exist only in the GMP build.
+
+Each file under `big/` can be required on its own (`big/big_int`,
+`big/big_float`, `big/big_rational`, `big/big_decimal`, `big/number`,
+`big/json`, `big/yaml`) in either build; each one loads the engine that
+`src/big.cr` selects.
 
 Evidence behind the default: `spec/std/big` and `spec/std/crystal/big_num`
 pass in both builds; differentials against GMP found 0 differences in
