@@ -42,7 +42,8 @@ module Crystal::BigNum
       {% if flag?(:x86_64) && flag?(:bits64) && !flag?(:bignum_generic_kernels) %}
         quotient = uninitialized Limb
         remainder = uninitialized Limb
-        asm("divq $4" : "={rax}"(quotient), "={rdx}"(remainder) : "{rax}"(u0), "{rdx}"(u1), "r"(d))
+        # x86 needs the "flags" clobber (LLVM ignores "cc" there): divq leaves EFLAGS undefined.
+        asm("divq $4" : "={rax}"(quotient), "={rdx}"(remainder) : "{rax}"(u0), "{rdx}"(u1), "r"(d) : "flags", "dirflag", "fpsr")
         {quotient, remainder}
       {% else %}
         div_2by1_by_halves(u1, u0, d)

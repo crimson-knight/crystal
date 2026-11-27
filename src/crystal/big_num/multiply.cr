@@ -88,6 +88,8 @@ module Crystal::BigNum
               when {{ an * 8 + bn }} then mul_{{ an }}_by_{{ bn }}_with_bmi2(rp, ap, bp)
             {% end %}
           {% end %}
+          else
+            return false
           end
           return true
         end
@@ -167,6 +169,7 @@ module Crystal::BigNum
       # the high halves, so no limb waits on the other chain. The result
       # limbs stay in registers until their row is done. Needs BMI2 and ADX
       # (`ProcessorKernels.adx?`).
+      # The clobbers name "flags", which is how x86 says EFLAGS (LLVM ignores "cc" there).
       def self.mul_4_by_4_with_assembly(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb)) : Nil
         asm("
           movq (%rcx), %rdx
@@ -237,7 +240,7 @@ module Crystal::BigNum
           movq %r13, 40(%rdi)
           movq %r14, 48(%rdi)
           movq %r15, 56(%rdi)
-        " :: "{rdi}"(rp), "{rsi}"(ap), "{rcx}"(bp) : "rax", "rbx", "rdx", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "cc", "memory")
+        " :: "{rdi}"(rp), "{rsi}"(ap), "{rcx}"(bp) : "rax", "rbx", "rdx", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "flags", "dirflag", "fpsr", "memory")
       end
     {% end %}
 

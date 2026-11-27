@@ -109,11 +109,12 @@ describe "Crystal::BigNum::Multiply.mul_4_by_4_with_assembly" do
           Crystal::BigNum::Multiply.mul_4_by_4_with_assembly(actual.to_unsafe, a.to_unsafe, b.to_unsafe)
           actual.should eq(expected)
         end
+        STDERR.puts "processor kernels: mul_4_by_4 assembly compared 200000 products (#{ProcessorKernels.chosen_variants})"
       else
-        STDERR.puts "processor kernels: mul_4_by_4 assembly skipped (this processor lacks BMI2 or ADX)"
+        pending!("this processor lacks BMI2 or ADX")
       end
     {% else %}
-      STDERR.puts "processor kernels: mul_4_by_4 assembly is x86-64 only"
+      pending!("the mul_4_by_4 assembly is x86-64 only")
     {% end %}
   end
 end
