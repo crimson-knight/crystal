@@ -10,4 +10,5 @@ end
 require "./big_num/limbs"
 require "./big_num/limbs_aarch64"
 require "./big_num/processor_kernels"
+require "./big_num/multiply"
 require "./big_num/integer"
