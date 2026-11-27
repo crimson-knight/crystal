@@ -4,6 +4,9 @@
 # * libmpir
 #
 # See https://crystal-lang.org/reference/man/required_libraries.html#big-numbers
+
+require "../crystal/big_num/availability"
+
 {% if flag?(:win32) && !flag?(:gnu) %}
   @[Link("mpir")]
   {% if compare_versions(Crystal::VERSION, "1.11.0-dev") >= 0 %}
@@ -282,7 +285,9 @@ lib LibGMP
   fun set_memory_functions = __gmp_set_memory_functions(malloc : SizeT -> Void*, realloc : Void*, SizeT, SizeT -> Void*, free : Void*, SizeT ->)
 end
 
-{% if flag?(:use_gmp) %}
+# GMP allocates through the GC whenever it runs the big types (`-Duse_gmp`,
+# and every 32-bit target).
+{% unless Crystal::BigNum::BACKS_BIG_TYPES %}
   LibGMP.set_memory_functions(
     ->(size) { GC.malloc(size) },
     ->(ptr, old_size, new_size) { GC.realloc(ptr, new_size) },

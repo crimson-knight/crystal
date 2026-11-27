@@ -279,7 +279,7 @@ describe "BigInt" do
 
   it "raises if factorial of 2^64" do
     expect_raises ArgumentError do
-      limit = {% if flag?(:use_gmp) %} LibGMP::UI::MAX {% else %} UInt64::MAX {% end %}
+      limit = {% if Crystal::BigNum::BACKS_BIG_TYPES %} UInt64::MAX {% else %} LibGMP::UI::MAX {% end %}
       (limit.to_big_i + 1).factorial
     end
   end
@@ -443,6 +443,22 @@ describe "BigInt" do
     (123.to_big_i << 4).should eq(1968)
     (123456.to_big_i << 8).should eq(31604736)
   end
+
+  # An intended difference between the engines: the pure engine takes a
+  # negative count as a shift the other way, as `Int#<<` and `Int#>>` do,
+  # while GMP (`-Duse_gmp`, and every 32-bit target) receives it as unsigned
+  # and the process dies with SIGFPE.
+  {% if Crystal::BigNum::BACKS_BIG_TYPES %}
+    it "shifts the other way for a negative count" do
+      (40.to_big_i >> -3).should eq(320)
+      (40.to_big_i << -3).should eq(5)
+      (-41.to_big_i << -3).should eq(-6)
+      (5.to_big_i << Int64::MIN).should eq(0)
+      (-5.to_big_i << Int64::MIN).should eq(-1)
+      ((1.to_big_i << 300) << -300).should eq(1)
+      expect_raises(OverflowError) { 5.to_big_i >> Int64::MIN }
+    end
+  {% end %}
 
   it "raises if divides by zero" do
     expect_raises DivisionByZeroError do
