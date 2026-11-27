@@ -25,7 +25,7 @@ describe Crystal::MissingLibraryHint do
 
   it "names -Duse_gmp as the reason a program links libgmp" do
     hint = Crystal::MissingLibraryHint.new(installed_by_homebrew: true)
-    hint.read("ld: library gmp not found\n")
+    hint.read("ld: library 'gmp' not found\n")
 
     hint.to_s.should eq <<-TEXT
       The linker needs libgmp because the program was built with -Duse_gmp (BigInt, BigFloat, BigRational and BigDecimal on GMP).
