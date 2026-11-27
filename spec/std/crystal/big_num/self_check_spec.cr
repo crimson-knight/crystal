@@ -1,3 +1,7 @@
+# The engine is 64-bit only; 32-bit targets run the big types on GMP.
+require "crystal/big_num/availability"
+{% skip_file unless Crystal::BigNum::TARGET_SUPPORTED %}
+
 require "spec"
 require "crystal/big_num"
 

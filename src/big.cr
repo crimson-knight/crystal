@@ -14,8 +14,10 @@ end
 # The engine: every big type runs on the pure-Crystal `Crystal::BigNum`
 # (`src/big/pure/`) by default, or on GMP (`src/big/gmp/`) under `-Duse_gmp`.
 # 32-bit targets always use GMP: the engine's kernels are written for 64-bit
-# limbs.
-{% if flag?(:use_gmp) || !flag?(:bits64) %}
+# limbs. `Crystal::BigNum::BACKS_BIG_TYPES` holds the choice.
+require "./crystal/big_num/availability"
+
+{% unless Crystal::BigNum::BACKS_BIG_TYPES %}
   require "./big/lib_gmp"
   require "./big/gmp/big_int"
   require "./big/gmp/big_float"

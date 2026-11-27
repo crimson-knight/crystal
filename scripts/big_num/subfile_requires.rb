@@ -7,6 +7,8 @@
 # and a 32-bit target, which always uses GMP. The default and `-Duse_gmp`
 # programs are built and run, and their output is compared with the expected
 # line; the 32-bit targets are type-checked (`--no-codegen --cross-compile`).
+# The whole stdlib spec suite (`spec/std_spec.cr`) is type-checked for the
+# 32-bit targets too, since the engine specs must skip themselves there.
 # The internal halves in src/big/gmp/ and src/big/pure/ are loaded only
 # through src/big.cr and are not public paths.
 #
@@ -57,6 +59,10 @@ BUILDS = [
 ]
 
 env = {"CRYSTAL_PATH" => "lib:#{ROOT}/src"}
+# spec/std_spec.cr loads src/llvm, whose macros ask llvm-config for the LLVM
+# version: take LLVM_CONFIG, else llvm-config on PATH, else Homebrew's.
+llvm_config = ENV["LLVM_CONFIG"] || [`command -v llvm-config`.strip, *Dir["/opt/homebrew/opt/llvm*/bin/llvm-config"].sort.reverse].find { |path| !path.empty? && File.executable?(path) }
+env["LLVM_CONFIG"] = llvm_config if llvm_config
 report = ["sub-file require check, #{Time.now.utc}, #{RUBY_PLATFORM}", "compiler: #{compiler}", ""]
 failures = 0
 
@@ -86,7 +92,31 @@ BUILDS.each do |build|
 end
 
 report << ""
-report << "#{BUILDS.size * public_files.size} programs, #{failures} failures"
+spec_targets = BUILDS.reject { |build| build[:run] }
+spec_targets.each do |build|
+  output, status = Open3.capture2e(env, compiler, "build", *build[:flags], "-o", File.join(OUT, "std_spec-#{build[:name]}"), "spec/std_spec.cr")
+  # The suite carries upstream's own warnings (deprecated APIs under test);
+  # only a warning located in a big-number file fails the check.
+  location = nil
+  warned_at = output.lines.each_with_object([]) do |line, list|
+    location = $1 if line =~ /\AIn (\S+?):\d+/
+    list << location.to_s if line.start_with?("Warning:")
+  end
+  big_warnings = warned_at.grep(%r{(\A|/)(src|spec/std)/(big|crystal/big_num)(/|\.cr)})
+  result =
+    if !status.success?
+      "FAIL (compile): #{output.lines.last(3).join.strip}"
+    elsif !big_warnings.empty?
+      "FAIL (warning in #{big_warnings.first})"
+    else
+      "ok (type-checks; #{warned_at.size} upstream warnings, 0 in big-number files)"
+    end
+  failures += 1 if result.start_with?("FAIL")
+  report << format("%-20s %-17s %s", build[:name], "spec/std_spec.cr", result)
+end
+
+report << ""
+report << "#{BUILDS.size * public_files.size + spec_targets.size} programs, #{failures} failures"
 File.write(File.join(OUT, "subfile_requires.txt"), report.join("\n") + "\n")
 puts report
 exit(failures == 0 ? 0 : 1)

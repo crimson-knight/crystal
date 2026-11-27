@@ -554,9 +554,10 @@ describe "BigRational parity with GMP" do
     BigRational.new(BigFloat.new(0.1, precision: 64)).should eq(BigRational.new(0.1))
   end
 
-  # GMP receives a negative count converted to an unsigned bit count and
-  # stops the process (SIGFPE); the pure engine shifts the other way.
-  {% unless flag?(:use_gmp) %}
+  # GMP (`-Duse_gmp`, and every 32-bit target) receives a negative count
+  # converted to an unsigned bit count and stops the process (SIGFPE); the
+  # pure engine shifts the other way.
+  {% if Crystal::BigNum::BACKS_BIG_TYPES %}
     it "shifts the other way for a negative count" do
       (br(3, 4) >> -2).should eq(br(3, 1))
       (br(3, 1) << -2).should eq(br(3, 4))
