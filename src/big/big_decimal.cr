@@ -71,6 +71,121 @@ struct BigDecimal < Number
   #
   # Allows only valid number strings with an optional negative sign.
   def initialize(str : String)
+    @value, @scale = BigDecimal.read_plain(str) || BigDecimal.read_checked(str)
+  end
+
+  # Reads the common form `[+][-]digits[.digits][(e|E)[+|-]digits]` in one
+  # pass, converting the digits straight from the string's bytes, or returns
+  # nil when *str* has any other shape (underscores, a long exponent, an
+  # error), which `read_checked` then handles.
+  protected def self.read_plain(str : String) : {BigInt, UInt64}?
+    bytes = str.to_unsafe
+    length = str.bytesize
+    index = 0
+    index += 1 if index < length && bytes[index] === '+'
+    negative = index < length && bytes[index] === '-'
+    index += 1 if negative
+
+    integer_start = index
+    while index < length && bytes[index].unsafe_chr.ascii_number?
+      index += 1
+    end
+    integer_end = index
+    fraction_start = fraction_end = index
+    has_point = index < length && bytes[index] === '.'
+    if has_point
+      index += 1
+      fraction_start = index
+      while index < length && bytes[index].unsafe_chr.ascii_number?
+        index += 1
+      end
+      fraction_end = index
+    end
+    return nil if integer_end == integer_start && fraction_end == fraction_start
+
+    exponent = nil
+    exponent_negative = false
+    if index < length && (bytes[index] === 'e' || bytes[index] === 'E')
+      # `1.e5` is rejected by `read_checked`
+      return nil if has_point && fraction_end == fraction_start
+      index += 1
+      if index < length && (bytes[index] === '+' || bytes[index] === '-')
+        exponent_negative = bytes[index] === '-'
+        index += 1
+      end
+      exponent_start = index
+      exponent = 0_u64
+      # at most 18 digits, so the exponent cannot overflow a `UInt64`
+      while index < length && index - exponent_start < 18 && bytes[index].unsafe_chr.ascii_number?
+        exponent = exponent &* 10 &+ (bytes[index] &- '0'.ord)
+        index += 1
+      end
+      return nil if index == exponent_start
+    end
+    return nil unless index == length
+
+    value = BigInt.new(read_digits(bytes + integer_start, integer_end - integer_start, bytes + fraction_start, fraction_end - fraction_start, negative))
+    decimal_count = (fraction_end - fraction_start).to_u64
+    scale = decimal_count
+    if exponent
+      if exponent_negative
+        scale = exponent + decimal_count
+      elsif exponent < decimal_count
+        scale = decimal_count - exponent
+      else
+        value *= TEN_I ** (exponent - decimal_count)
+        scale = 0_u64
+      end
+    end
+    {value, scale}
+  end
+
+  # The integer whose decimal digits are the *integer_length* digits at
+  # *integer_digits* followed by the *fraction_length* digits at
+  # *fraction_digits*, negated when *negative*.
+  private def self.read_digits(integer_digits : UInt8*, integer_length : Int32, fraction_digits : UInt8*, fraction_length : Int32, negative : Bool) : Crystal::BigNum::Integer
+    # The engine's conversion wants no leading zero.
+    while integer_length > 0 && integer_digits.value === '0'
+      integer_digits += 1
+      integer_length -= 1
+    end
+    if integer_length == 0
+      while fraction_length > 0 && fraction_digits.value === '0'
+        fraction_digits += 1
+        fraction_length -= 1
+      end
+    end
+    length = integer_length + fraction_length
+    return Crystal::BigNum::Integer.zero if length == 0
+
+    if fraction_length == 0
+      read_digit_run(integer_digits, length, negative)
+    elsif integer_length == 0
+      read_digit_run(fraction_digits, length, negative)
+    elsif length <= 160
+      joined = uninitialized StaticArray(UInt8, 160)
+      joined.to_unsafe.copy_from(integer_digits, integer_length)
+      (joined.to_unsafe + integer_length).copy_from(fraction_digits, fraction_length)
+      read_digit_run(joined.to_unsafe, length, negative)
+    else
+      joined_on_heap = Pointer(UInt8).malloc(length)
+      joined_on_heap.copy_from(integer_digits, integer_length)
+      (joined_on_heap + integer_length).copy_from(fraction_digits, fraction_length)
+      read_digit_run(joined_on_heap, length, negative)
+    end
+  end
+
+  # The integer of the *length* decimal digits at *digits* (the first one
+  # not a zero), negated when *negative*.
+  private def self.read_digit_run(digits : UInt8*, length : Int32, negative : Bool) : Crystal::BigNum::Integer
+    Crystal::BigNum::Integer.build(Crystal::BigNum::Radix.capacity(length, 10), negative) do |limbs|
+      Crystal::BigNum::Radix.convert(limbs, digits, length, 10)
+    end
+  end
+
+  # Reads any string `BigDecimal.new(String)` accepts, and raises the same
+  # errors for the rest.
+  protected def self.read_checked(str : String) : {BigInt, UInt64}
     # Strip leading '+' char to smooth out cases with strings like "+123"
     str = str.lchop('+')
     # Strip '_' to make it compatible with int literals like "1_000_000"
@@ -123,10 +238,10 @@ struct BigDecimal < Number
         builder.write(str.to_slice[0, decimal_index])
         builder.write(str.to_slice[decimal_index + 1, decimal_count])
       end
-      @value = value_str.to_big_i
+      value = value_str.to_big_i
     else
       decimal_count = 0_u64
-      @value = str[0..decimal_end_index].to_big_i
+      value = str[0..decimal_end_index].to_big_i
     end
 
     if exponent_index
@@ -140,21 +255,23 @@ struct BigDecimal < Number
         exponent = str[(exponent_index + 1)..-1].to_u64
       end
 
-      @scale = exponent
+      scale = exponent
       if exponent_positive
-        if @scale < decimal_count
-          @scale = decimal_count - @scale
+        if scale < decimal_count
+          scale = decimal_count - scale
         else
-          @scale -= decimal_count
-          @value *= 10.to_big_i ** @scale
-          @scale = 0_u64
+          scale -= decimal_count
+          value *= 10.to_big_i ** scale
+          scale = 0_u64
         end
       else
-        @scale += decimal_count
+        scale += decimal_count
       end
     else
-      @scale = decimal_count
+      scale = decimal_count
     end
+
+    {value, scale}
   end
 
   def - : BigDecimal
@@ -503,22 +620,121 @@ struct BigDecimal < Number
     to_s_impl(io, point_range: -3..15)
   end
 
+  def to_s : String
+    factor_powers_of_ten
+    text = ""
+    write_text(-3..15) { |bytes| text = String.new(bytes) }
+    text
+  end
+
   protected def to_s_impl(*, point_range : Range) : String
     String.build { |io| to_s_impl(io, point_range: point_range) }
   end
 
   protected def to_s_impl(io : IO, *, point_range : Range) : Nil
     factor_powers_of_ten
+    write_text(point_range) { |bytes| io.write_string(bytes) }
+  end
 
-    buffer = @value.to_s.to_slice
-
-    # add negative sign
-    if buffer[0]? == 45 # '-'
-      io << '-'
-      buffer = buffer[1..]
+  # Renders the decimal text of `self` (normalized by `factor_powers_of_ten`)
+  # and yields it: plain digits while the decimal exponent is in
+  # *point_range*, `d.ddde±x` otherwise, with trailing fraction zeros
+  # removed (`Float::Printer.decimal`'s `:remove_extra_zeros`). The digits
+  # and the text are built on the stack when they are short.
+  private def write_text(point_range : Range, & : Bytes ->) : Nil
+    stack_digits = uninitialized StaticArray(UInt8, 160)
+    stack_text = uninitialized StaticArray(UInt8, 200)
+    digits = stack_digits.to_unsafe
+    text = stack_text.to_unsafe
+    count = 0
+    @value.@value.render_decimal_magnitude do |length|
+      count = length
+      digits = Pointer(UInt8).malloc(length) if length > 160
+      digits
     end
 
-    Float::Printer.decimal(io, buffer, -@scale.to_i, point_range, :remove_extra_zeros)
+    exponent = count.to_i64 - @scale.to_i64
+    exponent_form = !point_range.includes?(exponent)
+    point = exponent_form ? 1_i64 : exponent
+
+    # sign, digits, point, leading fraction zeros, `0`, and `e-` with 20 digits
+    capacity = count + (point < 0 ? -point : 0_i64) + 25
+    text = Pointer(UInt8).malloc(capacity) if capacity > 200
+
+    cursor = text
+    if @value.negative?
+      cursor.value = '-'.ord.to_u8
+      cursor += 1
+    end
+
+    # integer digits; `point <= count` because the scale is not negative
+    if point > 0
+      cursor.copy_from(digits, point)
+      cursor += point
+      fraction = digits + point
+      fraction_count = count - point
+    else
+      cursor.value = '0'.ord.to_u8
+      cursor += 1
+      fraction = digits
+      fraction_count = count.to_i64
+    end
+
+    cursor.value = '.'.ord.to_u8
+    cursor += 1
+    if point < 0
+      Intrinsics.memset(cursor, '0'.ord.to_u8, -point, false)
+      cursor += -point
+    end
+
+    # trailing zeros go, except the first fraction digit
+    while fraction_count > 1 && fraction[fraction_count - 1] === '0'
+      fraction_count -= 1
+    end
+    if fraction_count > 0
+      cursor.copy_from(fraction, fraction_count)
+      cursor += fraction_count
+    else
+      cursor.value = '0'.ord.to_u8
+      cursor += 1
+    end
+
+    if exponent_form
+      cursor.value = 'e'.ord.to_u8
+      cursor += 1
+      if exponent > 0
+        cursor.value = '+'.ord.to_u8
+        cursor += 1
+      end
+      cursor += write_integer(cursor, exponent - 1)
+    end
+
+    yield Slice.new(text, cursor - text)
+  end
+
+  # Writes the decimal text of *number* (with `-` when negative) at
+  # *target* and returns its length.
+  private def write_integer(target : UInt8*, number : Int64) : Int32
+    magnitude = number < 0 ? 0_u64 &- number.to_u64! : number.to_u64
+    length = 0
+    if number < 0
+      target.value = '-'.ord.to_u8
+      length = 1
+    end
+    width = 1
+    limit = 10_u64
+    while width < 20 && magnitude >= limit
+      width += 1
+      limit &*= 10
+    end
+    position = length + width
+    loop do
+      position -= 1
+      target[position] = '0'.ord.to_u8 + (magnitude % 10).to_u8
+      magnitude //= 10
+      break if magnitude == 0
+    end
+    length + width
   end
 
   # :inherit:

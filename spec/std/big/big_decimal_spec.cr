@@ -513,6 +513,37 @@ describe BigDecimal do
     assert_prints "1e-234".to_big_d.to_s, "1.0e-234"
   end
 
+  it "converts long values to string" do
+    digits = "1234567891" * 30
+    assert_prints BigDecimal.new(digits.to_big_i, 150).to_s, "1.#{digits[1..]}e+149"
+    assert_prints BigDecimal.new("-#{digits}".to_big_i, 300).to_s, "-0.#{digits}"
+    assert_prints BigDecimal.new("-#{digits}".to_big_i, 302).to_s, "-0.00#{digits}"
+    assert_prints BigDecimal.new("-#{digits}".to_big_i, 304).to_s, "-1.#{digits[1..]}e-5"
+    assert_prints BigDecimal.new(5, 1_000).to_s, "5.0e-1000"
+    assert_prints BigDecimal.new(-9223372036854775807, 0).to_s, "-9.223372036854775807e+18"
+    assert_prints BigDecimal.new(0, 3).to_s, "0.0"
+    BigDecimal.new(1, 30).format.should eq("0.000000000000000000000000000001")
+  end
+
+  it "reads every spelling of a number" do
+    BigDecimal.new("+-5").should eq(BigDecimal.new(-5))
+    BigDecimal.new("5.").should eq(BigDecimal.new(5))
+    BigDecimal.new("-.5").should eq(BigDecimal.new(-5, 1))
+    BigDecimal.new("000123.4500").should eq(BigDecimal.new(1234500, 4))
+    BigDecimal.new("-0.000").should eq(BigDecimal.new(0, 3))
+    BigDecimal.new("1E+3").should eq(BigDecimal.new(1000))
+    BigDecimal.new("12.5e1").should eq(BigDecimal.new(125))
+    BigDecimal.new("1.5e-3").should eq(BigDecimal.new(15, 4))
+    BigDecimal.new("1e0000000000000000000007").should eq(BigDecimal.new(10_000_000))
+    BigDecimal.new("1_000.000_1").should eq(BigDecimal.new(10000001, 4))
+    digits = "9876543210" * 100
+    BigDecimal.new("#{digits}.#{digits}").should eq(BigDecimal.new("#{digits}#{digits}".to_big_i, 1_000))
+    expect_raises(InvalidBigDecimalException) { BigDecimal.new("1.e5") }
+    expect_raises(InvalidBigDecimalException) { BigDecimal.new("-+5") }
+    expect_raises(InvalidBigDecimalException) { BigDecimal.new("-") }
+    expect_raises(ArgumentError) { BigDecimal.new(".") }
+  end
+
   it "converts to other number types" do
     bd1 = BigDecimal.new(123, 5)
     bd2 = BigDecimal.new(-123, 5)
