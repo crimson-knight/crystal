@@ -85,13 +85,14 @@ module Crystal::BigNum
           case an &* 8 &+ bn
           {% for an in 1..4 %}
             {% for bn in 1..an %}
-              when {{ an * 8 + bn }} then mul_{{ an }}_by_{{ bn }}_with_bmi2(rp, ap, bp)
+              when {{ an * 8 + bn }}
+                mul_{{ an }}_by_{{ bn }}_with_bmi2(rp, ap, bp)
+                return true
             {% end %}
           {% end %}
-          else
-            return false
           end
-          return true
+          # Any other pair of sizes falls through to the case below, which
+          # writes nothing and returns false.
         end
       {% end %}
       case an &* 8 &+ bn
