@@ -684,19 +684,134 @@ module Crystal::BigNum
 
     # ---- Owned by later pieces (G2b to G2e) ----
 
-    {% for operator in %w(* // % tdiv remainder) %}
+    {% for operator in %w(// % tdiv remainder) %}
       def {{ operator.id }}(other : Integer) : Integer
-        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ operator.id }} ({{ operator == "*" ? "G2b".id : "G2c".id }})")
+        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ operator.id }} (G2c)")
       end
 
       def {{ operator.id }}(other : ::Int::Primitive) : Integer
-        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ operator.id }} ({{ operator == "*" ? "G2b".id : "G2c".id }})")
+        raise NotImplementedError.new("Crystal::BigNum::Integer#{{ operator.id }} (G2c)")
       end
     {% end %}
 
+    # ---- Multiplication ----
+
+    # The product, as `mpz_mul`. Values up to 128 bits whose product fits in
+    # 128 bits multiply with no allocation; when both operands hold the same
+    # magnitude, the product is a square.
+    def *(other : Integer) : Integer
+      a_count = size
+      b_count = other.size
+      return Integer.zero if a_count == 0 || b_count == 0
+      negative = negative? != other.negative?
+      if a_count <= 2 && b_count <= 2
+        return Integer.multiply_inline(magnitude128, other.magnitude128, negative)
+      end
+      return Integer.square_magnitude(limb_pointer, a_count, negative) if same_magnitude?(other)
+      ap = limb_pointer
+      bp = other.limb_pointer
+      if a_count < b_count
+        ap, bp = bp, ap
+        a_count, b_count = b_count, a_count
+      end
+      Integer.build(a_count + b_count, negative) do |rp|
+        Multiply.mul(rp, ap, a_count, bp, b_count)
+        a_count + b_count
+      end
+    end
+
+    # The product with a primitive integer, as `mpz_mul_si` and `mpz_mul_ui`:
+    # a factor that fits in a limb multiplies the limbs in one pass.
+    def *(other : ::Int::Primitive) : Integer
+      if other.is_a?(Int128) || other.is_a?(UInt128)
+        return self * Integer.new(other)
+      end
+      if other.is_a?(::Int::Signed) && other < 0
+        multiply_by_limb(0_u64 &- other.to_i64.to_u64!, !negative?)
+      else
+        multiply_by_limb(other.to_u64, negative?)
+      end
+    end
+
     # The square of the value.
     def square : Integer
-      raise NotImplementedError.new("Crystal::BigNum::Integer#square (G2b)")
+      count = size
+      return Integer.zero if count == 0
+      if count <= 2
+        magnitude = magnitude128
+        return Integer.multiply_inline(magnitude, magnitude, false)
+      end
+      Integer.square_magnitude(limb_pointer, count, false)
+    end
+
+    # The magnitude times the limb *factor*, with the sign *negative*.
+    private def multiply_by_limb(factor : Limb, negative : Bool) : Integer
+      count = size
+      return Integer.zero if count == 0 || factor == 0
+      if count <= 2
+        low = @low.to_u128! &* factor
+        high = @high.to_u128! &* factor &+ (low >> 64)
+        if high >> 64 == 0
+          return Integer.from_magnitude((high << 64) | low.to_u64!, negative)
+        end
+        heap = Limbs.allocate(3)
+        heap[0] = low.to_u64!
+        heap[1] = high.to_u64!
+        heap[2] = (high >> 64).to_u64!
+        return Integer.new(negative ? -3 : 3, Limb.zero, Limb.zero, heap)
+      end
+      limbs = @limbs
+      Integer.build(count + 1, negative) do |rp|
+        rp[count] = Limbs.mul_1(rp, limbs, count, factor)
+        count + 1
+      end
+    end
+
+    # Whether *other* has the same magnitude as this value, found cheaply:
+    # the same limbs, or equal limbs of equal count (the top limbs usually
+    # differ, which ends the comparison at once).
+    private def same_magnitude?(other : Integer) : Bool
+      count = size
+      return false unless count == other.size && count > 2
+      other_limbs = other.@limbs
+      @limbs == other_limbs || Limbs.cmp(@limbs, other_limbs, count) == 0
+    end
+
+    # The product of two magnitudes below 2**128 with the sign *negative*,
+    # inline when it fits in two limbs.
+    protected def self.multiply_inline(a : UInt128, b : UInt128, negative : Bool) : Integer
+      a_low = a.to_u64!
+      a_high = (a >> 64).to_u64!
+      b_low = b.to_u64!
+      b_high = (b >> 64).to_u64!
+      if a_high == 0 && b_high == 0
+        return from_magnitude(a_low.to_u128! &* b_low, negative)
+      end
+      low_low = a_low.to_u128! &* b_low
+      low_high = a_low.to_u128! &* b_high
+      high_low = a_high.to_u128! &* b_low
+      high_high = a_high.to_u128! &* b_high
+      # limb 1 collects three 64-bit halves; the sum may carry twice
+      middle = (low_low >> 64) &+ low_high.to_u64! &+ high_low.to_u64!
+      upper = high_high &+ (low_high >> 64) &+ (high_low >> 64) &+ (middle >> 64)
+      if upper == 0
+        return from_magnitude((middle << 64) | low_low.to_u64!, negative)
+      end
+      build(4, negative) do |rp|
+        rp[0] = low_low.to_u64!
+        rp[1] = middle.to_u64!
+        rp[2] = upper.to_u64!
+        rp[3] = (upper >> 64).to_u64!
+        4
+      end
+    end
+
+    # The square of the *count* limbs at *ap* (`count > 2`).
+    protected def self.square_magnitude(ap : Pointer(Limb), count : Int32, negative : Bool) : Integer
+      build(2 * count, negative) do |rp|
+        Multiply.sqr(rp, ap, count)
+        2 * count
+      end
     end
 
     {% for name in %w(divmod tdivmod) %}

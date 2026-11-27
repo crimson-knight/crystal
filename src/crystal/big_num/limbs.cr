@@ -36,24 +36,46 @@ module Crystal::BigNum
       generic_add_n(rp, ap, bp, n)
     end
 
-    # The portable body of `add_n`.
+    # The portable body of `add_n`. Each group of four limbs runs two carry
+    # chains: the limb sums, which start fresh, and the incoming carry rippling
+    # through them. Both lower to single runs of `adcs` on AArch64; a
+    # three-term first sum would make LLVM split every step into two adds.
     @[AlwaysInline]
     def self.generic_add_n(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32) : Limb
       carry = Limb.zero
-      index = 0
-      while index + 4 <= n
-        {% for k in 0..3 %}
-          sum{{k}} = ap[index + {{k}}].to_u128! &+ bp[index + {{k}}] &+ carry
-          rp[index + {{k}}] = sum{{k}}.to_u64!
-          carry = (sum{{k}} >> 64).to_u64!
-        {% end %}
-        index += 4
+      remaining = n
+      while remaining >= 4
+        sum = ap[0].to_u128! &+ bp[0]
+        partial0 = sum.to_u64!
+        sum = ap[1].to_u128! &+ bp[1] &+ (sum >> 64).to_u64!
+        partial1 = sum.to_u64!
+        sum = ap[2].to_u128! &+ bp[2] &+ (sum >> 64).to_u64!
+        partial2 = sum.to_u64!
+        sum = ap[3].to_u128! &+ bp[3] &+ (sum >> 64).to_u64!
+        partial3 = sum.to_u64!
+        carry_out = (sum >> 64).to_u64!
+        sum = partial0.to_u128! &+ carry
+        rp[0] = sum.to_u64!
+        sum = partial1.to_u128! &+ (sum >> 64).to_u64!
+        rp[1] = sum.to_u64!
+        sum = partial2.to_u128! &+ (sum >> 64).to_u64!
+        rp[2] = sum.to_u64!
+        sum = partial3.to_u128! &+ (sum >> 64).to_u64!
+        rp[3] = sum.to_u64!
+        carry = carry_out | (sum >> 64).to_u64!
+        ap += 4
+        bp += 4
+        rp += 4
+        remaining &-= 4
       end
-      while index < n
-        sum = ap[index].to_u128! &+ bp[index] &+ carry
-        rp[index] = sum.to_u64!
+      while remaining > 0
+        sum = ap[0].to_u128! &+ bp[0] &+ carry
+        rp[0] = sum.to_u64!
         carry = (sum >> 64).to_u64!
-        index += 1
+        ap += 1
+        bp += 1
+        rp += 1
+        remaining &-= 1
       end
       carry
     end
@@ -67,26 +89,47 @@ module Crystal::BigNum
       generic_sub_n(rp, ap, bp, n)
     end
 
-    # The portable body of `sub_n`.
+    # The portable body of `sub_n`: `a - b - borrow` is `a + ~b + (1 - borrow)`
+    # less the base, so it runs the two carry chains of `add_n` on `~b` with
+    # the carry starting at 1, and the borrow is 1 less the carry out.
     @[AlwaysInline]
     def self.generic_sub_n(rp : Pointer(Limb), ap : Pointer(Limb), bp : Pointer(Limb), n : Int32) : Limb
-      borrow = Limb.zero
-      index = 0
-      while index + 4 <= n
-        {% for k in 0..3 %}
-          difference{{k}} = ap[index + {{k}}].to_u128! &- bp[index + {{k}}] &- borrow
-          rp[index + {{k}}] = difference{{k}}.to_u64!
-          borrow = (difference{{k}} >> 127).to_u64!
-        {% end %}
-        index += 4
+      carry = Limb.new(1)
+      remaining = n
+      while remaining >= 4
+        sum = ap[0].to_u128! &+ ~bp[0]
+        partial0 = sum.to_u64!
+        sum = ap[1].to_u128! &+ ~bp[1] &+ (sum >> 64).to_u64!
+        partial1 = sum.to_u64!
+        sum = ap[2].to_u128! &+ ~bp[2] &+ (sum >> 64).to_u64!
+        partial2 = sum.to_u64!
+        sum = ap[3].to_u128! &+ ~bp[3] &+ (sum >> 64).to_u64!
+        partial3 = sum.to_u64!
+        carry_out = (sum >> 64).to_u64!
+        sum = partial0.to_u128! &+ carry
+        rp[0] = sum.to_u64!
+        sum = partial1.to_u128! &+ (sum >> 64).to_u64!
+        rp[1] = sum.to_u64!
+        sum = partial2.to_u128! &+ (sum >> 64).to_u64!
+        rp[2] = sum.to_u64!
+        sum = partial3.to_u128! &+ (sum >> 64).to_u64!
+        rp[3] = sum.to_u64!
+        carry = carry_out | (sum >> 64).to_u64!
+        ap += 4
+        bp += 4
+        rp += 4
+        remaining &-= 4
       end
-      while index < n
-        difference = ap[index].to_u128! &- bp[index] &- borrow
-        rp[index] = difference.to_u64!
-        borrow = (difference >> 127).to_u64!
-        index += 1
+      while remaining > 0
+        sum = ap[0].to_u128! &+ ~bp[0] &+ carry
+        rp[0] = sum.to_u64!
+        carry = (sum >> 64).to_u64!
+        ap += 1
+        bp += 1
+        rp += 1
+        remaining &-= 1
       end
-      borrow
+      Limb.new(1) &- carry
     end
 
     # Adds the single limb *b* to the *n* limbs of *ap* into *rp* and returns
@@ -149,24 +192,39 @@ module Crystal::BigNum
       generic_mul_1(rp, ap, n, b)
     end
 
-    # The portable body of `mul_1`.
+    # The portable body of `mul_1`. Four products are formed first, then their
+    # halves are summed in one carry chain (`adds`/`adcs` on AArch64), with the
+    # pointers advanced rather than indexed so no bounds arithmetic sits in the
+    # loop.
     @[AlwaysInline]
     def self.generic_mul_1(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, b : Limb) : Limb
       carry = Limb.zero
-      index = 0
-      while index + 4 <= n
-        {% for k in 0..3 %}
-          product{{k}} = ap[index + {{k}}].to_u128! &* b &+ carry
-          rp[index + {{k}}] = product{{k}}.to_u64!
-          carry = (product{{k}} >> 64).to_u64!
-        {% end %}
-        index += 4
+      remaining = n
+      while remaining >= 4
+        product0 = ap[0].to_u128! &* b
+        product1 = ap[1].to_u128! &* b
+        product2 = ap[2].to_u128! &* b
+        product3 = ap[3].to_u128! &* b
+        sum = product0.to_u64!.to_u128! &+ carry
+        rp[0] = sum.to_u64!
+        sum = product1.to_u64!.to_u128! &+ (product0 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        rp[1] = sum.to_u64!
+        sum = product2.to_u64!.to_u128! &+ (product1 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        rp[2] = sum.to_u64!
+        sum = product3.to_u64!.to_u128! &+ (product2 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        rp[3] = sum.to_u64!
+        carry = (product3 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        ap += 4
+        rp += 4
+        remaining &-= 4
       end
-      while index < n
-        product = ap[index].to_u128! &* b &+ carry
-        rp[index] = product.to_u64!
+      while remaining > 0
+        product = ap[0].to_u128! &* b &+ carry
+        rp[0] = product.to_u64!
         carry = (product >> 64).to_u64!
-        index += 1
+        ap += 1
+        rp += 1
+        remaining &-= 1
       end
       carry
     end
@@ -180,26 +238,144 @@ module Crystal::BigNum
       generic_addmul_1(rp, ap, n, b)
     end
 
-    # The portable body of `addmul_1`.
+    # The portable body of `addmul_1`. Per group of four limbs: the four
+    # products, then two separate carry chains, one summing the low halves with
+    # the previous high halves and one adding that into *rp*. Each chain is a
+    # single run of `adcs` on AArch64; the two carries meet only in the high
+    # limb of the group, which cannot overflow.
     @[AlwaysInline]
     def self.generic_addmul_1(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, b : Limb) : Limb
       carry = Limb.zero
-      index = 0
-      while index + 4 <= n
-        {% for k in 0..3 %}
-          product{{k}} = ap[index + {{k}}].to_u128! &* b &+ rp[index + {{k}}] &+ carry
-          rp[index + {{k}}] = product{{k}}.to_u64!
-          carry = (product{{k}} >> 64).to_u64!
-        {% end %}
-        index += 4
+      remaining = n
+      while remaining >= 4
+        product0 = ap[0].to_u128! &* b
+        product1 = ap[1].to_u128! &* b
+        product2 = ap[2].to_u128! &* b
+        product3 = ap[3].to_u128! &* b
+        sum = product0.to_u64!.to_u128! &+ carry
+        term0 = sum.to_u64!
+        sum = product1.to_u64!.to_u128! &+ (product0 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        term1 = sum.to_u64!
+        sum = product2.to_u64!.to_u128! &+ (product1 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        term2 = sum.to_u64!
+        sum = product3.to_u64!.to_u128! &+ (product2 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        term3 = sum.to_u64!
+        high = (product3 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        sum = rp[0].to_u128! &+ term0
+        rp[0] = sum.to_u64!
+        sum = rp[1].to_u128! &+ term1 &+ (sum >> 64).to_u64!
+        rp[1] = sum.to_u64!
+        sum = rp[2].to_u128! &+ term2 &+ (sum >> 64).to_u64!
+        rp[2] = sum.to_u64!
+        sum = rp[3].to_u128! &+ term3 &+ (sum >> 64).to_u64!
+        rp[3] = sum.to_u64!
+        carry = high &+ (sum >> 64).to_u64!
+        ap += 4
+        rp += 4
+        remaining &-= 4
       end
-      while index < n
-        product = ap[index].to_u128! &* b &+ rp[index] &+ carry
-        rp[index] = product.to_u64!
+      while remaining > 0
+        product = ap[0].to_u128! &* b &+ rp[0] &+ carry
+        rp[0] = product.to_u64!
         carry = (product >> 64).to_u64!
-        index += 1
+        ap += 1
+        rp += 1
+        remaining &-= 1
       end
       carry
+    end
+
+    # Adds the product of the *n* limbs of *ap* (`n >= 1`) and the two limbs
+    # at *bp* to the *n* limbs of *rp*, writes limb *n* of the sum to `rp[n]`
+    # and returns limb `n + 1`. Two schoolbook rows in one pass: each limb of
+    # *ap* and *rp* is loaded and stored once per two rows.
+    #
+    # Per group of four limbs the eight products are summed in four short
+    # carry chains (row 0's halves, row 1's halves, the two rows, then *rp*)
+    # that do not depend on the incoming carry; only the last chain adds the
+    # two-limb carry, so the loop-carried path is one chain of four.
+    def self.addmul_2(rp : Pointer(Limb), ap : Pointer(Limb), n : Int32, bp : Pointer(Limb)) : Limb
+      b0 = bp[0]
+      b1 = bp[1]
+      state_low = Limb.zero
+      state_high = Limb.zero
+      remaining = n
+      while remaining >= 4
+        p0 = ap[0].to_u128! &* b0
+        p1 = ap[1].to_u128! &* b0
+        p2 = ap[2].to_u128! &* b0
+        p3 = ap[3].to_u128! &* b0
+        q0 = ap[0].to_u128! &* b1
+        q1 = ap[1].to_u128! &* b1
+        q2 = ap[2].to_u128! &* b1
+        q3 = ap[3].to_u128! &* b1
+        # row 0 at positions 0..4
+        row0_0 = p0.to_u64!
+        sum = p1.to_u64!.to_u128! &+ (p0 >> 64).to_u64!
+        row0_1 = sum.to_u64!
+        sum = p2.to_u64!.to_u128! &+ (p1 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        row0_2 = sum.to_u64!
+        sum = p3.to_u64!.to_u128! &+ (p2 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        row0_3 = sum.to_u64!
+        row0_4 = (p3 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        # row 1 at positions 1..5
+        row1_1 = q0.to_u64!
+        sum = q1.to_u64!.to_u128! &+ (q0 >> 64).to_u64!
+        row1_2 = sum.to_u64!
+        sum = q2.to_u64!.to_u128! &+ (q1 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        row1_3 = sum.to_u64!
+        sum = q3.to_u64!.to_u128! &+ (q2 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        row1_4 = sum.to_u64!
+        row1_5 = (q3 >> 64).to_u64! &+ (sum >> 64).to_u64!
+        # both rows at positions 1..5 (the group's total is below B^6)
+        sum = row0_1.to_u128! &+ row1_1
+        rows_1 = sum.to_u64!
+        sum = row0_2.to_u128! &+ row1_2 &+ (sum >> 64).to_u64!
+        rows_2 = sum.to_u64!
+        sum = row0_3.to_u128! &+ row1_3 &+ (sum >> 64).to_u64!
+        rows_3 = sum.to_u64!
+        sum = row0_4.to_u128! &+ row1_4 &+ (sum >> 64).to_u64!
+        rows_4 = sum.to_u64!
+        rows_5 = row1_5 &+ (sum >> 64).to_u64!
+        # plus rp at positions 0..3
+        sum = rp[0].to_u128! &+ row0_0
+        limb0 = sum.to_u64!
+        sum = rp[1].to_u128! &+ rows_1 &+ (sum >> 64).to_u64!
+        limb1 = sum.to_u64!
+        sum = rp[2].to_u128! &+ rows_2 &+ (sum >> 64).to_u64!
+        limb2 = sum.to_u64!
+        sum = rp[3].to_u128! &+ rows_3 &+ (sum >> 64).to_u64!
+        limb3 = sum.to_u64!
+        rp_carry = (sum >> 64).to_u64!
+        # plus the carry in, at positions 0 and 1
+        sum = limb0.to_u128! &+ state_low
+        rp[0] = sum.to_u64!
+        sum = limb1.to_u128! &+ state_high &+ (sum >> 64).to_u64!
+        rp[1] = sum.to_u64!
+        sum = limb2.to_u128! &+ (sum >> 64).to_u64!
+        rp[2] = sum.to_u64!
+        sum = limb3.to_u128! &+ (sum >> 64).to_u64!
+        rp[3] = sum.to_u64!
+        sum = rows_4.to_u128! &+ rp_carry &+ (sum >> 64).to_u64!
+        state_low = sum.to_u64!
+        state_high = rows_5 &+ (sum >> 64).to_u64!
+        ap += 4
+        rp += 4
+        remaining &-= 4
+      end
+      while remaining > 0
+        limb = ap[0]
+        low = limb.to_u128! &* b0 &+ rp[0] &+ state_low
+        rp[0] = low.to_u64!
+        high = limb.to_u128! &* b1 &+ (low >> 64).to_u64! &+ state_high
+        state_low = high.to_u64!
+        state_high = (high >> 64).to_u64!
+        ap += 1
+        rp += 1
+        remaining &-= 1
+      end
+      rp[0] = state_low
+      state_high
     end
 
     # Subtracts the product of the *n* limbs of *ap* and the limb *b* from the
