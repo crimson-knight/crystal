@@ -1,5 +1,11 @@
 require "big"
 
+# The oracle is GMP's `BigInt`, which the default build replaces with the
+# engine: build every harness binary and spec with `-Duse_gmp`.
+{% unless flag?(:use_gmp) %}
+  {% raise "The BigNum harness compares against GMP: build it with -Duse_gmp" %}
+{% end %}
+
 # GMP entry points the harness needs as an oracle that `src/big/lib_gmp.cr`
 # does not bind. GMP is a black-box oracle here only.
 lib LibGMPHarness
@@ -8,6 +14,7 @@ lib LibGMPHarness
   fun invert = __gmpz_invert(rop : LibGMP::MPZ*, op1 : LibGMP::MPZ*, op2 : LibGMP::MPZ*) : LibC::Int
   fun remove = __gmpz_remove(rop : LibGMP::MPZ*, op : LibGMP::MPZ*, f : LibGMP::MPZ*) : LibGMP::BitcntT
   fun fac_ui = __gmpz_fac_ui(rop : LibGMP::MPZ*, n : LibGMP::UI)
+  fun divexact = __gmpz_divexact(q : LibGMP::MPZ*, n : LibGMP::MPZ*, d : LibGMP::MPZ*)
 end
 
 module G2Harness
@@ -60,6 +67,11 @@ module G2Harness
       result = BigInt.new
       count = LibGMPHarness.remove(result, value, factor)
       {result, count.to_u64}
+    end
+
+    # mpz_divexact: *value* / *divisor* when the division is exact.
+    def self.divexact(value : BigInt, divisor : BigInt) : BigInt
+      BigInt.new { |mpz| LibGMPHarness.divexact(mpz, value, divisor) }
     end
 
     def self.factorial(n : UInt64) : BigInt

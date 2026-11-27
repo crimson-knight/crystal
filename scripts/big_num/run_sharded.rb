@@ -23,11 +23,11 @@ require "shellwords"
 COLIMA_IMAGE = "crystallang/crystal@sha256:34ac3d5dd5098f85790b800c046f2a6d7fc292193a706d7a3f1acc5f004b94c3"
 UBUNTU_GMP = "2:6.3.0+dfsg-2ubuntu6.1"
 GMP_DYLIB = "/opt/homebrew/opt/gmp/lib/libgmp.10.dylib"
-BENCH_BRANCH = "bench/g2-harness-diff"
+DEFAULT_BENCH_BRANCH = "bench/g2-harness-diff"
 
 options = {
   where: "local", total: 100_000, shards: 4, first_seed: 1, out: nil, ops: nil, max_bits: 8192,
-  subject: "engine", parallel: 8, binary: nil, total_only: false, keep_branch: false,
+  subject: "engine", parallel: 8, binary: nil, total_only: false, keep_branch: false, branch: DEFAULT_BENCH_BRANCH,
 }
 OptionParser.new do |parser|
   parser.banner = "usage: run_sharded.rb [options]"
@@ -42,6 +42,7 @@ OptionParser.new do |parser|
   parser.on("--parallel N", Integer, "shards dispatched at once to the minis (default 8)") { |value| options[:parallel] = value }
   parser.on("--binary PATH", "a release differential binary already built for macOS arm64") { |value| options[:binary] = value }
   parser.on("--total-only", "only total the summaries already in --out") { options[:total_only] = true }
+  parser.on("--branch NAME", "github: the temporary branch (default #{DEFAULT_BENCH_BRANCH})") { |value| options[:branch] = value }
   parser.on("--keep-branch", "github: leave the bench branch (default: delete it after the logs are fetched)") { options[:keep_branch] = true }
 end.parse!
 abort "--out is required" unless options[:out]
@@ -81,7 +82,7 @@ def build_macos_binary(options)
   return File.expand_path(options[:binary]) if options[:binary]
   binary = File.join(OUT, "build", "big_num_differential")
   FileUtils.mkdir_p(File.dirname(binary))
-  command = [compiler, "build", "--release", "scripts/big_num/differential.cr", "-o", binary]
+  command = [compiler, "build", "--release", "-Duse_gmp", "scripts/big_num/differential.cr", "-o", binary]
   puts "building: CRYSTAL_PATH=#{ROOT}/src #{command.join(" ")}"
   system({"CRYSTAL_PATH" => File.join(ROOT, "src")}, *command) or abort "build failed"
   binary
@@ -157,7 +158,7 @@ def linux_script(seeds, count, options, compiler_command)
     set -e
     cd "$SRC"
     #{compiler_command} --version | tee $OUT_DIR/compiler.txt
-    CRYSTAL_PATH="$SRC/src" #{compiler_command} build --release scripts/big_num/differential.cr -o big_num_differential
+    CRYSTAL_PATH="$SRC/src" #{compiler_command} build --release -Duse_gmp scripts/big_num/differential.cr -o big_num_differential
     { uname -m; dpkg-query -W libgmp10 libgmp-dev; sha256sum $(dpkg -L libgmp10 | grep 'libgmp.so.10.[0-9.]*$'); } | tee $OUT_DIR/host.txt
     set +e
     #{runs.join("\n")}
@@ -197,6 +198,8 @@ def run_on_github(seeds, count, options)
   arguments = ["--subject", options[:subject], "--max-bits", options[:max_bits].to_s]
   arguments += ["--ops", options[:ops]] if options[:ops]
   workflow = workflow.gsub("__SEEDS__", seeds.join(" ")).gsub("__COUNT__", count.to_s).gsub("__ARGUMENTS__", arguments.shelljoin)
+  workflow = workflow.gsub(DEFAULT_BENCH_BRANCH, options[:branch])
+  bench_branch = options[:branch]
   worktree = File.join(OUT, "github-worktree")
   FileUtils.rm_rf(worktree)
   system("git", "worktree", "add", "--detach", worktree, "HEAD", exception: true)
@@ -213,11 +216,11 @@ def run_on_github(seeds, count, options)
   system("git", "-C", worktree, "add", ".github/workflows", exception: true)
   system("git", "-C", worktree, "commit", "-q", "-m", "bench: BigNum differential on ubuntu-24.04 x86-64", exception: true)
   head = `git -C #{worktree.shellescape} rev-parse HEAD`.strip
-  system("git", "-C", worktree, "push", "-q", "--force", "origin", "HEAD:refs/heads/#{BENCH_BRANCH}", exception: true)
-  puts "pushed #{BENCH_BRANCH} at #{head}; waiting for the run"
+  system("git", "-C", worktree, "push", "-q", "--force", "origin", "HEAD:refs/heads/#{bench_branch}", exception: true)
+  puts "pushed #{bench_branch} at #{head}; waiting for the run"
   run_id = nil
   60.times do
-    run_id = `gh run list --branch #{BENCH_BRANCH} --commit #{head} --json databaseId --jq '.[0].databaseId'`.strip
+    run_id = `gh run list --branch #{bench_branch} --commit #{head} --json databaseId --jq '.[0].databaseId'`.strip
     break unless run_id.empty?
     sleep 10
   end
@@ -227,7 +230,7 @@ def run_on_github(seeds, count, options)
   system("gh", "run", "download", run_id, "--dir", File.join(OUT, "github-artifacts"))
   Dir.glob(File.join(OUT, "github-artifacts", "*", "*")).each { |path| FileUtils.cp_r(path, OUT) }
   unless options[:keep_branch]
-    system("git", "push", "-q", "origin", "--delete", BENCH_BRANCH)
+    system("git", "push", "-q", "origin", "--delete", bench_branch)
   end
   system("git", "worktree", "remove", "--force", worktree)
 end

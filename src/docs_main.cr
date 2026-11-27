@@ -6,7 +6,11 @@ require "./annotations"
 require "./compiler/crystal/macros"
 
 require "./*"
-require "./big/**"
+# `src/big/gmp/` holds the `-Duse_gmp` versions of the big types, which
+# define the same types as the default build, so the docs load the entry file.
+require "./big"
+require "./big/json"
+require "./big/yaml"
 # Compress::Deflate has two backends (compress/deflate/lib_z and
 # compress/deflate/mica) that define the same classes; the entry files choose
 # one with `flag?(:use_libz)`, so the docs load them rather than a `**` glob.

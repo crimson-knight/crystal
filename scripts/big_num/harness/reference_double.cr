@@ -122,7 +122,13 @@ module G2Harness
       end
 
       def {{op.id}}(other : ::Int::Primitive) : self
-        wrap(@value {{op.id}} other)
+        # BigInt#%(Int) negates a for a negative primitive; GMP's fdiv_r
+        # through a BigInt divisor is the contract (see operations.cr).
+        {% if op == "%" %}
+          wrap(@value % BigInt.new(other))
+        {% else %}
+          wrap(@value {{op.id}} other)
+        {% end %}
       end
     {% end %}
 
@@ -145,6 +151,33 @@ module G2Harness
     def tdivmod(other : ReferenceDouble | ::Int::Primitive) : {self, self}
       divisor = other.is_a?(ReferenceDouble) ? other.value : other
       {wrap(@value.tdiv(divisor)), ReferenceDouble.new(@value.remainder(divisor))}
+    end
+
+    # The engine raises DivisionByZeroError where GMP's unsafe_* faults.
+    {% for pair in [{"unsafe_floored_div", "//"}, {"unsafe_floored_mod", "%"}, {"unsafe_truncated_div", "tdiv"}, {"unsafe_truncated_mod", "remainder"}] %}
+      def {{pair[0].id}}(other : ReferenceDouble | ::Int::Primitive) : self
+        divisor = other.is_a?(ReferenceDouble) ? other.value : BigInt.new(other)
+        raise DivisionByZeroError.new if divisor.zero?
+        wrap(@value.{{pair[0].id}}(divisor))
+      end
+    {% end %}
+
+    def unsafe_floored_divmod(other : ReferenceDouble | ::Int::Primitive) : {self, self}
+      divisor = other.is_a?(ReferenceDouble) ? other.value : other
+      raise DivisionByZeroError.new if divisor.zero?
+      quotient, remainder = @value.unsafe_floored_divmod(divisor)
+      {wrap(quotient), ReferenceDouble.new(remainder)}
+    end
+
+    def unsafe_truncated_divmod(other : ReferenceDouble | ::Int::Primitive) : {self, self}
+      divisor = other.is_a?(ReferenceDouble) ? other.value : other
+      raise DivisionByZeroError.new if divisor.zero?
+      quotient, remainder = @value.unsafe_truncated_divmod(divisor)
+      {wrap(quotient), ReferenceDouble.new(remainder)}
+    end
+
+    def divexact(other : ReferenceDouble) : self
+      wrap(GMPOracle.divexact(@value, other.value))
     end
 
     def **(exponent : ::Int) : self
@@ -208,8 +241,10 @@ module G2Harness
       wrap(@value.gcd(other.value))
     end
 
+    # The engine contract is mpz_gcd with the primitive as a BigInt (the
+    # BigInt wrapper narrows the result to BigInt#gcd(Int)'s type).
     def gcd(other : ::Int::Primitive) : self
-      wrap(@value.gcd(other).to_big_i)
+      wrap(@value.gcd(BigInt.new(other)))
     end
 
     def lcm(other : ReferenceDouble) : self
@@ -261,8 +296,12 @@ module G2Harness
       plant(@value.to_f64)
     end
 
-    def to_s(base : Int32 = 10, upcase : Bool = false) : String
-      plant(@value.to_s(base, upcase: upcase))
+    def to_s(base : Int32 = 10, upcase : Bool = false, *, precision : Int32 = 1) : String
+      plant(@value.to_s(base, upcase: upcase, precision: precision))
+    end
+
+    def size_in_base(base : Int32) : Int64
+      plant(LibGMP.sizeinbase(@value, base).to_i64)
     end
   end
 end
