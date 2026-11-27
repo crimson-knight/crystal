@@ -814,34 +814,42 @@ module Crystal::BigNum
       end
     end
 
+    # ---- Number theory (in `NumberTheory`) ----
+
     def **(exponent : Int) : Integer
-      raise NotImplementedError.new("Crystal::BigNum::Integer#** (G2e)")
+      NumberTheory.pow(self, exponent)
     end
 
-    {% for name in %w(gcd lcm) %}
-      def {{ name.id }}(other : Integer) : Integer
-        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2e)" }})
-      end
+    def gcd(other : Integer) : Integer
+      NumberTheory.gcd(self, other)
+    end
 
-      def {{ name.id }}(other : ::Int::Primitive) : Integer
-        raise NotImplementedError.new({{ "Crystal::BigNum::Integer#" + name + " (G2e)" }})
-      end
-    {% end %}
+    def gcd(other : ::Int::Primitive) : Integer
+      NumberTheory.gcd(self, Integer.new(other))
+    end
+
+    def lcm(other : Integer) : Integer
+      NumberTheory.lcm(self, other)
+    end
+
+    def lcm(other : ::Int::Primitive) : Integer
+      NumberTheory.lcm(self, Integer.new(other))
+    end
 
     def isqrt : Integer
-      raise NotImplementedError.new("Crystal::BigNum::Integer#isqrt (G2e)")
+      NumberTheory.isqrt(self)
     end
 
     def self.factorial(n : Int) : Integer
-      raise NotImplementedError.new("Crystal::BigNum::Integer.factorial (G2e)")
+      NumberTheory.factorial(n)
     end
 
     def remove(factor : Integer) : {Integer, UInt64}
-      raise NotImplementedError.new("Crystal::BigNum::Integer#remove (G2e)")
+      NumberTheory.remove(self, factor)
     end
 
     def invert(modulus : Integer) : Integer?
-      raise NotImplementedError.new("Crystal::BigNum::Integer#invert (G2e)")
+      NumberTheory.invert(self, modulus)
     end
   end
 end

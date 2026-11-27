@@ -241,8 +241,10 @@ module G2Harness
       wrap(@value.gcd(other.value))
     end
 
+    # The engine contract is mpz_gcd with the primitive as a BigInt (the
+    # BigInt wrapper narrows the result to BigInt#gcd(Int)'s type).
     def gcd(other : ::Int::Primitive) : self
-      wrap(@value.gcd(other).to_big_i)
+      wrap(@value.gcd(BigInt.new(other)))
     end
 
     def lcm(other : ReferenceDouble) : self
