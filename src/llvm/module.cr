@@ -130,6 +130,59 @@ class LLVM::Module
     produced > 0
   end
 
+  # Moves the functions of the namespaces named by *list_of_prefixes* out of
+  # this unoptimized module into an island module and returns the island's
+  # bitcode, so the two modules can be optimized and compiled on two threads.
+  # The receiver owns the buffer: it parses it into a context of its own and
+  # disposes of it.
+  #
+  # The island holds every defined function whose name, after an optional
+  # leading `*` or `~`, starts with one of the prefixes (such as
+  # `"Regex::Mica::"`), and every function that only island functions call.
+  # Each module also gets `available_externally` copies of the small
+  # functions (at most *import_instruction_limit* instructions, followed
+  # *import_depth* levels deep) it calls in the other, and the island copies
+  # of the constants it reads, so inlining across the boundary is kept. Global
+  # variables stay in this module.
+  #
+  # This module is changed in place: the island's functions become
+  # declarations (or `available_externally` copies) here, and every
+  # definition one module refers to in the other is promoted the way
+  # `#split_to_bitcode` promotes local definitions.
+  #
+  # Returns `nil`, leaving the module unchanged, when no function belongs to
+  # the island or `#can_be_split?` is false.
+  def split_off_island_to_bitcode(list_of_prefixes : Enumerable(String), import_instruction_limit : Int32,
+                                  import_depth : Int32) : MemoryBuffer?
+    list_of_prefix_pointers = list_of_prefixes.to_a.map(&.to_unsafe)
+    buffer = LibLLVMExt.split_off_island_to_bitcode(self, list_of_prefix_pointers, list_of_prefix_pointers.size,
+      import_instruction_limit, import_depth)
+    MemoryBuffer.new(buffer) unless buffer.null?
+  end
+
+  # The names of the functions and global variables this module declares and
+  # uses (intrinsics left out): what another object of the link must define.
+  def list_of_referenced_declaration_names : Array(String)
+    list_of_names = [] of String
+    LibLLVMExt.for_each_referenced_declaration(self, ->(data, name, length) {
+      Box(Array(String)).unbox(data) << String.new(name, length)
+      nil
+    }, Box.box(list_of_names))
+    list_of_names
+  end
+
+  # Makes local again (internal, default visibility) each definition that
+  # `#split_off_island_to_bitcode` promoted in this module and that is not
+  # named in *list_of_referenced_names*, the declarations the other module
+  # of the split still uses once optimized. A pass such as `globaldce` can
+  # then remove the ones this module no longer uses either.
+  #
+  # Returns how many definitions were made local.
+  def internalize_unreferenced_promotions(list_of_referenced_names : Array(String)) : Int32
+    list_of_name_pointers = list_of_referenced_names.map(&.to_unsafe)
+    LibLLVMExt.internalize_unreferenced_promotions(self, list_of_name_pointers, list_of_name_pointers.size).to_i32
+  end
+
   # Receives the parts of `#split_to_bitcode` without letting an exception
   # escape into LLVM.
   private class SplitHandoff

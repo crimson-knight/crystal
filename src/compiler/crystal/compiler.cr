@@ -204,6 +204,30 @@ module Crystal
     # optimized program is the same whatever the number of parts.
     property release_units : Int32 = 8
 
+    # The namespaces whose functions an optimized build split into parts
+    # (`--release`) moves out of the program module into an island module of
+    # their own before optimizing (see `#release_islands?`): self-contained
+    # engines of the standard library, which call little of the rest of the
+    # program and which little of the rest calls. Every function that only
+    # these call joins them.
+    RELEASE_ISLAND_NAMESPACES = {"Regex::Mica::", "YAML::Mica::", "Crystal::Mica::", "Crystal::BigNum::"}
+
+    # The most instructions of a function that one module of a build with an
+    # island copies from the other (as `available_externally`), so calls
+    # across the boundary can still be inlined.
+    RELEASE_ISLAND_IMPORT_INSTRUCTION_LIMIT = 64
+
+    # How many levels of calls below a copied function are copied too.
+    RELEASE_ISLAND_IMPORT_DEPTH = 2
+
+    # If `true` (the default), an `O3` build that is split into parts (see
+    # `#release_units`) moves the functions of `RELEASE_ISLAND_NAMESPACES` into
+    # an island module that is optimized and emitted on a thread of its own
+    # while the rest of the program is optimized as a whole and split into
+    # parts. With `false` (`--no-release-islands`) the whole program is
+    # optimized as one module. The program behaves the same either way.
+    property? release_islands : Bool = true
+
     # The default of `#resident_ir_megabytes`. A program of 300 Grant models
     # (about 10 GB of IR) generates its IR in the same time with 256 MB in
     # memory as with 1 GB, and its peak is lower by about 1.3 GB. This
@@ -837,6 +861,7 @@ module Crystal
       if release_parts > 1
         current_bc_flags += "|parts=#{release_parts}"
       end
+      current_bc_flags += "|islands" if release_islands_for?(release_parts)
       current_bc_flags
     end
 
@@ -1022,6 +1047,12 @@ module Crystal
       {% end %}
 
       @release_units.clamp(1..@n_threads.clamp(1..))
+    end
+
+    # Whether a build emitted as *part_count* parts splits off an island
+    # module (see `#release_islands?`): only an `O3` build in parts does.
+    protected def release_islands_for?(part_count : Int32) : Bool
+      @release_islands && part_count > 1 && @optimization_mode.o3?
     end
 
     private def with_file_lock(output_dir, &)
@@ -1422,6 +1453,10 @@ module Crystal
       end
 
       output_filename = File.expand_path(output_filename)
+
+      # A unit that splits off an island (see `Compiler#release_islands?`) knows
+      # whether it has an island object only once it is compiled.
+      object_names = units.flat_map &.object_filenames
 
       # Incremental optimization: skip linking when all .o files were reused
       # from cache and the output binary already exists. The linker inputs are
@@ -2482,6 +2517,16 @@ module Crystal
       {% end %}
     end
 
+    # Removes the definitions of *llvm_mod* that are local and unused (LLVM's
+    # `globaldce` pass).
+    protected def remove_unused_globals(llvm_mod, target_machine) : Nil
+      {% unless LibLLVM::IS_LT_130 %}
+        LLVM::PassBuilderOptions.new do |options|
+          LLVM.run_passes(llvm_mod, "globaldce", target_machine, options)
+        end
+      {% end %}
+    end
+
     protected def run_linker(linker_name, command, args)
       print_command(command, args) if verbose?
       missing_library_hint = MissingLibraryHint.new
@@ -2950,6 +2995,9 @@ module Crystal
           return false
         end
         return true if cached_bitcode.different?
+        # Only the record says whether an island object belongs with the
+        # objects (see `#object_filenames`).
+        return true if splits_off_island?
 
         return true unless object_names.all? { |name| File.exists?(name) && File.size(name) > 0 }
         # The build that left the objects had more parts.
@@ -3181,6 +3229,9 @@ module Crystal
           return false
         end
         return true if cached_bitcode.different?
+        # Only the record says whether an island object belongs with the
+        # objects (see `#object_filenames`).
+        return true if splits_off_island?
 
         return true unless File.exists?(bc_name)
         # The build that left the objects spilled this module in parts.
@@ -3230,7 +3281,10 @@ module Crystal
         File.delete?(hash_record_name)
         File.delete?(object_name)
         object_names.each { |name| File.delete?(name) }
-        delete_part_objects_of_every_count if @original_name == "_main"
+        if @original_name == "_main"
+          delete_part_objects_of_every_count
+          File.delete?(island_object_name)
+        end
       end
 
       private def update_bitcode_cache
@@ -3270,18 +3324,175 @@ module Crystal
         end
       end
 
+      # Emits the unit's module as `part_count` part objects and, when the
+      # unit splits off an island (see `Compiler#release_islands?`), an
+      # island object. The island leaves the module before it is optimized,
+      # and is optimized and emitted on a thread of its own while the rest of
+      # the module is optimized and split into parts.
+      private def compile_parts_to_objects
+        if island_bitcode = split_off_island
+          compile_parts_and_island_to_objects(island_bitcode)
+        else
+          optimize_and_compile_parts
+        end
+      end
+
+      # Moves the island's functions out of the unoptimized module and
+      # returns the island module's bitcode, or `nil` when the unit splits
+      # off no island or no function belongs to it.
+      private def split_off_island : LLVM::MemoryBuffer?
+        return unless splits_off_island?
+
+        llvm_mod.split_off_island_to_bitcode(Compiler::RELEASE_ISLAND_NAMESPACES,
+          Compiler::RELEASE_ISLAND_IMPORT_INSTRUCTION_LIMIT, Compiler::RELEASE_ISLAND_IMPORT_DEPTH)
+      end
+
+      # Optimizes the unit's module and the island module in *island_bitcode*
+      # at the same time, then emits the island object and the part objects.
+      #
+      # The split promoted every definition one module refers to in the
+      # other. Once both are optimized, each tells the other which of those it
+      # still uses (inlining removed most uses), and each makes the others
+      # local again and removes the ones it no longer uses itself, so the
+      # program keeps about the functions of a whole-module build.
+      private def compile_parts_and_island_to_objects(island_bitcode : LLVM::MemoryBuffer) : Nil
+        {% if flag?(:without_mt) %}
+          island = IslandModule.new(island_bitcode)
+          begin
+            optimize_module island.llvm_mod
+            optimize_module llvm_mod
+            drop_promotions_unused_by(llvm_mod, island.llvm_mod.list_of_referenced_declaration_names)
+            drop_promotions_unused_by(island.llvm_mod, llvm_mod.list_of_referenced_declaration_names)
+            emit_object island.llvm_mod, island_object_name
+          ensure
+            island.dispose
+          end
+          compile_optimized_parts
+        {% else %}
+          # Each channel is closed once its names are sent, or once its side
+          # stopped on a failure, so the other side never waits for nothing.
+          names_the_island_uses = Channel(Array(String)).new(1)
+          names_the_main_module_uses = Channel(Array(String)).new(1)
+          island_failure = nil.as(Exception?)
+          island_compiled = WaitGroup.new
+
+          island_compiled.spawn do
+            begin
+              island = IslandModule.new(island_bitcode)
+              begin
+                optimize_module island.llvm_mod
+                names_the_island_uses.send(island.llvm_mod.list_of_referenced_declaration_names)
+                names_the_island_uses.close
+                if list_of_names = names_the_main_module_uses.receive?
+                  drop_promotions_unused_by(island.llvm_mod, list_of_names)
+                end
+                emit_object island.llvm_mod, island_object_name
+              ensure
+                island.dispose
+              end
+            rescue ex
+              island_failure = ex
+            ensure
+              names_the_island_uses.close
+            end
+          end
+
+          begin
+            optimize_module llvm_mod
+            names_the_main_module_uses.send(llvm_mod.list_of_referenced_declaration_names)
+            names_the_main_module_uses.close
+            if list_of_names = names_the_island_uses.receive?
+              drop_promotions_unused_by(llvm_mod, list_of_names)
+            end
+            compile_optimized_parts
+          ensure
+            names_the_main_module_uses.close
+            island_compiled.wait
+          end
+
+          if failure = island_failure
+            raise failure
+          end
+        {% end %}
+      end
+
+      # The island module of a unit in parts, parsed into an LLVM context of
+      # its own so that it can be optimized and emitted on another thread
+      # than the unit's module.
+      private class IslandModule
+        getter llvm_mod : LLVM::Module
+
+        # Parses the island in *bitcode*, which it disposes of.
+        def initialize(bitcode : LLVM::MemoryBuffer)
+          @context = LLVM::Context.new
+          @llvm_mod = IslandModule.parse(bitcode, @context)
+        end
+
+        # Parses *bitcode* into *context*, disposing of the bitcode, and of the
+        # context when the bitcode cannot be parsed.
+        protected def self.parse(bitcode : LLVM::MemoryBuffer, context : LLVM::Context) : LLVM::Module
+          LLVM::Module.parse(bitcode, context)
+        rescue ex
+          context.dispose
+          raise ex
+        ensure
+          bitcode.dispose
+        end
+
+        def dispose : Nil
+          @context.dispose
+        end
+      end
+
+      # Makes local again the definitions the island split promoted in
+      # *llvm_module* that are not named in *list_of_referenced_names* (the
+      # declarations the other optimized module uses), and removes the ones
+      # *llvm_module* no longer uses.
+      private def drop_promotions_unused_by(llvm_module : LLVM::Module, list_of_referenced_names : Array(String)) : Nil
+        return if llvm_module.internalize_unreferenced_promotions(list_of_referenced_names) == 0
+
+        target_machine = compiler.create_target_machine
+        begin
+          compiler.remove_unused_globals llvm_module, target_machine
+        ensure
+          target_machine.dispose
+        end
+      end
+
+      private def optimize_module(llvm_module : LLVM::Module) : Nil
+        target_machine = compiler.create_target_machine
+        begin
+          compiler.optimize llvm_module, target_machine
+        ensure
+          target_machine.dispose
+        end
+      end
+
+      # Emits *llvm_module* as the object file *object_name*: written under a
+      # temporary name, then renamed into place.
+      private def emit_object(llvm_module : LLVM::Module, object_name : String) : Nil
+        target_machine = compiler.create_target_machine
+        temporary_object_name = "#{object_name}.tmp"
+        begin
+          target_machine.emit_obj_to_file llvm_module, temporary_object_name
+        ensure
+          target_machine.dispose
+        end
+        File.rename(temporary_object_name, object_name)
+      end
+
       # Optimizes the module as a whole, splits it into `part_count` modules
       # and emits each part's object file on its own thread. Each part is
       # handed over as bitcode and parsed into an LLVM context of its own,
       # because contexts cannot be shared across threads.
-      private def compile_parts_to_objects
-        target_machine = compiler.create_target_machine
-        begin
-          compiler.optimize llvm_mod, target_machine
-        ensure
-          target_machine.dispose
-        end
+      private def optimize_and_compile_parts
+        optimize_module llvm_mod
+        compile_optimized_parts
+      end
 
+      # Splits the optimized module into `part_count` modules and emits each
+      # part's object file on its own thread.
+      private def compile_optimized_parts
         list_of_part_object_names = object_names
 
         {% if flag?(:without_mt) %}
@@ -3336,14 +3547,7 @@ module Crystal
         begin
           part_module = LLVM::Module.parse(bitcode, part_context)
           bitcode.dispose
-          target_machine = compiler.create_target_machine
-          temporary_part_object_name = "#{part_object_name}.tmp"
-          begin
-            target_machine.emit_obj_to_file part_module, temporary_part_object_name
-          ensure
-            target_machine.dispose
-          end
-          File.rename(temporary_part_object_name, part_object_name)
+          emit_object part_module, part_object_name
         ensure
           bitcode.dispose
           part_context.dispose
@@ -3417,11 +3621,33 @@ module Crystal
         @name + @object_extension
       end
 
-      # The object files this unit is linked as: one, or one per part.
+      # The object files this unit is linked as: one, or one per part, and
+      # then the island object when the unit split one off (see
+      # `#compile_parts_to_objects`).
       def object_filenames : Array(String)
         return [object_filename] if @part_count == 1
 
-        Array.new(@part_count) { |index| "#{@name}.p#{index}of#{@part_count}#{@object_extension}" }
+        list_of_object_filenames = Array.new(@part_count) { |index| "#{@name}.p#{index}of#{@part_count}#{@object_extension}" }
+        # Every object file of the unit is deleted before it is compiled, so
+        # an island object next to the parts was built with them.
+        list_of_object_filenames << island_object_filename if splits_off_island? && File.exists?(island_object_name)
+        list_of_object_filenames
+      end
+
+      # The object file of the functions a unit in parts splits off into an
+      # island module (see `Compiler#release_islands?`).
+      def island_object_filename : String
+        "#{@name}.island#{@object_extension}"
+      end
+
+      # The path of `#island_object_filename` in the unit's output directory.
+      def island_object_name : String
+        Crystal.relative_filename("#{@output_dir}/#{island_object_filename}")
+      end
+
+      # Whether this unit splits off an island module before it is optimized.
+      private def splits_off_island? : Bool
+        compiler.release_islands_for?(@part_count)
       end
 
       def object_names : Array(String)

@@ -37,6 +37,9 @@ private def compile_release_units_program(directory, release_units, executable_n
   compiler = Crystal::Compiler.new
   compiler.release!
   compiler.release_units = release_units
+  # These specs compare the part split with a single object; the island
+  # has specs of its own.
+  compiler.release_islands = false
   compiler.n_threads = 8
   ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
   result = compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
@@ -47,6 +50,155 @@ end
 private def release_part_objects(directory)
   cache_directory = Crystal::CacheDir.instance.directory_for(File.join(directory, "program.cr"))
   Dir.children(cache_directory).select(&.matches?(/\A_main\.o3\.p\d+of\d+\.o\z/)).sort
+end
+
+# A program whose release build has an island (see `Compiler#release_islands?`):
+# it runs the Mica Regex and YAML engines and the pure BigNum engine.
+private ISLAND_PROGRAM = <<-CRYSTAL
+  require "yaml"
+  require "big"
+
+  text = "alpha=1, beta=22, gamma=333"
+  puts text.scan(/([a-z]+)=([0-9]+)/).map { |match| "\#{match[1]}:\#{match[2]}" }.join(" ")
+  puts text.sub(/b(e+)ta/) { |word| word.upcase }
+  document = YAML.parse("list:\n  - 1\n  - two\nname: island\n")
+  puts document["list"].as_a.size, document["name"].as_s
+  puts({"key" => [1, 2]}.to_yaml)
+  puts (BigInt.new(2) ** 100 * BigInt.new("123456789")).to_s
+  puts BigInt.new("987654321987654321") // 12345
+  CRYSTAL
+
+private ISLAND_PROGRAM_OUTPUT = <<-OUTPUT
+  alpha:1 beta:22 gamma:333
+  alpha=1, BETA=22, gamma=333
+  2
+  island
+  ---
+  key:
+  - 1
+  - 2
+  156500072678099869064174771821728497664
+  80004400323017
+  OUTPUT
+
+# Code that the island and the program module share across the boundary:
+# class variables, a mutable constant, string literals, thread-local
+# storage, blocks and an exception raised in the island.
+private ISLAND_BOUNDARY_PROGRAM = <<-'CRYSTAL'
+  module Regex::Mica::BoundaryProbe
+    @@counter = 0
+    TABLE = [1, 2, 3]
+    @[ThreadLocal]
+    @@thread_counter = 5
+
+    def self.bump
+      @@counter += 1
+    end
+
+    def self.counter
+      @@counter
+    end
+
+    def self.grow_table
+      TABLE << TABLE.size + 1
+    end
+
+    def self.table_id
+      TABLE.object_id
+    end
+
+    def self.literal
+      "island-literal"
+    end
+
+    @[NoInline]
+    def self.raise_above_two(number)
+      raise ArgumentError.new("too big: #{number}") if number > 2
+      number
+    end
+
+    def self.next_thread_counter
+      @@thread_counter += 1
+    end
+
+    def self.call_back(&block : -> Int32)
+      block.call
+    end
+
+    def self.hit_program_side
+      ProgramSide.hit
+    end
+  end
+
+  class ProgramSide
+    @@hits = 0
+
+    def self.hit
+      @@hits += 1
+    end
+
+    def self.hits
+      @@hits
+    end
+  end
+
+  3.times { Regex::Mica::BoundaryProbe.bump }
+  puts Regex::Mica::BoundaryProbe.counter
+  Regex::Mica::BoundaryProbe.grow_table
+  puts Regex::Mica::BoundaryProbe::TABLE.inspect
+  puts Regex::Mica::BoundaryProbe::TABLE.object_id == Regex::Mica::BoundaryProbe.table_id
+  puts Regex::Mica::BoundaryProbe.literal.object_id == "island-literal".object_id
+  puts Regex::Mica::BoundaryProbe.next_thread_counter, Regex::Mica::BoundaryProbe.next_thread_counter
+  Regex::Mica::BoundaryProbe.hit_program_side
+  ProgramSide.hit
+  puts ProgramSide.hits
+  puts Regex::Mica::BoundaryProbe.call_back { ProgramSide.hits * 10 }
+  begin
+    Regex::Mica::BoundaryProbe.raise_above_two(3)
+  rescue error
+    puts error.message
+    puts error.backtrace.any?(&.includes?("raise_above_two"))
+  end
+  begin
+    Regex.new("(unclosed")
+  rescue error
+    puts error.class
+  end
+  begin
+    YAML.parse("a: [1, 2")
+  rescue error
+    puts error.class
+  end
+  CRYSTAL
+
+private ISLAND_BOUNDARY_PROGRAM_OUTPUT = "3\n[1, 2, 3, 4]\ntrue\ntrue\n6\n7\n2\n20\ntoo big: 3\ntrue\nArgumentError\nYAML::ParseException\n"
+
+private def compile_island_program(directory, executable_name, *, release_islands, source = ISLAND_PROGRAM, prelude = "prelude")
+  program = File.join(directory, "program.cr")
+  File.write(program, source)
+  executable = File.join(directory, executable_name)
+
+  compiler = Crystal::Compiler.new
+  compiler.release!
+  compiler.release_units = 4
+  compiler.release_islands = release_islands
+  compiler.prelude = prelude
+  compiler.n_threads = 8
+  ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
+  compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
+  executable
+end
+
+# Whether the release build of `directory/program.cr` left an island object in the compiler cache.
+private def island_object?(directory) : Bool
+  cache_directory = Crystal::CacheDir.instance.directory_for(File.join(directory, "program.cr"))
+  File.exists?(File.join(cache_directory, "_main.o3.island.o"))
+end
+
+# When the release build of `directory/program.cr` last wrote its island object.
+private def island_object_modification_time(directory) : Time
+  cache_directory = Crystal::CacheDir.instance.directory_for(File.join(directory, "program.cr"))
+  File.info(File.join(cache_directory, "_main.o3.island.o")).modification_time
 end
 
 private def expected_release_units_output(beta = 2)
@@ -196,6 +348,98 @@ describe "Compiler#release_units" do
       list_of_shared_names = single_order & parts_order
       list_of_shared_names.size.should be > 100
       (parts_order & list_of_shared_names).should eq(list_of_shared_names)
+    end
+  end
+end
+
+describe "Compiler#release_islands?" do
+  it "is on by default" do
+    Crystal::Compiler.new.release_islands?.should be_true
+  end
+
+  it "builds a program that uses Regex, YAML and BigInt that behaves the same with and without the island" do
+    with_tempfile("release_islands") do |directory|
+      Dir.mkdir_p(directory)
+      islands_executable = compile_island_program(directory, "islands", release_islands: true)
+      island_object?(directory).should be_true
+      release_part_objects(directory).should eq(%w[_main.o3.p0of4.o _main.o3.p1of4.o _main.o3.p2of4.o _main.o3.p3of4.o])
+      whole_executable = compile_island_program(directory, "whole", release_islands: false)
+      island_object?(directory).should be_false
+
+      Process.capture(islands_executable).should eq("#{ISLAND_PROGRAM_OUTPUT}\n")
+      Process.capture(whole_executable).should eq("#{ISLAND_PROGRAM_OUTPUT}\n")
+    end
+  end
+
+  it "shares class variables, constants, literals, thread locals, blocks and exceptions across the island boundary" do
+    with_tempfile("release_islands_boundary") do |directory|
+      Dir.mkdir_p(directory)
+      source = "require \"yaml\"\n#{ISLAND_BOUNDARY_PROGRAM}"
+      islands_executable = compile_island_program(directory, "islands", release_islands: true, source: source)
+      island_object?(directory).should be_true
+      whole_executable = compile_island_program(directory, "whole", release_islands: false, source: source)
+      island_object?(directory).should be_false
+      islands_again_executable = compile_island_program(directory, "islands_again", release_islands: true, source: source)
+      island_object?(directory).should be_true
+
+      Process.capture(islands_executable).should eq(ISLAND_BOUNDARY_PROGRAM_OUTPUT)
+      Process.capture(whole_executable).should eq(ISLAND_BOUNDARY_PROGRAM_OUTPUT)
+      Process.capture(islands_again_executable).should eq(ISLAND_BOUNDARY_PROGRAM_OUTPUT)
+    end
+  end
+
+  it "reuses the island object of an unchanged program" do
+    with_tempfile("release_islands_rebuild") do |directory|
+      Dir.mkdir_p(directory)
+      compile_island_program(directory, "first", release_islands: true)
+      first_build_time = island_object_modification_time(directory)
+      unchanged_executable = compile_island_program(directory, "unchanged", release_islands: true)
+
+      island_object_modification_time(directory).should eq(first_build_time)
+      Process.capture(unchanged_executable).should eq("#{ISLAND_PROGRAM_OUTPUT}\n")
+    end
+  end
+
+  it "links and runs a program without island functions" do
+    with_tempfile("release_islands_none") do |directory|
+      Dir.mkdir_p(directory)
+      # Every program of the standard prelude calls some Mica code, so this
+      # one has none.
+      executable = compile_island_program(directory, "plain", release_islands: true, source: <<-CRYSTAL, prelude: "empty")
+        lib LibC
+          fun putchar(character : Int32) : Int32
+        end
+
+        fun main(argc : Int32, argv : UInt8**) : Int32
+          LibC.putchar(54)
+          LibC.putchar(10)
+          0
+        end
+        CRYSTAL
+
+      island_object?(directory).should be_false
+      release_part_objects(directory).should_not be_empty
+      Process.capture(executable).should eq("6\n")
+    end
+  end
+
+  it "defines about the Crystal functions of the whole-module build, under the same names" do
+    nm = Process.find_executable("nm")
+    pending! "nm is not installed" unless nm
+
+    with_tempfile("release_islands_symbols") do |directory|
+      Dir.mkdir_p(directory)
+      islands_executable = compile_island_program(directory, "islands", release_islands: true)
+      whole_executable = compile_island_program(directory, "whole", release_islands: false)
+
+      list_of_islands_functions = function_symbol_names(nm, islands_executable).select { |name| name.includes?("::") || name.includes?("#") }
+      list_of_whole_functions = function_symbol_names(nm, whole_executable).select { |name| name.includes?("::") || name.includes?("#") }
+      list_of_islands_functions.any?(&.includes?("Regex::Mica::")).should be_true
+      # The boundary keeps some small functions from being inlined and
+      # removed on both sides, so the island build defines a few more; only
+      # a few functions of the whole-module build are inlined away instead.
+      (list_of_whole_functions - list_of_islands_functions).size.should be <= list_of_whole_functions.size // 20
+      list_of_islands_functions.size.should be <= list_of_whole_functions.size * 13 // 10
     end
   end
 end
