@@ -506,6 +506,15 @@ module Crystal
     @last_main_scope : LibLLVM::MetadataRef?
 
     def get_current_debug_scope(location)
+      # A function of another module than the current one has no scope
+      # here: its scopes are metadata of that module's LLVM context, and a
+      # debug location made in this context must not point into another
+      # one, or disposing this context reads the other context's metadata
+      # after it was freed (crimson-knight/crystal#105). Nested `in_module`
+      # calls into the same module (the type tables) put the main function
+      # back as the current one while that module is still current.
+      return nil unless LibLLVM.get_global_parent(context.fun) == @llvm_mod.to_unsafe
+
       # The main function is recognized by identity: reading a function's
       # name from LLVM allocates a string each time.
       if context.fun == @main
@@ -550,6 +559,11 @@ module Crystal
       scope = get_current_debug_scope(location)
 
       if scope
+        # A location must not refer to another context's metadata: that
+        # context may be disposed first (crimson-knight/crystal#105).
+        unless LibLLVMExt.get_md_node_context(scope) == @llvm_context.to_unsafe
+          raise "BUG: the debug scope of #{location} belongs to another LLVM context than module #{@module_info.name}"
+        end
         debug_loc = di_builder.create_debug_location(location.line_number || 1, location.column_number, scope)
         # NOTE: `di_builder.context` is only necessary for LLVM 8
         builder.set_current_debug_location(debug_loc, di_builder.context)
