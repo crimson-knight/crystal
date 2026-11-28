@@ -78,7 +78,7 @@ private ISLAND_PROGRAM_OUTPUT = <<-OUTPUT
   80004400323017
   OUTPUT
 
-private def compile_island_program(directory, executable_name, *, release_islands, source = ISLAND_PROGRAM)
+private def compile_island_program(directory, executable_name, *, release_islands, source = ISLAND_PROGRAM, prelude = "prelude")
   program = File.join(directory, "program.cr")
   File.write(program, source)
   executable = File.join(directory, executable_name)
@@ -87,6 +87,7 @@ private def compile_island_program(directory, executable_name, *, release_island
   compiler.release!
   compiler.release_units = 4
   compiler.release_islands = release_islands
+  compiler.prelude = prelude
   compiler.n_threads = 8
   ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
   compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
@@ -283,10 +284,21 @@ describe "Compiler#release_islands?" do
   it "links and runs a program without island functions" do
     with_tempfile("release_islands_none") do |directory|
       Dir.mkdir_p(directory)
-      executable = compile_island_program(directory, "plain", release_islands: true, source: "puts [3, 1, 2].sort.sum\n")
+      # Every program of the standard prelude calls some Mica code, so this
+      # one has none.
+      executable = compile_island_program(directory, "plain", release_islands: true, source: <<-CRYSTAL, prelude: "empty")
+        lib LibC
+          fun puts(string : UInt8*) : Int32
+        end
+
+        fun main(argc : Int32, argv : UInt8**) : Int32
+          LibC.puts("six")
+          0
+        end
+        CRYSTAL
 
       island_object?(directory).should be_false
-      Process.capture(executable).should eq("6\n")
+      Process.capture(executable).should eq("six\n")
     end
   end
 
