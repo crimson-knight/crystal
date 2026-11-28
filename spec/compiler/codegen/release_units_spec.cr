@@ -371,7 +371,7 @@ describe "Compiler#release_islands?" do
     end
   end
 
-  it "shares class variables, constants, literals, procs, blocks and exceptions across the island boundary" do
+  it "shares class variables, constants, literals, thread locals, blocks and exceptions across the island boundary" do
     with_tempfile("release_islands_boundary") do |directory|
       Dir.mkdir_p(directory)
       source = "require \"yaml\"\n#{ISLAND_BOUNDARY_PROGRAM}"
