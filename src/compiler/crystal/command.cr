@@ -656,6 +656,9 @@ class Crystal::Command
         opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
           compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
         end
+        opts.on("--no-release-islands", "Optimize a release build emitted in parts as one whole module (by default the self-contained Mica and BigNum engines are optimized on a thread of their own)") do
+          compiler.release_islands = false
+        end
         opts.on("--object-memory-budget MEGABYTES", "Memory the object file workers may use together (default 512 per thread, at most a fifth of this machine's memory)") do |megabytes|
           megabyte_count = megabytes.to_i64? || raise Error.new("Invalid object memory budget: #{megabytes}")
           raise Error.new("Invalid object memory budget: #{megabytes}") if megabyte_count < 1
@@ -841,6 +844,9 @@ class Crystal::Command
     end
     opts.on("--release-units NUM", "Emit an optimized single-module build as at most NUM object files in parallel (default 8, at most --threads)") do |release_units|
       compiler.release_units = release_units.to_i? || raise Error.new("Invalid release unit count: #{release_units}")
+    end
+    opts.on("--no-release-islands", "Optimize a release build emitted in parts as one whole module (by default the self-contained Mica and BigNum engines are optimized on a thread of their own)") do
+      compiler.release_islands = false
     end
     opts.on("--resident-ir-mb NUM", "Keep at most about NUM megabytes of LLVM IR in memory during IR generation, spilling idle modules to the cache directory (default #{Crystal::Compiler::DEFAULT_RESIDENT_IR_MEGABYTES}, 0 is no limit)") do |resident_ir_megabytes|
       compiler.resident_ir_megabytes = resident_ir_megabytes.to_i? || raise Error.new("Invalid amount of resident IR: #{resident_ir_megabytes}")
