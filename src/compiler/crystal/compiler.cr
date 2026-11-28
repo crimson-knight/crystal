@@ -2517,6 +2517,16 @@ module Crystal
       {% end %}
     end
 
+    # Removes the definitions of *llvm_mod* that are local and unused (LLVM's
+    # `globaldce` pass).
+    protected def remove_unused_globals(llvm_mod, target_machine) : Nil
+      {% unless LibLLVM::IS_LT_130 %}
+        LLVM::PassBuilderOptions.new do |options|
+          LLVM.run_passes(llvm_mod, "globaldce", target_machine, options)
+        end
+      {% end %}
+    end
+
     protected def run_linker(linker_name, command, args)
       print_command(command, args) if verbose?
       missing_library_hint = MissingLibraryHint.new
@@ -3320,34 +3330,11 @@ module Crystal
       # and is optimized and emitted on a thread of its own while the rest of
       # the module is optimized and split into parts.
       private def compile_parts_to_objects
-        island_bitcode = split_off_island
-
-        {% if flag?(:without_mt) %}
-          compile_part_to_object(island_bitcode, island_object_name, optimize: true) if island_bitcode
+        if island_bitcode = split_off_island
+          compile_parts_and_island_to_objects(island_bitcode)
+        else
           optimize_and_compile_parts
-        {% else %}
-          island_failure = nil.as(Exception?)
-          island_compiled = WaitGroup.new
-          if island_bitcode
-            island_compiled.spawn do
-              begin
-                compile_part_to_object(island_bitcode, island_object_name, optimize: true)
-              rescue ex
-                island_failure = ex
-              end
-            end
-          end
-
-          begin
-            optimize_and_compile_parts
-          ensure
-            island_compiled.wait
-          end
-
-          if failure = island_failure
-            raise failure
-          end
-        {% end %}
+        end
       end
 
       # Moves the island's functions out of the unoptimized module and
@@ -3360,18 +3347,152 @@ module Crystal
           Compiler::RELEASE_ISLAND_IMPORT_INSTRUCTION_LIMIT, Compiler::RELEASE_ISLAND_IMPORT_DEPTH)
       end
 
+      # Optimizes the unit's module and the island module in *island_bitcode*
+      # at the same time, then emits the island object and the part objects.
+      #
+      # The split promoted every definition one module refers to in the
+      # other. Once both are optimized, each tells the other which of those it
+      # still uses (inlining removed most uses), and each makes the others
+      # local again and removes the ones it no longer uses itself, so the
+      # program keeps about the functions of a whole-module build.
+      private def compile_parts_and_island_to_objects(island_bitcode : LLVM::MemoryBuffer) : Nil
+        {% if flag?(:without_mt) %}
+          island = IslandModule.new(island_bitcode)
+          begin
+            optimize_module island.llvm_mod
+            optimize_module llvm_mod
+            drop_promotions_unused_by(llvm_mod, island.llvm_mod.list_of_referenced_declaration_names)
+            drop_promotions_unused_by(island.llvm_mod, llvm_mod.list_of_referenced_declaration_names)
+            emit_object island.llvm_mod, island_object_name
+          ensure
+            island.dispose
+          end
+          compile_optimized_parts
+        {% else %}
+          # Each channel is closed once its names are sent, or once its side
+          # stopped on a failure, so the other side never waits for nothing.
+          names_the_island_uses = Channel(Array(String)).new(1)
+          names_the_main_module_uses = Channel(Array(String)).new(1)
+          island_failure = nil.as(Exception?)
+          island_compiled = WaitGroup.new
+
+          island_compiled.spawn do
+            begin
+              island = IslandModule.new(island_bitcode)
+              begin
+                optimize_module island.llvm_mod
+                names_the_island_uses.send(island.llvm_mod.list_of_referenced_declaration_names)
+                names_the_island_uses.close
+                if list_of_names = names_the_main_module_uses.receive?
+                  drop_promotions_unused_by(island.llvm_mod, list_of_names)
+                end
+                emit_object island.llvm_mod, island_object_name
+              ensure
+                island.dispose
+              end
+            rescue ex
+              island_failure = ex
+            ensure
+              names_the_island_uses.close
+            end
+          end
+
+          begin
+            optimize_module llvm_mod
+            names_the_main_module_uses.send(llvm_mod.list_of_referenced_declaration_names)
+            names_the_main_module_uses.close
+            if list_of_names = names_the_island_uses.receive?
+              drop_promotions_unused_by(llvm_mod, list_of_names)
+            end
+            compile_optimized_parts
+          ensure
+            names_the_main_module_uses.close
+            island_compiled.wait
+          end
+
+          if failure = island_failure
+            raise failure
+          end
+        {% end %}
+      end
+
+      # The island module of a unit in parts, parsed into an LLVM context of
+      # its own so that it can be optimized and emitted on another thread
+      # than the unit's module.
+      private class IslandModule
+        getter llvm_mod : LLVM::Module
+
+        # Parses the island in *bitcode*, which it disposes of.
+        def initialize(bitcode : LLVM::MemoryBuffer)
+          @context = LLVM::Context.new
+          @llvm_mod = IslandModule.parse(bitcode, @context)
+        end
+
+        # Parses *bitcode* into *context*, disposing of the bitcode, and of the
+        # context when the bitcode cannot be parsed.
+        protected def self.parse(bitcode : LLVM::MemoryBuffer, context : LLVM::Context) : LLVM::Module
+          LLVM::Module.parse(bitcode, context)
+        rescue ex
+          context.dispose
+          raise ex
+        ensure
+          bitcode.dispose
+        end
+
+        def dispose : Nil
+          @context.dispose
+        end
+      end
+
+      # Makes local again the definitions the island split promoted in
+      # *llvm_module* that are not named in *list_of_referenced_names* (the
+      # declarations the other optimized module uses), and removes the ones
+      # *llvm_module* no longer uses.
+      private def drop_promotions_unused_by(llvm_module : LLVM::Module, list_of_referenced_names : Array(String)) : Nil
+        return if llvm_module.internalize_unreferenced_promotions(list_of_referenced_names) == 0
+
+        target_machine = compiler.create_target_machine
+        begin
+          compiler.remove_unused_globals llvm_module, target_machine
+        ensure
+          target_machine.dispose
+        end
+      end
+
+      private def optimize_module(llvm_module : LLVM::Module) : Nil
+        target_machine = compiler.create_target_machine
+        begin
+          compiler.optimize llvm_module, target_machine
+        ensure
+          target_machine.dispose
+        end
+      end
+
+      # Emits *llvm_module* as the object file *object_name*: written under a
+      # temporary name, then renamed into place.
+      private def emit_object(llvm_module : LLVM::Module, object_name : String) : Nil
+        target_machine = compiler.create_target_machine
+        temporary_object_name = "#{object_name}.tmp"
+        begin
+          target_machine.emit_obj_to_file llvm_module, temporary_object_name
+        ensure
+          target_machine.dispose
+        end
+        File.rename(temporary_object_name, object_name)
+      end
+
       # Optimizes the module as a whole, splits it into `part_count` modules
       # and emits each part's object file on its own thread. Each part is
       # handed over as bitcode and parsed into an LLVM context of its own,
       # because contexts cannot be shared across threads.
       private def optimize_and_compile_parts
-        target_machine = compiler.create_target_machine
-        begin
-          compiler.optimize llvm_mod, target_machine
-        ensure
-          target_machine.dispose
-        end
+        optimize_module llvm_mod
+        compile_optimized_parts
+      end
 
+      # Splits the optimized module into `part_count` modules and emits each
+      # part's object file on its own thread.
+      private def compile_optimized_parts
         list_of_part_object_names = object_names
 
         {% if flag?(:without_mt) %}
@@ -3421,23 +3542,12 @@ module Crystal
         raise "BUG: --release-units split a module that LLVM cannot split"
       end
 
-      # Parses the module in *bitcode* into a context of its own and emits it
-      # as the object file *part_object_name*, optimizing it first when
-      # *optimize* is `true` (an island module is handed over unoptimized).
-      private def compile_part_to_object(bitcode, part_object_name, *, optimize = false)
+      private def compile_part_to_object(bitcode, part_object_name)
         part_context = LLVM::Context.new
         begin
           part_module = LLVM::Module.parse(bitcode, part_context)
           bitcode.dispose
-          target_machine = compiler.create_target_machine
-          temporary_part_object_name = "#{part_object_name}.tmp"
-          begin
-            compiler.optimize part_module, target_machine if optimize
-            target_machine.emit_obj_to_file part_module, temporary_part_object_name
-          ensure
-            target_machine.dispose
-          end
-          File.rename(temporary_part_object_name, part_object_name)
+          emit_object part_module, part_object_name
         ensure
           bitcode.dispose
           part_context.dispose
