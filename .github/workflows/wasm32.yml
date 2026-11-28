@@ -99,6 +99,17 @@ jobs:
       - name: Run wasm32_gc_spec.wasm
         run: wasmtime run -W exceptions=y wasm32_gc_spec.wasm
 
+      - name: Build spec/compiler-cli/fixtures/wasm32-gc-load-dump.cr
+        run: bin/crystal build spec/compiler-cli/fixtures/wasm32-gc-load-dump.cr -o wasm32_gc_load_dump.wasm --target wasm32-wasi -Dwithout_iconv -Dwithout_openssl -Dwithout_zlib -Dwithout_mt --release
+        env:
+          CRYSTAL_LIBRARY_PATH: ${{ github.workspace }}/wasm32-wasi-libs
+
+      - name: Run wasm32_gc_load_dump.wasm (automatic collections, 60,000 rounds intact)
+        shell: bash
+        run: |
+          wasmtime run -W exceptions=y wasm32_gc_load_dump.wasm 60000 | tee wasm32_gc_load_dump.out
+          grep -qx "60000 of 60000 rounds intact" wasm32_gc_load_dump.out
+
       # ── Fiber/concurrency specs (Phase 3) ──────────────────────────
       - name: Build spec/wasm32/fiber_spec.cr
         run: bin/crystal build spec/wasm32/fiber_spec.cr -o wasm32_fiber_spec.wasm --target wasm32-wasi -Dwithout_iconv -Dwithout_openssl

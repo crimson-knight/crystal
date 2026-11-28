@@ -188,6 +188,14 @@ lib LibGC
 
   $gc_no = GC_gc_no : Word
   $bytes_found = GC_bytes_found : SignedWord
+
+  {% if flag?(:wasm32) %}
+    # The number of collections a free heap block waits before the collector
+    # returns it to the system; 0 keeps every block in the heap. bdwgc has no
+    # setter for it, only this `GC_INNER` variable, which links because the
+    # wasm32 libgc is a static archive (a shared libgc would not export it).
+    $unmap_threshold = GC_unmap_threshold : Int
+  {% end %}
   # GC_on_collection_event isn't exported.  Can't collect totals without it.
   # bytes_allocd, heap_size, unmapped_bytes are macros
 
@@ -271,6 +279,15 @@ module GC
       stack_base = LibGC::StackBase.new
       stack_base.mem_base = pointerof(LibC.__stack_high).as(Void*)
       LibGC.set_stackbottom(nil, pointerof(stack_base))
+
+      # bdwgc returns heap blocks that stay free for a few collections to the
+      # system with munmap. WASI's emulated munmap can only release a whole
+      # region its own mmap returned, so unmapping part of the heap fails and
+      # the module aborts with an `unreachable` trap. Linear memory never
+      # shrinks anyway, so the collector keeps every block and reuses it.
+      # `GC.collect` calls `GC_gcollect`, which honors the threshold; only
+      # `GC_gcollect_and_unmap` forces an unmap, and the stdlib never calls it.
+      LibGC.unmap_threshold = 0
     {% end %}
 
     {% unless flag?(:without_mt) %}
