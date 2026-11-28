@@ -3530,6 +3530,7 @@ module Crystal
         "#{@name}.island#{@object_extension}"
       end
 
+      # The path of `#island_object_filename` in the unit's output directory.
       def island_object_name : String
         Crystal.relative_filename("#{@output_dir}/#{island_object_filename}")
       end
