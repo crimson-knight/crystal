@@ -63,6 +63,112 @@ void LLVMExtEnableLegacyWasmExceptionHandlingOptions() {
   }
 }
 
+#if LLVM_VERSION_MAJOR >= 17
+// Gives the local definitions of a module that is emitted as several objects
+// the names and the linkage they need so that one object can refer to what
+// another one defines (see `LLVMExtSplitModuleToBitcode` for the rules).
+class LinkPromoter {
+public:
+  explicit LinkPromoter(const Module &module)
+      // A leading \1 asks the mangler to keep the name as written, without
+      // the `_` global prefix Mach-O adds, so the promoted name starts with
+      // `l`.
+      : private_prefix(Triple(module.getTargetTriple()).isOSBinFormatMachO()
+                           ? "\1l__crystal_private."
+                           : "__crystal_private.") {}
+
+  // Renames a local definition whose name could meet another object's
+  // symbol in the link.
+  void rename(GlobalValue &value) const {
+    if (value.isDeclaration() || !value.hasLocalLinkage())
+      return;
+    // A promoted name is used by these objects alone, so it is mangled as
+    // usual (apart from the Mach-O prefix above) even if the local's name
+    // asked the mangler to keep it as written.
+    StringRef name = value.getName();
+    if (name.starts_with("\1"))
+      name = name.drop_front(1);
+    if (value.hasPrivateLinkage() || isa<GlobalVariable>(value)) {
+      value.setName(private_prefix + (name.empty() ? StringRef("unnamed") : name));
+      return;
+    }
+    bool keeps_its_name = !name.empty() && !name.starts_with("__crystal_") &&
+                          !llvm::all_of(name, is_plain_symbol_character);
+    if (keeps_its_name)
+      return;
+    value.setName(Twine("__crystal_local.") + (name.empty() ? StringRef("unnamed") : name));
+  }
+
+  // Makes a local definition external and hidden, and names an unnamed one.
+  static void externalize(GlobalValue &value) {
+    if (value.hasLocalLinkage()) {
+      value.setLinkage(GlobalValue::ExternalLinkage);
+      value.setVisibility(GlobalValue::HiddenVisibility);
+    }
+    if (!value.hasName())
+      value.setName("__llvmsplit_unnamed");
+  }
+
+  // Renames and then externalizes *value*.
+  void promote(GlobalValue &value) const {
+    rename(value);
+    externalize(value);
+  }
+
+private:
+  static bool is_plain_symbol_character(char character) {
+    return isAlnum(character) || character == '_' || character == '.' ||
+           character == '$';
+  }
+
+  StringRef private_prefix;
+};
+
+// Calls `callback` with every global value that `constant` refers to,
+// looking through constant expressions and aggregates (but not through
+// global variables' initializers). `visited` keeps a constant from being
+// looked into twice.
+template <typename Callback>
+void LLVMExtForEachGlobalIn(const Constant *constant,
+                            SmallPtrSetImpl<const Constant *> &visited,
+                            Callback &&callback) {
+  if (auto *value = dyn_cast<GlobalValue>(constant)) {
+    callback(const_cast<GlobalValue *>(value));
+    return;
+  }
+  if (!visited.insert(constant).second)
+    return;
+  for (const Use &operand : constant->operands())
+    if (auto *operand_constant = dyn_cast<Constant>(operand.get()))
+      LLVMExtForEachGlobalIn(operand_constant, visited, callback);
+}
+
+// Calls `callback` with every global value that the body of `function`
+// refers to (its instructions' operands and its personality function).
+template <typename Callback>
+void LLVMExtForEachGlobalUsedBy(const Function &function,
+                                SmallPtrSetImpl<const Constant *> &visited,
+                                Callback &&callback) {
+  if (function.hasPersonalityFn())
+    LLVMExtForEachGlobalIn(function.getPersonalityFn(), visited, callback);
+  for (const BasicBlock &block : function)
+    for (const Instruction &instruction : block)
+      for (const Use &operand : instruction.operands())
+        if (auto *constant = dyn_cast<Constant>(operand.get()))
+          LLVMExtForEachGlobalIn(constant, visited, callback);
+}
+
+// Calls `callback` with every function that `function` calls directly.
+template <typename Callback>
+void LLVMExtForEachDirectCallee(const Function &function, Callback &&callback) {
+  for (const BasicBlock &block : function)
+    for (const Instruction &instruction : block)
+      if (auto *call = dyn_cast<CallBase>(&instruction))
+        if (Function *callee = call->getCalledFunction())
+          callback(callee);
+}
+#endif
+
 } // namespace
 
 extern "C" {
@@ -278,61 +384,26 @@ unsigned LLVMExtSplitModuleToBitcode(LLVMModuleRef M, unsigned parts,
 #if LLVM_VERSION_MAJOR >= 17
   Module &module = *unwrap(M);
 
-  auto is_plain_symbol_character = [](char character) {
-    return isAlnum(character) || character == '_' || character == '.' ||
-           character == '$';
-  };
-  // A leading \1 asks the mangler to keep the name as written, without the
-  // `_` global prefix Mach-O adds, so the promoted name starts with `l`.
-  bool is_mach_o = Triple(module.getTargetTriple()).isOSBinFormatMachO();
-  StringRef private_prefix = is_mach_o ? "\1l__crystal_private." : "__crystal_private.";
-
-  auto rename_local = [&](GlobalValue &value) {
-    if (value.isDeclaration() || !value.hasLocalLinkage())
-      return;
-    // A promoted name is used by these parts alone, so it is mangled as usual
-    // (apart from the Mach-O prefix above) even if the local's name asked
-    // the mangler to keep it as written.
-    StringRef name = value.getName();
-    if (name.starts_with("\1"))
-      name = name.drop_front(1);
-    if (value.hasPrivateLinkage() || isa<GlobalVariable>(value)) {
-      value.setName(private_prefix + (name.empty() ? StringRef("unnamed") : name));
-      return;
-    }
-    bool keeps_its_name = !name.empty() && !name.starts_with("__crystal_") &&
-                          !llvm::all_of(name, is_plain_symbol_character);
-    if (keeps_its_name)
-      return;
-    value.setName(Twine("__crystal_local.") + (name.empty() ? StringRef("unnamed") : name));
-  };
+  LinkPromoter promoter(module);
   for (Function &function : module)
-    rename_local(function);
+    promoter.rename(function);
   for (GlobalVariable &variable : module.globals())
-    rename_local(variable);
+    promoter.rename(variable);
   for (GlobalAlias &alias : module.aliases())
-    rename_local(alias);
+    promoter.rename(alias);
   for (GlobalIFunc &ifunc : module.ifuncs())
-    rename_local(ifunc);
+    promoter.rename(ifunc);
 
-// Make every local definition external and hidden, and name the unnamed
-// ones, so each part can refer to what another part defines.
-auto externalize = [](GlobalValue &value) {
-  if (value.hasLocalLinkage()) {
-    value.setLinkage(GlobalValue::ExternalLinkage);
-    value.setVisibility(GlobalValue::HiddenVisibility);
-  }
-  if (!value.hasName())
-    value.setName("__llvmsplit_unnamed");
-};
-for (Function &function : module)
-  externalize(function);
-for (GlobalVariable &variable : module.globals())
-  externalize(variable);
-for (GlobalAlias &alias : module.aliases())
-  externalize(alias);
-for (GlobalIFunc &ifunc : module.ifuncs())
-  externalize(ifunc);
+  // Make every local definition external and hidden, and name the unnamed
+  // ones, so each part can refer to what another part defines.
+  for (Function &function : module)
+    LinkPromoter::externalize(function);
+  for (GlobalVariable &variable : module.globals())
+    LinkPromoter::externalize(variable);
+  for (GlobalAlias &alias : module.aliases())
+    LinkPromoter::externalize(alias);
+  for (GlobalIFunc &ifunc : module.ifuncs())
+    LinkPromoter::externalize(ifunc);
 
 // Assign each definition its part. Functions and global variables are cut
 // into contiguous runs in module order; members of a comdat stay with the
@@ -399,6 +470,230 @@ for (unsigned part_index = 0; part_index < parts; ++part_index) {
   return index;
 #else
   return 0;
+#endif
+}
+
+// Move the functions of self-contained namespaces out of an unoptimized
+// module into an "island" module of their own and hand that module back as
+// bitcode, so the two modules can be optimized and emitted on two threads.
+//
+// The island holds every defined function whose name, after an optional
+// leading `*` or `~`, starts with one of the `prefix_count` strings of
+// `prefixes`, and every defined function whose only uses are direct calls
+// from island functions (repeated to a fixed point, which brings in the
+// generic instances only the island calls, such as `Array(Regex::Mica::Node)`
+// methods). Functions in a comdat or named by an alias stay where they are.
+//
+// So that inlining across the boundary keeps the hot paths fast, each module
+// also gets `available_externally` copies of what it calls in the other: the
+// island of the functions with at most `import_instruction_limit`
+// instructions that its functions call directly (and of the small functions
+// those call, `import_depth` levels deep), and of the constant global
+// variables they read; the main module of the island's small functions that
+// it calls. Global variables are defined in the main module only. Every
+// function and variable keeps exactly one real definition, in its home
+// module.
+//
+// Every definition one module refers to in the other is promoted the way
+// `LLVMExtSplitModuleToBitcode` promotes local definitions, and everything
+// else in the island is a declaration. The main module is changed in place:
+// the island's functions become declarations (or `available_externally`
+// copies) in it. The island is serialized because LLVM contexts are not
+// thread-safe: the receiver parses it into a context of its own. The caller
+// owns the returned buffer and must dispose of it.
+//
+// Returns null without changing the module when no function belongs to the
+// island, or when `LLVMExtModuleCanBeSplit` is false for it.
+LLVMMemoryBufferRef LLVMExtSplitOffIslandToBitcode(LLVMModuleRef M,
+                                                   const char *const *prefixes,
+                                                   unsigned prefix_count,
+                                                   unsigned import_instruction_limit,
+                                                   unsigned import_depth) {
+  if (!LLVMExtModuleCanBeSplit(M))
+    return nullptr;
+#if LLVM_VERSION_MAJOR >= 17
+  Module &module = *unwrap(M);
+
+  SmallPtrSet<const GlobalObject *, 16> aliased_objects;
+  for (const GlobalAlias &alias : module.aliases())
+    if (const GlobalObject *object = alias.getAliaseeObject())
+      aliased_objects.insert(object);
+  auto can_move = [&](const Function &function) {
+    return !function.isDeclaration() && !function.hasAvailableExternallyLinkage() &&
+           !function.hasComdat() && function.hasName() &&
+           !aliased_objects.contains(&function);
+  };
+  auto has_island_name = [&](const Function &function) {
+    StringRef name = function.getName();
+    if (name.starts_with("*") || name.starts_with("~"))
+      name = name.drop_front(1);
+    for (unsigned prefix_index = 0; prefix_index < prefix_count; ++prefix_index)
+      if (name.starts_with(prefixes[prefix_index]))
+        return true;
+    return false;
+  };
+
+  // The island's functions: the named ones, then the ones that only they
+  // call. A function can only join once one of its callers has joined.
+  SmallPtrSet<Function *, 32> members;
+  SmallVector<Function *, 1024> worklist;
+  for (Function &function : module)
+    if (can_move(function) && has_island_name(function)) {
+      members.insert(&function);
+      worklist.push_back(&function);
+    }
+  if (members.empty())
+    return nullptr;
+  auto is_island_call = [&](const Use &use) {
+    auto *call = dyn_cast<CallBase>(use.getUser());
+    return call && call->isCallee(&use) && members.contains(call->getFunction());
+  };
+  while (!worklist.empty()) {
+    Function *member = worklist.pop_back_val();
+    LLVMExtForEachDirectCallee(*member, [&](Function *callee) {
+      if (members.contains(callee) || !can_move(*callee))
+        return;
+      if (!llvm::all_of(callee->uses(), is_island_call))
+        return;
+      members.insert(callee);
+      worklist.push_back(callee);
+    });
+  }
+
+  // The small functions each module calls in the other, followed
+  // `import_depth` levels into their home module.
+  auto can_import = [&](const Function &function) {
+    return can_move(function) &&
+           function.getInstructionCount() <= import_instruction_limit &&
+           !function.hasFnAttribute(Attribute::NoInline);
+  };
+  auto collect_imports = [&](ArrayRef<Function *> roots, bool from_island,
+                             SmallPtrSetImpl<Function *> &imports) {
+    SmallVector<Function *, 256> level(roots.begin(), roots.end());
+    for (unsigned depth = 0; depth <= import_depth && !level.empty(); ++depth) {
+      SmallVector<Function *, 256> next_level;
+      for (Function *caller : level)
+        LLVMExtForEachDirectCallee(*caller, [&](Function *callee) {
+          // A function from the island imports from the main module, and
+          // the other way around; a copy calls within its home module.
+          bool is_home = members.contains(callee) != from_island;
+          if (!is_home || !can_import(*callee) || !imports.insert(callee).second)
+            return;
+          next_level.push_back(callee);
+        });
+      level = std::move(next_level);
+    }
+  };
+  SmallVector<Function *, 1024> list_of_members(members.begin(), members.end());
+  SmallVector<Function *, 1024> list_of_main_functions;
+  for (Function &function : module)
+    if (!function.isDeclaration() && !members.contains(&function))
+      list_of_main_functions.push_back(&function);
+  SmallPtrSet<Function *, 32> island_imports;
+  SmallPtrSet<Function *, 32> main_imports;
+  collect_imports(list_of_members, /* from_island */ true, island_imports);
+  collect_imports(list_of_main_functions, /* from_island */ false, main_imports);
+
+  // What the island's code refers to: the constants it reads are imported,
+  // and every definition of the main module it names is promoted.
+  SmallPtrSet<const Constant *, 32> visited;
+  SmallPtrSet<GlobalValue *, 32> island_references;
+  auto note_island_reference = [&](GlobalValue *value) { island_references.insert(value); };
+  for (Function *function : members)
+    LLVMExtForEachGlobalUsedBy(*function, visited, note_island_reference);
+  for (Function *function : island_imports)
+    LLVMExtForEachGlobalUsedBy(*function, visited, note_island_reference);
+  SmallPtrSet<GlobalVariable *, 32> imported_constants;
+  SmallVector<GlobalVariable *, 256> constant_worklist;
+  for (GlobalValue *value : island_references)
+    if (auto *variable = dyn_cast<GlobalVariable>(value))
+      constant_worklist.push_back(variable);
+  while (!constant_worklist.empty()) {
+    GlobalVariable *variable = constant_worklist.pop_back_val();
+    if (!variable->isConstant() || !variable->hasInitializer() ||
+        variable->hasAvailableExternallyLinkage() || variable->hasComdat() ||
+        variable->isThreadLocal() || !imported_constants.insert(variable).second)
+      continue;
+    LLVMExtForEachGlobalIn(variable->getInitializer(), visited, [&](GlobalValue *value) {
+      island_references.insert(value);
+      if (auto *referenced_variable = dyn_cast<GlobalVariable>(value))
+        constant_worklist.push_back(referenced_variable);
+    });
+  }
+
+  // What the main module's code (its functions, the copies it imports, its
+  // variables' initializers, aliases and ifuncs) refers to in the island.
+  SmallPtrSet<GlobalValue *, 32> main_references;
+  auto note_main_reference = [&](GlobalValue *value) { main_references.insert(value); };
+  visited.clear();
+  for (Function *function : list_of_main_functions)
+    LLVMExtForEachGlobalUsedBy(*function, visited, note_main_reference);
+  for (Function *function : main_imports)
+    LLVMExtForEachGlobalUsedBy(*function, visited, note_main_reference);
+  for (const GlobalVariable &variable : module.globals())
+    if (variable.hasInitializer())
+      LLVMExtForEachGlobalIn(variable.getInitializer(), visited, note_main_reference);
+  for (const GlobalAlias &alias : module.aliases())
+    LLVMExtForEachGlobalIn(alias.getAliasee(), visited, note_main_reference);
+  for (const GlobalIFunc &ifunc : module.ifuncs())
+    LLVMExtForEachGlobalIn(ifunc.getResolver(), visited, note_main_reference);
+
+  auto is_island_definition = [&](const GlobalValue *value) {
+    auto *function = dyn_cast<Function>(value);
+    return function && members.contains(function);
+  };
+  LinkPromoter promoter(module);
+  for (GlobalValue *value : island_references)
+    if (!value->isDeclaration() && !is_island_definition(value))
+      promoter.promote(*value);
+  for (GlobalValue *value : main_references)
+    if (is_island_definition(value))
+      promoter.promote(*value);
+
+  ValueToValueMapTy value_map;
+  std::unique_ptr<Module> island = CloneModule(module, value_map, [&](const GlobalValue *value) {
+    if (auto *function = dyn_cast<Function>(value))
+      return members.contains(function) || island_imports.contains(function);
+    if (auto *variable = dyn_cast<GlobalVariable>(value))
+      return imported_constants.contains(variable);
+    return false;
+  });
+  for (Function *function : island_imports)
+    cast<GlobalValue>(value_map[function])->setLinkage(GlobalValue::AvailableExternallyLinkage);
+  for (GlobalVariable *variable : imported_constants)
+    cast<GlobalValue>(value_map[variable])->setLinkage(GlobalValue::AvailableExternallyLinkage);
+  // The declarations of everything else the main module holds.
+  auto erase_unused_declarations = [](Module &target) {
+    for (Function &function : make_early_inc_range(target))
+      if (function.isDeclaration() && function.use_empty())
+        function.eraseFromParent();
+    for (GlobalVariable &variable : make_early_inc_range(target.globals()))
+      if (variable.isDeclaration() && variable.use_empty())
+        variable.eraseFromParent();
+  };
+  erase_unused_declarations(*island);
+
+  SmallString<0> bitcode;
+  raw_svector_ostream stream(bitcode);
+  WriteBitcodeToFile(*island, stream);
+  island.reset();
+
+  // The main module keeps a copy of the small island functions it calls and
+  // a declaration of the others it refers to.
+  for (Function *function : members)
+    if (main_imports.contains(function))
+      function->setLinkage(GlobalValue::AvailableExternallyLinkage);
+    else
+      function->deleteBody();
+  for (Function *function : members)
+    if (function->isDeclaration() && function->use_empty())
+      function->eraseFromParent();
+
+  auto buffer = MemoryBuffer::getMemBufferCopy(StringRef(bitcode.data(), bitcode.size()),
+                                               "crystal-release-island");
+  return wrap(buffer.release());
+#else
+  return nullptr;
 #endif
 }
 
