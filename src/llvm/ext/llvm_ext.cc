@@ -642,13 +642,26 @@ LLVMMemoryBufferRef LLVMExtSplitOffIslandToBitcode(LLVMModuleRef M,
     auto *function = dyn_cast<Function>(value);
     return function && members.contains(function);
   };
+  // Promoted in module order, so the names given to unnamed values do not
+  // depend on where the sets keep their pointers.
+  auto crosses_boundary = [&](GlobalValue &value) {
+    if (is_island_definition(&value))
+      return main_references.contains(&value);
+    return !value.isDeclaration() && island_references.contains(&value);
+  };
   LinkPromoter promoter(module);
-  for (GlobalValue *value : island_references)
-    if (!value->isDeclaration() && !is_island_definition(value))
-      promoter.promote(*value);
-  for (GlobalValue *value : main_references)
-    if (is_island_definition(value))
-      promoter.promote(*value);
+  for (Function &function : module)
+    if (crosses_boundary(function))
+      promoter.promote(function);
+  for (GlobalVariable &variable : module.globals())
+    if (crosses_boundary(variable))
+      promoter.promote(variable);
+  for (GlobalAlias &alias : module.aliases())
+    if (crosses_boundary(alias))
+      promoter.promote(alias);
+  for (GlobalIFunc &ifunc : module.ifuncs())
+    if (crosses_boundary(ifunc))
+      promoter.promote(ifunc);
 
   ValueToValueMapTy value_map;
   std::unique_ptr<Module> island = CloneModule(module, value_map, [&](const GlobalValue *value) {
