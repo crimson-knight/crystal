@@ -210,7 +210,7 @@ module Crystal
     # engines of the standard library, which call little of the rest of the
     # program and which little of the rest calls. Every function that only
     # these call joins them.
-    RELEASE_ISLAND_NAMESPACES = %w[Regex::Mica:: YAML::Mica:: Crystal::Mica:: Crystal::BigNum::]
+    RELEASE_ISLAND_NAMESPACES = %w[Regex::Mica:: YAML::Mica:: Crystal::Mica:: Crystal::BigNum:: Crystal::Beryl:: Crystal::Digest::]
 
     # The most instructions of a function that one module of a build with an
     # island copies from the other (as `available_externally`), so calls
