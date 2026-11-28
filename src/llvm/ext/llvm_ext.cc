@@ -2,6 +2,7 @@
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/StringExtras.h>
+#include <llvm/ADT/StringSet.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -156,6 +157,20 @@ void LLVMExtForEachGlobalUsedBy(const Function &function,
       for (const Use &operand : instruction.operands())
         if (auto *constant = dyn_cast<Constant>(operand.get()))
           LLVMExtForEachGlobalIn(constant, visited, callback);
+}
+
+// The named metadata in which a module split by
+// `LLVMExtSplitOffIslandToBitcode` lists the definitions it promoted.
+const char *const LLVMExtPromotionsMetadataName = "crystal.island.promotions";
+
+// Records the names of `values` in the module's list of promotions.
+void LLVMExtRecordPromotions(Module &module, ArrayRef<GlobalValue *> values) {
+  if (values.empty())
+    return;
+  LLVMContext &context = module.getContext();
+  NamedMDNode *promotions = module.getOrInsertNamedMetadata(LLVMExtPromotionsMetadataName);
+  for (GlobalValue *value : values)
+    promotions->addOperand(MDNode::get(context, MDString::get(context, value->getName())));
 }
 
 // Calls `callback` with every function that `function` calls directly.
@@ -649,19 +664,34 @@ LLVMMemoryBufferRef LLVMExtSplitOffIslandToBitcode(LLVMModuleRef M,
       return main_references.contains(&value);
     return !value.isDeclaration() && island_references.contains(&value);
   };
+  // Each module records the local definitions it promoted, so they can be
+  // made local again once both modules are optimized and the other one no
+  // longer refers to them (see `LLVMExtInternalizeUnreferencedPromotions`).
   LinkPromoter promoter(module);
+  SmallVector<GlobalValue *, 256> list_of_promoted_main_values;
+  SmallVector<GlobalValue *, 256> list_of_promoted_island_functions;
+  auto promote = [&](GlobalValue &value) {
+    bool was_local = value.hasLocalLinkage();
+    promoter.promote(value);
+    if (!was_local)
+      return;
+    if (is_island_definition(&value))
+      list_of_promoted_island_functions.push_back(&value);
+    else
+      list_of_promoted_main_values.push_back(&value);
+  };
   for (Function &function : module)
     if (crosses_boundary(function))
-      promoter.promote(function);
+      promote(function);
   for (GlobalVariable &variable : module.globals())
     if (crosses_boundary(variable))
-      promoter.promote(variable);
+      promote(variable);
   for (GlobalAlias &alias : module.aliases())
     if (crosses_boundary(alias))
-      promoter.promote(alias);
+      promote(alias);
   for (GlobalIFunc &ifunc : module.ifuncs())
     if (crosses_boundary(ifunc))
-      promoter.promote(ifunc);
+      promote(ifunc);
 
   ValueToValueMapTy value_map;
   std::unique_ptr<Module> island = CloneModule(module, value_map, [&](const GlobalValue *value) {
@@ -685,6 +715,8 @@ LLVMMemoryBufferRef LLVMExtSplitOffIslandToBitcode(LLVMModuleRef M,
         variable.eraseFromParent();
   };
   erase_unused_declarations(*island);
+  LLVMExtRecordPromotions(*island, list_of_promoted_island_functions);
+  LLVMExtRecordPromotions(module, list_of_promoted_main_values);
 
   SmallString<0> bitcode;
   raw_svector_ostream stream(bitcode);
@@ -707,6 +739,61 @@ LLVMMemoryBufferRef LLVMExtSplitOffIslandToBitcode(LLVMModuleRef M,
   return wrap(buffer.release());
 #else
   return nullptr;
+#endif
+}
+
+// Call `callback` with the name of every function and global variable that
+// the module declares and uses: what it needs another object of the link to
+// define. Declarations of intrinsics are left out.
+void LLVMExtForEachReferencedDeclaration(LLVMModuleRef M,
+                                         void (*callback)(void *data, const char *name,
+                                                          size_t length),
+                                         void *data) {
+  Module &module = *unwrap(M);
+  for (const Function &function : module)
+    if (function.isDeclaration() && !function.isIntrinsic() && !function.use_empty())
+      callback(data, function.getName().data(), function.getName().size());
+  for (const GlobalVariable &variable : module.globals())
+    if (variable.isDeclaration() && !variable.use_empty())
+      callback(data, variable.getName().data(), variable.getName().size());
+}
+
+// Make local again (internal, default visibility) every definition that
+// `LLVMExtSplitOffIslandToBitcode` promoted in this module and whose name is
+// not among the `name_count` strings of `referenced_names` (the declarations
+// the other, optimized module still uses), so that an optimization pass such
+// as `globaldce` can remove the ones no longer used here either. The record
+// of promotions is removed.
+//
+// Returns the number of definitions made local.
+unsigned LLVMExtInternalizeUnreferencedPromotions(LLVMModuleRef M,
+                                                  const char *const *referenced_names,
+                                                  unsigned name_count) {
+#if LLVM_VERSION_MAJOR >= 17
+  Module &module = *unwrap(M);
+  NamedMDNode *promotions = module.getNamedMetadata(LLVMExtPromotionsMetadataName);
+  if (!promotions)
+    return 0;
+
+  StringSet<> referenced;
+  for (unsigned name_index = 0; name_index < name_count; ++name_index)
+    referenced.insert(referenced_names[name_index]);
+
+  unsigned internalized = 0;
+  for (const MDNode *promotion : promotions->operands()) {
+    StringRef name = cast<MDString>(promotion->getOperand(0))->getString();
+    GlobalValue *value = module.getNamedValue(name);
+    if (!value || value->isDeclaration() || value->hasLocalLinkage() ||
+        referenced.contains(name))
+      continue;
+    value->setLinkage(GlobalValue::InternalLinkage);
+    value->setVisibility(GlobalValue::DefaultVisibility);
+    internalized += 1;
+  }
+  module.eraseNamedMetadata(promotions);
+  return internalized;
+#else
+  return 0;
 #endif
 }
 

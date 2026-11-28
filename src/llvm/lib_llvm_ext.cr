@@ -45,4 +45,9 @@ lib LibLLVMExt
   fun split_off_island_to_bitcode = LLVMExtSplitOffIslandToBitcode(m : LibLLVM::ModuleRef, prefixes : Char**, prefix_count : UInt,
                                                                    import_instruction_limit : UInt,
                                                                    import_depth : UInt) : LibLLVM::MemoryBufferRef
+  fun for_each_referenced_declaration = LLVMExtForEachReferencedDeclaration(m : LibLLVM::ModuleRef,
+                                                                            callback : (Void*, Char*, SizeT ->),
+                                                                            data : Void*)
+  fun internalize_unreferenced_promotions = LLVMExtInternalizeUnreferencedPromotions(m : LibLLVM::ModuleRef, referenced_names : Char**,
+                                                                                     name_count : UInt) : UInt
 end

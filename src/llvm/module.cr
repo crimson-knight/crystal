@@ -160,6 +160,29 @@ class LLVM::Module
     MemoryBuffer.new(buffer) unless buffer.null?
   end
 
+  # The names of the functions and global variables this module declares and
+  # uses (intrinsics left out): what another object of the link must define.
+  def list_of_referenced_declaration_names : Array(String)
+    list_of_names = [] of String
+    LibLLVMExt.for_each_referenced_declaration(self, ->(data, name, length) {
+      Box(Array(String)).unbox(data) << String.new(name, length)
+      nil
+    }, Box.box(list_of_names))
+    list_of_names
+  end
+
+  # Makes local again (internal, default visibility) each definition that
+  # `#split_off_island_to_bitcode` promoted in this module and that is not
+  # named in *list_of_referenced_names*, the declarations the other module
+  # of the split still uses once optimized. A pass such as `globaldce` can
+  # then remove the ones this module no longer uses either.
+  #
+  # Returns how many definitions were made local.
+  def internalize_unreferenced_promotions(list_of_referenced_names : Array(String)) : Int32
+    list_of_name_pointers = list_of_referenced_names.map(&.to_unsafe)
+    LibLLVMExt.internalize_unreferenced_promotions(self, list_of_name_pointers, list_of_name_pointers.size).to_i32
+  end
+
   # Receives the parts of `#split_to_bitcode` without letting an exception
   # escape into LLVM.
   private class SplitHandoff
