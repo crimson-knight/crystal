@@ -154,7 +154,7 @@ class LLVM::Module
   # the island or `#can_be_split?` is false.
   def split_off_island_to_bitcode(list_of_prefixes : Enumerable(String), import_instruction_limit : Int32,
                                   import_depth : Int32) : MemoryBuffer?
-    list_of_prefix_pointers = list_of_prefixes.map(&.to_unsafe)
+    list_of_prefix_pointers = list_of_prefixes.to_a.map(&.to_unsafe)
     buffer = LibLLVMExt.split_off_island_to_bitcode(self, list_of_prefix_pointers, list_of_prefix_pointers.size,
       import_instruction_limit, import_depth)
     MemoryBuffer.new(buffer) unless buffer.null?
