@@ -141,6 +141,17 @@ rewind paths, the combination emscripten/emscripten#18251 warns about.) The two
 passes share one run because `wasm-opt` drops the name section when it writes a
 module, and asyncify finds `_start`, the boundary it must leave alone, by name.
 
+**The heap is never unmapped**: bdwgc returns heap blocks that stay free for
+a few collections to the system with `munmap`. WASI's emulated `munmap` can
+only release a whole region its own `mmap` returned, so unmapping part of the
+heap fails and the module aborts with an `unreachable` trap (after about
+20,000 rounds of the load-and-dump fixture). Linear memory never shrinks
+anyway, so `GC.init` sets `GC_unmap_threshold` to 0 on wasm32 and the
+collector reuses every free block. Programs need no `GC.disable`,
+`GC.collect` or unmap setting of their own;
+`spec/compiler-cli/fixtures/wasm32-gc-load-dump.cr` runs 60,000 rounds with
+automatic collections in a 4 MiB heap.
+
 **Each fiber has its own shadow stack**: a spawned fiber's stack region holds a
 16-byte header, its asyncify buffer in the lower quarter, and its shadow stack,
 which grows down from the top through the rest. `swapcontext` records

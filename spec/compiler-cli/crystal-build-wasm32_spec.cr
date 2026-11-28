@@ -26,6 +26,11 @@ end
 # would break linking this spec runner.
 private WASM32_LIBRARY_PATH = ENV["CRYSTAL_SPEC_WASM32_LIBS"]?
 
+# The heap ceiling of the load-and-dump fixture. A native build of the same
+# loop peaks at about 2 MiB; a wasm32 build whose collector misses roots or
+# never runs grows to hundreds of MiB.
+private WASM32_LOAD_DUMP_PEAK_HEAP_MEBIBYTES = 64
+
 # What linking and running a wasm32 program needs on this machine, or nil
 # when all of it is present.
 private def missing_wasm32_run_tools : String?
@@ -184,6 +189,37 @@ describe "`crystal build --target wasm32-wasi`" do
         "spawned fibers: 240 of 240 chains intact",
       ])
       run.should(be_success)
+    end
+  end
+
+  # A browser game's save loop with the collector running on its own: each
+  # round loads a world from JSON, allocates a large buffer and dumps the
+  # world again. The collector must keep every block it frees in the heap
+  # (WASI's emulated munmap cannot return part of it, and the module traps)
+  # and see every pointer a round holds in a local, so all rounds read back
+  # the world the round before wrote and the heap stays small.
+  it "runs a load-and-dump loop with automatic collections, intact and in a small heap" do
+    if reason = missing_wasm32_run_tools
+      pending!("needs a wasm32 toolchain and host: #{reason}")
+    end
+    pending!("wasm-opt is not on PATH") unless Process.find_executable("wasm-opt")
+
+    with_tempfile("wasm32-gc-load-dump.wasm") do |program_path|
+      build = Process.capture_result(crystal, "build", "--target", "wasm32-wasi",
+        "-Dwithout_mt", "-Dwithout_iconv", "-Dwithout_openssl", "-Dwithout_zlib", "--release",
+        "-o", program_path, fixture_path("wasm32-gc-load-dump.cr"),
+        env: {"CRYSTAL_LIBRARY_PATH" => WASM32_LIBRARY_PATH})
+      build.should(be_success)
+
+      run = Process.capture_result("deno", "run", "--allow-read",
+        fixture_path("wasi-host-no-args.mjs"), program_path)
+      run.should(be_success)
+      list_of_lines = run.output.lines
+      list_of_lines.first?.should eq("60000 of 60000 rounds intact")
+      peak_heap_line = list_of_lines[1]? || ""
+      peak_heap_mebibytes = peak_heap_line[/\Apeak heap (\d+) MiB\z/, 1]?.try(&.to_i)
+      peak_heap_mebibytes.should_not be_nil
+      (peak_heap_mebibytes || Int32::MAX).should be < WASM32_LOAD_DUMP_PEAK_HEAP_MEBIBYTES
     end
   end
 
