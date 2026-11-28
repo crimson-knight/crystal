@@ -806,4 +806,3 @@ LLVMContextRef LLVMExtGetMDNodeContext(LLVMMetadataRef MD) {
 }
 
 } // extern "C"
-
