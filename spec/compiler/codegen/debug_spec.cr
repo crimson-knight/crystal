@@ -1,6 +1,28 @@
 require "../../spec_helper"
 
 describe "Code gen: debug" do
+  it "makes the type tables' debug locations in their own LLVM context (#105)" do
+    # The match functions are generated in nested `in_module` calls into
+    # the type tables, which put the main function back as the current one.
+    codegen(<<-CRYSTAL, debug: Crystal::Debug::LineNumbers)
+      class Foo
+      end
+
+      class Bar < Foo
+      end
+
+      class Baz < Foo
+      end
+
+      class Qux < Foo
+      end
+
+      foo = Bar.new.as(Foo)
+      foo.is_a?(Bar | Baz)
+      foo.is_a?(Baz | Qux)
+      CRYSTAL
+  end
+
   it "codegens abstract struct (#3578)" do
     codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
       abstract struct Base

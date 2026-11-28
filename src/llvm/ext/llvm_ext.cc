@@ -797,4 +797,13 @@ unsigned LLVMExtInternalizeUnreferencedPromotions(LLVMModuleRef M,
 #endif
 }
 
+// The context that owns the metadata node *MD*, or null when *MD* is not a
+// node (a string, or a value wrapped as metadata).
+LLVMContextRef LLVMExtGetMDNodeContext(LLVMMetadataRef MD) {
+  if (auto *node = dyn_cast_or_null<MDNode>(unwrap(MD)))
+    return wrap(&node->getContext());
+  return nullptr;
+}
+
 } // extern "C"
+

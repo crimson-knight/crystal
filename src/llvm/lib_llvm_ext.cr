@@ -37,6 +37,7 @@ lib LibLLVMExt
 
   fun sort_function_declarations_by_name = LLVMExtSortFunctionDeclarationsByName(m : LibLLVM::ModuleRef)
   fun sort_by_name = LLVMExtSortModuleByName(m : LibLLVM::ModuleRef)
+  fun get_md_node_context = LLVMExtGetMDNodeContext(md : LibLLVM::MetadataRef) : LibLLVM::ContextRef
 
   fun module_can_be_split = LLVMExtModuleCanBeSplit(m : LibLLVM::ModuleRef) : LibLLVM::Bool
   fun split_module_to_bitcode = LLVMExtSplitModuleToBitcode(m : LibLLVM::ModuleRef, parts : UInt,
