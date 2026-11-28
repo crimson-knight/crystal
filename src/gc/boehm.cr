@@ -192,7 +192,8 @@ lib LibGC
   {% if flag?(:wasm32) %}
     # The number of collections a free heap block waits before the collector
     # returns it to the system; 0 keeps every block in the heap. bdwgc has no
-    # setter for it, only this variable.
+    # setter for it, only this `GC_INNER` variable, which links because the
+    # wasm32 libgc is a static archive (a shared libgc would not export it).
     $unmap_threshold = GC_unmap_threshold : Int
   {% end %}
   # GC_on_collection_event isn't exported.  Can't collect totals without it.
@@ -284,8 +285,9 @@ module GC
       # region its own mmap returned, so unmapping part of the heap fails and
       # the module aborts with an `unreachable` trap. Linear memory never
       # shrinks anyway, so the collector keeps every block and reuses it.
+      # `GC.collect` calls `GC_gcollect`, which honors the threshold; only
+      # `GC_gcollect_and_unmap` forces an unmap, and the stdlib never calls it.
       LibGC.unmap_threshold = 0
-      LibGC.set_force_unmap_on_gcollect(0)
     {% end %}
 
     {% unless flag?(:without_mt) %}

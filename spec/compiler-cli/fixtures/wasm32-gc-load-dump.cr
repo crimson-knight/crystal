@@ -16,13 +16,13 @@
 # Each round checks the world it loaded against the one it dumped, so a
 # freed and reused object shows up as a wrong round, not only as a crash.
 #
-# The round count is the first argument; it defaults to DEFAULT_ROUNDS.
+# The round count is the first argument; it defaults to DEFAULT_ROUND_COUNT.
 
 require "json"
 
-DEFAULT_ROUNDS = 60_000
-HERO_COUNT     =      8
-ITEM_COUNT     =     12
+DEFAULT_ROUND_COUNT = 60_000
+HERO_COUNT          =      8
+ITEM_COUNT          =     12
 
 class Hero
   include JSON::Serializable
@@ -71,25 +71,29 @@ class World
   end
 end
 
-round_count = ARGV.first?.try(&.to_i) || DEFAULT_ROUNDS
+round_count = ARGV.first?.try(&.to_i) || DEFAULT_ROUND_COUNT
 saved_world = World.first.to_json
-intact_rounds = 0
+intact_round_count = 0
 peak_heap_bytes = 0_u64
 
 round_count.times do |round_number|
   world = World.from_json(saved_world)
-  intact_rounds += 1 if round_number == 0 || world.written_by_round?(round_number - 1)
+  intact_round_count += 1 if round_number == 0 || world.written_by_round?(round_number - 1)
 
   world.round_number = round_number
   world.journal_entry = World.journal_entry_for(round_number)
   world.list_of_heroes.each { |hero| hero.step_count += 1 }
 
-  large_buffer = Bytes.new(70_000 + (round_number % 13) * 4096, (round_number % 251).to_u8)
-  intact_rounds -= 1 unless large_buffer[large_buffer.size - 1] == (round_number % 251).to_u8
+  fill_byte = (round_number % 251).to_u8
+  large_buffer = Bytes.new(70_000 + (round_number % 13) * 4096, fill_byte)
+  intact_round_count -= 1 unless large_buffer[0] == fill_byte && large_buffer[large_buffer.size - 1] == fill_byte
 
   saved_world = world.to_json
   peak_heap_bytes = {peak_heap_bytes, GC.stats.heap_size}.max
 end
 
-puts "#{intact_rounds} of #{round_count} rounds intact"
+# The last round's dump is read back too, so a bad final write counts.
+intact_round_count -= 1 if round_count > 0 && !World.from_json(saved_world).written_by_round?(round_count - 1)
+
+puts "#{intact_round_count} of #{round_count} rounds intact"
 puts "peak heap #{peak_heap_bytes // (1024 * 1024)} MiB"

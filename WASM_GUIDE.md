@@ -147,7 +147,9 @@ only release a whole region its own `mmap` returned, so unmapping part of the
 heap fails and the module aborts with an `unreachable` trap (after about
 20,000 rounds of the load-and-dump fixture). Linear memory never shrinks
 anyway, so `GC.init` sets `GC_unmap_threshold` to 0 on wasm32 and the
-collector reuses every free block. Programs need no `GC.disable`,
+collector reuses every free block. (`GC.collect` honors that setting; bdwgc's
+`GC_gcollect_and_unmap`, which the stdlib never calls, forces an unmap and
+still traps.) Programs need no `GC.disable`,
 `GC.collect` or unmap setting of their own;
 `spec/compiler-cli/fixtures/wasm32-gc-load-dump.cr` runs 60,000 rounds with
 automatic collections in a 4 MiB heap.
