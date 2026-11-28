@@ -81,6 +81,98 @@ private ISLAND_PROGRAM_OUTPUT = <<-OUTPUT
   80004400323017
   OUTPUT
 
+# Code that the island and the program module share across the boundary:
+# class variables, a mutable constant, string literals, thread-local
+# storage, blocks and an exception raised in the island.
+private ISLAND_BOUNDARY_PROGRAM = <<-'CRYSTAL'
+  module Regex::Mica::BoundaryProbe
+    @@counter = 0
+    TABLE = [1, 2, 3]
+    @[ThreadLocal]
+    @@thread_counter = 5
+
+    def self.bump
+      @@counter += 1
+    end
+
+    def self.counter
+      @@counter
+    end
+
+    def self.grow_table
+      TABLE << TABLE.size + 1
+    end
+
+    def self.table_id
+      TABLE.object_id
+    end
+
+    def self.literal
+      "island-literal"
+    end
+
+    @[NoInline]
+    def self.raise_above_two(number)
+      raise ArgumentError.new("too big: #{number}") if number > 2
+      number
+    end
+
+    def self.next_thread_counter
+      @@thread_counter += 1
+    end
+
+    def self.call_back(&block : -> Int32)
+      block.call
+    end
+
+    def self.hit_program_side
+      ProgramSide.hit
+    end
+  end
+
+  class ProgramSide
+    @@hits = 0
+
+    def self.hit
+      @@hits += 1
+    end
+
+    def self.hits
+      @@hits
+    end
+  end
+
+  3.times { Regex::Mica::BoundaryProbe.bump }
+  puts Regex::Mica::BoundaryProbe.counter
+  Regex::Mica::BoundaryProbe.grow_table
+  puts Regex::Mica::BoundaryProbe::TABLE.inspect
+  puts Regex::Mica::BoundaryProbe::TABLE.object_id == Regex::Mica::BoundaryProbe.table_id
+  puts Regex::Mica::BoundaryProbe.literal.object_id == "island-literal".object_id
+  puts Regex::Mica::BoundaryProbe.next_thread_counter, Regex::Mica::BoundaryProbe.next_thread_counter
+  Regex::Mica::BoundaryProbe.hit_program_side
+  ProgramSide.hit
+  puts ProgramSide.hits
+  puts Regex::Mica::BoundaryProbe.call_back { ProgramSide.hits * 10 }
+  begin
+    Regex::Mica::BoundaryProbe.raise_above_two(3)
+  rescue error
+    puts error.message
+    puts error.backtrace.any?(&.includes?("raise_above_two"))
+  end
+  begin
+    Regex.new("(unclosed")
+  rescue error
+    puts error.class
+  end
+  begin
+    YAML.parse("a: [1, 2")
+  rescue error
+    puts error.class
+  end
+  CRYSTAL
+
+private ISLAND_BOUNDARY_PROGRAM_OUTPUT = "3\n[1, 2, 3, 4]\ntrue\ntrue\n6\n7\n2\n20\ntoo big: 3\ntrue\nArgumentError\nYAML::ParseException\n"
+
 private def compile_island_program(directory, executable_name, *, release_islands, source = ISLAND_PROGRAM, prelude = "prelude")
   program = File.join(directory, "program.cr")
   File.write(program, source)
@@ -101,6 +193,12 @@ end
 private def island_object?(directory) : Bool
   cache_directory = Crystal::CacheDir.instance.directory_for(File.join(directory, "program.cr"))
   File.exists?(File.join(cache_directory, "_main.o3.island.o"))
+end
+
+# When the release build of `directory/program.cr` last wrote its island object.
+private def island_object_modification_time(directory) : Time
+  cache_directory = Crystal::CacheDir.instance.directory_for(File.join(directory, "program.cr"))
+  File.info(File.join(cache_directory, "_main.o3.island.o")).modification_time
 end
 
 private def expected_release_units_output(beta = 2)
@@ -273,13 +371,31 @@ describe "Compiler#release_islands?" do
     end
   end
 
+  it "shares class variables, constants, literals, procs, blocks and exceptions across the island boundary" do
+    with_tempfile("release_islands_boundary") do |directory|
+      Dir.mkdir_p(directory)
+      source = "require \"yaml\"\n#{ISLAND_BOUNDARY_PROGRAM}"
+      islands_executable = compile_island_program(directory, "islands", release_islands: true, source: source)
+      island_object?(directory).should be_true
+      whole_executable = compile_island_program(directory, "whole", release_islands: false, source: source)
+      island_object?(directory).should be_false
+      islands_again_executable = compile_island_program(directory, "islands_again", release_islands: true, source: source)
+      island_object?(directory).should be_true
+
+      Process.capture(islands_executable).should eq(ISLAND_BOUNDARY_PROGRAM_OUTPUT)
+      Process.capture(whole_executable).should eq(ISLAND_BOUNDARY_PROGRAM_OUTPUT)
+      Process.capture(islands_again_executable).should eq(ISLAND_BOUNDARY_PROGRAM_OUTPUT)
+    end
+  end
+
   it "reuses the island object of an unchanged program" do
     with_tempfile("release_islands_rebuild") do |directory|
       Dir.mkdir_p(directory)
       compile_island_program(directory, "first", release_islands: true)
+      first_build_time = island_object_modification_time(directory)
       unchanged_executable = compile_island_program(directory, "unchanged", release_islands: true)
 
-      island_object?(directory).should be_true
+      island_object_modification_time(directory).should eq(first_build_time)
       Process.capture(unchanged_executable).should eq("#{ISLAND_PROGRAM_OUTPUT}\n")
     end
   end
@@ -302,6 +418,7 @@ describe "Compiler#release_islands?" do
         CRYSTAL
 
       island_object?(directory).should be_false
+      release_part_objects(directory).should_not be_empty
       Process.capture(executable).should eq("6\n")
     end
   end

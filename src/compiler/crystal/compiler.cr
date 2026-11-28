@@ -210,7 +210,7 @@ module Crystal
     # engines of the standard library, which call little of the rest of the
     # program and which little of the rest calls. Every function that only
     # these call joins them.
-    RELEASE_ISLAND_NAMESPACES = %w[Regex::Mica:: YAML::Mica:: Crystal::Mica:: Crystal::BigNum::]
+    RELEASE_ISLAND_NAMESPACES = {"Regex::Mica::", "YAML::Mica::", "Crystal::Mica::", "Crystal::BigNum::"}
 
     # The most instructions of a function that one module of a build with an
     # island copies from the other (as `available_externally`), so calls
@@ -226,7 +226,7 @@ module Crystal
     # while the rest of the program is optimized as a whole and split into
     # parts. With `false` (`--no-release-islands`) the whole program is
     # optimized as one module. The program behaves the same either way.
-    property? release_islands = true
+    property? release_islands : Bool = true
 
     # The default of `#resident_ir_megabytes`. A program of 300 Grant models
     # (about 10 GB of IR) generates its IR in the same time with 256 MB in
