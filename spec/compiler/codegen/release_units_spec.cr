@@ -49,6 +49,56 @@ private def release_part_objects(directory)
   Dir.children(cache_directory).select(&.matches?(/\A_main\.o3\.p\d+of\d+\.o\z/)).sort
 end
 
+# A program whose release build has an island (see `Compiler#release_islands?`):
+# it runs the Mica Regex and YAML engines and the pure BigNum engine.
+private ISLAND_PROGRAM = <<-CRYSTAL
+  require "yaml"
+  require "big"
+
+  text = "alpha=1, beta=22, gamma=333"
+  puts text.scan(/(w+)=(d+)/).map { |match| "\#{match[1]}:\#{match[2]}" }.join(" ")
+  puts text.sub(/b(e+)ta/) { |word| word.upcase }
+  document = YAML.parse("list:\n  - 1\n  - two\nname: island\n")
+  puts document["list"].as_a.size, document["name"].as_s
+  puts({"key" => [1, 2]}.to_yaml)
+  puts (BigInt.new(2) ** 100 * BigInt.new("123456789")).to_s
+  puts BigInt.new("987654321987654321") // 12345
+  CRYSTAL
+
+private ISLAND_PROGRAM_OUTPUT = <<-OUTPUT
+  alpha:1 beta:22 gamma:333
+  alpha=1, BETA=22, gamma=333
+  2
+  island
+  ---
+  key:
+  - 1
+  - 2
+  156500072678099869064174771821728497664
+  80004400323017
+  OUTPUT
+
+private def compile_island_program(directory, executable_name, *, release_islands, source = ISLAND_PROGRAM)
+  program = File.join(directory, "program.cr")
+  File.write(program, source)
+  executable = File.join(directory, executable_name)
+
+  compiler = Crystal::Compiler.new
+  compiler.release!
+  compiler.release_units = 4
+  compiler.release_islands = release_islands
+  compiler.n_threads = 8
+  ENV["CRYSTAL_SPEC_COMPILER_FLAGS"]?.try { |flags| compiler.flags.concat(flags.split) }
+  compiler.compile(Crystal::Compiler::Source.new(program, File.read(program)), executable)
+  executable
+end
+
+# Whether the release build of `directory/program.cr` left an island object in the compiler cache.
+private def island_object?(directory) : Bool
+  cache_directory = Crystal::CacheDir.instance.directory_for(File.join(directory, "program.cr"))
+  File.exists?(File.join(cache_directory, "_main.o3.island.o"))
+end
+
 private def expected_release_units_output(beta = 2)
   "5\n#{beta}\n[\"rescued\", 4, \"rescued\", 8]\n"
 end
@@ -196,6 +246,63 @@ describe "Compiler#release_units" do
       list_of_shared_names = single_order & parts_order
       list_of_shared_names.size.should be > 100
       (parts_order & list_of_shared_names).should eq(list_of_shared_names)
+    end
+  end
+end
+
+describe "Compiler#release_islands?" do
+  it "is on by default" do
+    Crystal::Compiler.new.release_islands?.should be_true
+  end
+
+  it "builds a program that uses Regex, YAML and BigInt that behaves the same with and without the island" do
+    with_tempfile("release_islands") do |directory|
+      Dir.mkdir_p(directory)
+      islands_executable = compile_island_program(directory, "islands", release_islands: true)
+      island_object?(directory).should be_true
+      release_part_objects(directory).should eq(%w[_main.o3.p0of4.o _main.o3.p1of4.o _main.o3.p2of4.o _main.o3.p3of4.o])
+      whole_executable = compile_island_program(directory, "whole", release_islands: false)
+      island_object?(directory).should be_false
+
+      Process.capture(islands_executable).should eq("#{ISLAND_PROGRAM_OUTPUT}\n")
+      Process.capture(whole_executable).should eq("#{ISLAND_PROGRAM_OUTPUT}\n")
+    end
+  end
+
+  it "reuses the island object of an unchanged program" do
+    with_tempfile("release_islands_rebuild") do |directory|
+      Dir.mkdir_p(directory)
+      compile_island_program(directory, "first", release_islands: true)
+      unchanged_executable = compile_island_program(directory, "unchanged", release_islands: true)
+
+      island_object?(directory).should be_true
+      Process.capture(unchanged_executable).should eq("#{ISLAND_PROGRAM_OUTPUT}\n")
+    end
+  end
+
+  it "links and runs a program without island functions" do
+    with_tempfile("release_islands_none") do |directory|
+      Dir.mkdir_p(directory)
+      executable = compile_island_program(directory, "plain", release_islands: true, source: "puts [3, 1, 2].sort.sum\n")
+
+      island_object?(directory).should be_false
+      Process.capture(executable).should eq("6\n")
+    end
+  end
+
+  it "defines the same Crystal functions with and without the island" do
+    nm = Process.find_executable("nm")
+    pending! "nm is not installed" unless nm
+
+    with_tempfile("release_islands_symbols") do |directory|
+      Dir.mkdir_p(directory)
+      islands_executable = compile_island_program(directory, "islands", release_islands: true)
+      whole_executable = compile_island_program(directory, "whole", release_islands: false)
+
+      list_of_islands_functions = function_symbol_names(nm, islands_executable).select { |name| name.includes?("::") || name.includes?("#") }
+      list_of_whole_functions = function_symbol_names(nm, whole_executable).select { |name| name.includes?("::") || name.includes?("#") }
+      list_of_islands_functions.any?(&.includes?("Regex::Mica::")).should be_true
+      list_of_islands_functions.sort.should eq(list_of_whole_functions.sort)
     end
   end
 end
