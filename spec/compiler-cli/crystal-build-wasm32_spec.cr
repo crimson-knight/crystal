@@ -27,8 +27,8 @@ end
 private WASM32_LIBRARY_PATH = ENV["CRYSTAL_SPEC_WASM32_LIBS"]?
 
 # The heap ceiling of the load-and-dump fixture. A native build of the same
-# loop peaks at about 2 MiB and the wasm32 build at 4 MiB; a wasm32 build whose collector misses roots or
-# never runs grows to hundreds of MiB.
+# loop peaks at about 2 MiB and the wasm32 build at 4 MiB; a wasm32 build
+# whose collector misses roots or never runs grows to hundreds of MiB.
 private WASM32_LOAD_DUMP_PEAK_HEAP_MEBIBYTES = 16
 
 # What linking and running a wasm32 program needs on this machine, or nil

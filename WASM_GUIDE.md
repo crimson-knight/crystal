@@ -149,10 +149,9 @@ heap fails and the module aborts with an `unreachable` trap (after about
 anyway, so `GC.init` sets `GC_unmap_threshold` to 0 on wasm32 and the
 collector reuses every free block. (`GC.collect` honors that setting; bdwgc's
 `GC_gcollect_and_unmap`, which the stdlib never calls, forces an unmap and
-still traps.) Programs need no `GC.disable`,
-`GC.collect` or unmap setting of their own;
-`spec/compiler-cli/fixtures/wasm32-gc-load-dump.cr` runs 60,000 rounds with
-automatic collections in a 4 MiB heap.
+still traps.) Programs need no `GC.disable`, `GC.collect` or unmap setting of
+their own; `spec/compiler-cli/fixtures/wasm32-gc-load-dump.cr` runs 60,000
+rounds with automatic collections in a 4 MiB heap.
 
 **Each fiber has its own shadow stack**: a spawned fiber's stack region holds a
 16-byte header, its asyncify buffer in the lower quarter, and its shadow stack,

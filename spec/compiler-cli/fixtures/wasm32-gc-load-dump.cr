@@ -78,7 +78,8 @@ peak_heap_bytes = 0_u64
 
 round_count.times do |round_number|
   world = World.from_json(saved_world)
-  intact_round_count += 1 if round_number == 0 || world.written_by_round?(round_number - 1)
+  loaded_world_is_intact = round_number == 0 ? world.to_json == World.first.to_json : world.written_by_round?(round_number - 1)
+  intact_round_count += 1 if loaded_world_is_intact
 
   world.round_number = round_number
   world.journal_entry = World.journal_entry_for(round_number)
